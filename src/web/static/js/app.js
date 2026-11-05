@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.8 — 4-View Frontend Controller
+ * SkyScry v0.0.9 — 4-View Frontend Controller
  * - View 1: Main Overview Dashboard with High-Clarity Animated SVG Weather Icons,
  *           Animated SVG Wind Compass Rose, Barometric Pressure (inHg/hPa) + 24h Forecast
  * - View 2: Multi-Section Time-Bucketed Historical Charts with Multi-Checkbox Filter Dropdown
@@ -177,9 +177,12 @@
   const elBtnMarkAppliance = document.getElementById("btn-mark-appliance");
 
   function showToast(msg) {
+    if (!elToastBanner) return;
     elToastBanner.textContent = msg;
     elToastBanner.classList.remove("hidden");
-    setTimeout(() => elToastBanner.classList.add("hidden"), 4500);
+    setTimeout(() => {
+      if (elToastBanner) elToastBanner.classList.add("hidden");
+    }, 4500);
   }
 
   function escapeHtml(str) {
@@ -424,14 +427,24 @@
     const data = await res.json();
 
     const sdrState = (data.sdr_status || "disconnected").toLowerCase();
-    elSdrStatus.textContent = sdrState.toUpperCase();
-    elSdrStatus.className =
-      "status-pill " + (sdrState === "running" ? "status-running" : "status-disconnected");
+    if (elSdrStatus) {
+      elSdrStatus.textContent = sdrState.toUpperCase();
+      elSdrStatus.className =
+        "status-pill " + (sdrState === "running" ? "status-running" : "status-disconnected");
+    }
 
-    elSensorCount.textContent = `${data.active_sensors ?? 0} / ${data.total_sensors ?? 0}`;
-    elReadingCount.textContent = Number(data.total_readings || 0).toLocaleString();
-    elDbSize.textContent = `${Number(data.database_size_mb || 0).toFixed(2)} MB`;
-    elUptime.textContent = formatDuration(data.uptime_seconds);
+    if (elSensorCount) {
+      elSensorCount.textContent = `${data.active_sensors ?? 0} / ${data.total_sensors ?? 0}`;
+    }
+    if (elReadingCount) {
+      elReadingCount.textContent = Number(data.total_readings || 0).toLocaleString();
+    }
+    if (elDbSize) {
+      elDbSize.textContent = `${Number(data.database_size_mb || 0).toFixed(2)} MB`;
+    }
+    if (elUptime) {
+      elUptime.textContent = formatDuration(data.uptime_seconds);
+    }
     authRequired = Boolean(data.auth_required);
     readOnlyPublic = Boolean(data.read_only_public);
 
@@ -444,11 +457,13 @@
         : "rtl_433:ready";
     }
 
-    if (data.sdr_last_error && sdrState !== "running") {
-      elErrorBanner.textContent = `SDR DIAGNOSTIC: ${data.sdr_last_error}`;
-      elErrorBanner.classList.remove("hidden");
-    } else {
-      elErrorBanner.classList.add("hidden");
+    if (elErrorBanner) {
+      if (data.sdr_last_error && sdrState !== "running") {
+        elErrorBanner.textContent = `SDR DIAGNOSTIC: ${data.sdr_last_error}`;
+        elErrorBanner.classList.remove("hidden");
+      } else {
+        elErrorBanner.classList.add("hidden");
+      }
     }
   }
 
@@ -462,94 +477,128 @@
     const ind = data.indoor || {};
     const baro = data.barometer || {};
 
-    if (cond.code && cond.code !== currentIconCode) {
+    if (elHeroIcon && cond.code && cond.code !== currentIconCode) {
       currentIconCode = cond.code;
       elHeroIcon.innerHTML = getAnimatedWeatherSvg(cond.code);
     }
 
-    elOvConditionLabel.textContent = cond.label || "Monitoring Active";
-    elOvOutTempF.innerHTML =
-      out.temp_f !== null && out.temp_f !== undefined
-        ? `${Number(out.temp_f).toFixed(1)}&deg;F`
-        : `--.-&deg;F`;
-    elOvOutTempC.innerHTML =
-      out.temp_c !== null && out.temp_c !== undefined
-        ? `(${Number(out.temp_c).toFixed(1)}&deg;C)`
-        : `(--.-&deg;C)`;
+    if (elOvConditionLabel) {
+      elOvConditionLabel.textContent = cond.label || "Monitoring Active";
+    }
+    if (elOvOutTempF) {
+      elOvOutTempF.innerHTML =
+        out.temp_f !== null && out.temp_f !== undefined
+          ? `${Number(out.temp_f).toFixed(1)}&deg;F`
+          : `--.-&deg;F`;
+    }
+    if (elOvOutTempC) {
+      elOvOutTempC.innerHTML =
+        out.temp_c !== null && out.temp_c !== undefined
+          ? `(${Number(out.temp_c).toFixed(1)}&deg;C)`
+          : `(--.-&deg;C)`;
+    }
 
-    if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
-      elOvOutSpread.innerHTML = `Outdoor ensemble mean across ${out.sensor_count} trusted stations | Spread: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
-    } else {
-      elOvOutSpread.textContent = `Outdoor ensemble across ${out.sensor_count ?? 0} trusted station(s)`;
+    if (elOvOutSpread) {
+      if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
+        elOvOutSpread.innerHTML = `Outdoor ensemble mean across ${out.sensor_count} trusted stations | Spread: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
+      } else {
+        elOvOutSpread.textContent = `Outdoor ensemble across ${out.sensor_count ?? 0} trusted station(s)`;
+      }
     }
 
     const badges = Array.isArray(cond.trend_badges) ? cond.trend_badges : [];
-    elOvTrendBadges.innerHTML = badges
-      .map(
-        (b) =>
-          `<span class="trend-pill ${escapeHtml(b.tone || "neutral")}">${escapeHtml(b.label)}</span>`
-      )
-      .join("");
+    if (elOvTrendBadges) {
+      elOvTrendBadges.innerHTML = badges
+        .map(
+          (b) =>
+            `<span class="trend-pill ${escapeHtml(b.tone || "neutral")}">${escapeHtml(b.label)}</span>`
+        )
+        .join("");
+    }
 
-    elOvNowcastText.textContent = cond.nowcast_summary || "";
+    if (elOvNowcastText) {
+      elOvNowcastText.textContent = cond.nowcast_summary || "";
+    }
 
     // Indoor card
-    elOvInCount.textContent = `${ind.sensor_count ?? 0} station(s)`;
-    elOvInTemp.innerHTML =
-      ind.temp_f !== null && ind.temp_f !== undefined
-        ? `${Number(ind.temp_f).toFixed(1)}&deg;F`
-        : `--.-&deg;F`;
-    elOvInTempC.innerHTML =
-      ind.temp_c !== null && ind.temp_c !== undefined
-        ? `${Number(ind.temp_c).toFixed(1)}&deg;C`
-        : `--.-&deg;C`;
-    elOvInRh.textContent =
-      ind.humidity !== null && ind.humidity !== undefined
-        ? `${Number(ind.humidity).toFixed(0)}%`
-        : `--%`;
-    if (ind.humidity !== null && ind.humidity !== undefined) {
-      const rh = Number(ind.humidity);
-      elOvInComfort.textContent =
-        rh < 30 ? "Dry Air" : rh <= 55 ? "Optimal Comfort" : "Humid Indoor";
-    } else {
-      elOvInComfort.textContent = "Assign 'Indoor' in Sensors tab";
+    if (elOvInCount) elOvInCount.textContent = `${ind.sensor_count ?? 0} station(s)`;
+    if (elOvInTemp) {
+      elOvInTemp.innerHTML =
+        ind.temp_f !== null && ind.temp_f !== undefined
+          ? `${Number(ind.temp_f).toFixed(1)}&deg;F`
+          : `--.-&deg;F`;
+    }
+    if (elOvInTempC) {
+      elOvInTempC.innerHTML =
+        ind.temp_c !== null && ind.temp_c !== undefined
+          ? `${Number(ind.temp_c).toFixed(1)}&deg;C`
+          : `--.-&deg;C`;
+    }
+    if (elOvInRh) {
+      elOvInRh.textContent =
+        ind.humidity !== null && ind.humidity !== undefined
+          ? `${Number(ind.humidity).toFixed(0)}%`
+          : `--%`;
+    }
+    if (elOvInComfort) {
+      if (ind.humidity !== null && ind.humidity !== undefined) {
+        const rh = Number(ind.humidity);
+        elOvInComfort.textContent =
+          rh < 30 ? "Dry Air" : rh <= 55 ? "Optimal Comfort" : "Humid Indoor";
+      } else {
+        elOvInComfort.textContent = "Assign 'Indoor' in Sensors tab";
+      }
     }
 
     // Deltas
-    elOvDelta1hTemp.textContent =
-      out.temp_delta_1h_f !== null && out.temp_delta_1h_f !== undefined
-        ? `${out.temp_delta_1h_f >= 0 ? "+" : ""}${Number(out.temp_delta_1h_f).toFixed(1)} F/hr`
-        : "--";
-    elOvDelta3hTemp.textContent =
-      out.temp_delta_3h_f !== null && out.temp_delta_3h_f !== undefined
-        ? `${out.temp_delta_3h_f >= 0 ? "+" : ""}${Number(out.temp_delta_3h_f).toFixed(1)} F/3h`
-        : "--";
-    elOvDelta3hBaro.textContent =
-      baro.delta_3h_inhg !== null && baro.delta_3h_inhg !== undefined
-        ? `${baro.delta_3h_inhg >= 0 ? "+" : ""}${Number(baro.delta_3h_inhg).toFixed(2)} inHg`
-        : baro.trend_label || "--";
-    elOvDewSpread.textContent =
-      out.dew_spread_f !== null && out.dew_spread_f !== undefined
-        ? `${Number(out.dew_spread_f).toFixed(1)} F`
-        : "--";
+    if (elOvDelta1hTemp) {
+      elOvDelta1hTemp.textContent =
+        out.temp_delta_1h_f !== null && out.temp_delta_1h_f !== undefined
+          ? `${out.temp_delta_1h_f >= 0 ? "+" : ""}${Number(out.temp_delta_1h_f).toFixed(1)} F/hr`
+          : "--";
+    }
+    if (elOvDelta3hTemp) {
+      elOvDelta3hTemp.textContent =
+        out.temp_delta_3h_f !== null && out.temp_delta_3h_f !== undefined
+          ? `${out.temp_delta_3h_f >= 0 ? "+" : ""}${Number(out.temp_delta_3h_f).toFixed(1)} F/3h`
+          : "--";
+    }
+    if (elOvDelta3hBaro) {
+      elOvDelta3hBaro.textContent =
+        baro.delta_3h_inhg !== null && baro.delta_3h_inhg !== undefined
+          ? `${baro.delta_3h_inhg >= 0 ? "+" : ""}${Number(baro.delta_3h_inhg).toFixed(2)} inHg`
+          : baro.trend_label || "--";
+    }
+    if (elOvDewSpread) {
+      elOvDewSpread.textContent =
+        out.dew_spread_f !== null && out.dew_spread_f !== undefined
+          ? `${Number(out.dew_spread_f).toFixed(1)} F`
+          : "--";
+    }
 
     // Animated Wind Speed & Compass Rose Card
     const windMph = out.wind_avg_mph !== null && out.wind_avg_mph !== undefined ? Number(out.wind_avg_mph) : 0;
     const windCard = out.wind_cardinal || "--";
     const windDeg = out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
 
-    elOvWindSpeed.textContent =
-      out.wind_avg_mph !== null && out.wind_avg_mph !== undefined
-        ? `${windMph.toFixed(1)} mph ${windCard !== "--" ? windCard : ""}`
-        : `0.0 mph`;
-    elOvWindGust.textContent =
-      out.wind_gust_mph !== null && out.wind_gust_mph !== undefined
-        ? `Peak Gust: ${Number(out.wind_gust_mph).toFixed(1)} mph (${Number(out.wind_gust_mps || 0).toFixed(1)} m/s)`
-        : `Peak Gust: 0.0 mph`;
-    elOvWindBearing.textContent =
-      out.wind_dir_deg !== null && out.wind_dir_deg !== undefined
-        ? `Bearing: ${windDeg.toFixed(0)} deg (${windCard})`
-        : `Bearing: -- deg`;
+    if (elOvWindSpeed) {
+      elOvWindSpeed.textContent =
+        out.wind_avg_mph !== null && out.wind_avg_mph !== undefined
+          ? `${windMph.toFixed(1)} mph ${windCard !== "--" ? windCard : ""}`
+          : `0.0 mph`;
+    }
+    if (elOvWindGust) {
+      elOvWindGust.textContent =
+        out.wind_gust_mph !== null && out.wind_gust_mph !== undefined
+          ? `Peak Gust: ${Number(out.wind_gust_mph).toFixed(1)} mph (${Number(out.wind_gust_mps || 0).toFixed(1)} m/s)`
+          : `Peak Gust: 0.0 mph`;
+    }
+    if (elOvWindBearing) {
+      elOvWindBearing.textContent =
+        out.wind_dir_deg !== null && out.wind_dir_deg !== undefined
+          ? `Bearing: ${windDeg.toFixed(0)} deg (${windCard})`
+          : `Bearing: -- deg`;
+    }
 
     if (elCompassNeedle) {
       elCompassNeedle.style.transform = `rotate(${windDeg}deg)`;
@@ -561,40 +610,50 @@
     // Barometric Pressure Card (inHg & hPa)
     if (baro.pressure_inhg !== null && baro.pressure_inhg !== undefined) {
       const inhgStr = `${Number(baro.pressure_inhg).toFixed(2)} inHg`;
-      elOvBaroInhg.textContent = inhgStr;
-      elBaroHeader.textContent = inhgStr;
-      elOvBaroHpa.textContent = `${Number(baro.pressure_hpa).toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
-      elOvBaroSource.textContent =
-        baro.source === "rf_sensor"
-          ? "Source: Local 433 MHz Barometer"
-          : "Source: Regional Open-Meteo Barometer";
+      if (elOvBaroInhg) elOvBaroInhg.textContent = inhgStr;
+      if (elBaroHeader) elBaroHeader.textContent = inhgStr;
+      if (elOvBaroHpa) {
+        elOvBaroHpa.textContent = `${Number(baro.pressure_hpa).toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
+      }
+      if (elOvBaroSource) {
+        elOvBaroSource.textContent =
+          baro.source === "rf_sensor"
+            ? "Source: Local 433 MHz Barometer"
+            : "Source: Regional Open-Meteo Barometer";
+      }
     } else {
-      elOvBaroInhg.textContent = "--.-- inHg";
-      elOvBaroHpa.textContent = "Awaiting barometric sync...";
+      if (elOvBaroInhg) elOvBaroInhg.textContent = "--.-- inHg";
+      if (elOvBaroHpa) elOvBaroHpa.textContent = "Awaiting barometric sync...";
     }
 
     // Outdoor Humidity & Dew Point + Feels Like
-    elOvOutRh.textContent =
-      out.humidity !== null && out.humidity !== undefined
-        ? `${Number(out.humidity).toFixed(0)}%`
-        : `--%`;
-    elOvOutDp.innerHTML =
-      out.dew_point_f !== null && out.dew_point_f !== undefined
-        ? `Dew Point: ${Number(out.dew_point_f).toFixed(1)}&deg;F (${Number(out.dew_point_c).toFixed(1)}&deg;C)`
-        : `Dew Point: --`;
-    elOvFeelsInline.innerHTML =
-      out.feels_like_f !== null && out.feels_like_f !== undefined
-        ? `Feels Like: ${Number(out.feels_like_f).toFixed(1)}&deg;F (${Number(out.feels_like_c).toFixed(1)}&deg;C)`
-        : `Feels Like: --`;
+    if (elOvOutRh) {
+      elOvOutRh.textContent =
+        out.humidity !== null && out.humidity !== undefined
+          ? `${Number(out.humidity).toFixed(0)}%`
+          : `--%`;
+    }
+    if (elOvOutDp) {
+      elOvOutDp.innerHTML =
+        out.dew_point_f !== null && out.dew_point_f !== undefined
+          ? `Dew Point: ${Number(out.dew_point_f).toFixed(1)}&deg;F (${Number(out.dew_point_c).toFixed(1)}&deg;C)`
+          : `Dew Point: --`;
+    }
+    if (elOvFeelsInline) {
+      elOvFeelsInline.innerHTML =
+        out.feels_like_f !== null && out.feels_like_f !== undefined
+          ? `Feels Like: ${Number(out.feels_like_f).toFixed(1)}&deg;F (${Number(out.feels_like_c).toFixed(1)}&deg;C)`
+          : `Feels Like: --`;
+    }
 
     // Rain & UV
-    elOvRain24h.textContent = `${Number(out.rain_24h_in || 0).toFixed(2)} in`;
-    elOvRainMm.textContent = `${Number(out.rain_24h_mm || 0).toFixed(1)} mm over last 24 hours`;
+    if (elOvRain24h) elOvRain24h.textContent = `${Number(out.rain_24h_in || 0).toFixed(2)} in`;
+    if (elOvRainMm) elOvRainMm.textContent = `${Number(out.rain_24h_mm || 0).toFixed(1)} mm over last 24 hours`;
     const uvStr =
       out.uv_index !== null && out.uv_index !== undefined ? `UV ${Number(out.uv_index).toFixed(1)}` : "UV 0.0";
     const luxStr =
       out.lux !== null && out.lux !== undefined ? `${Number(out.lux).toLocaleString()} lux` : "-- lux";
-    elOvUvInline.textContent = `Solar: ${uvStr} | ${luxStr}`;
+    if (elOvUvInline) elOvUvInline.textContent = `Solar: ${uvStr} | ${luxStr}`;
   }
 
   // ==========================================================================
@@ -822,15 +881,18 @@
   }
 
   function patchSensorGridInPlace() {
-    const showIgnored = elToggleIgnored.checked;
+    if (!elSensorGrid) return;
+    const showIgnored = elToggleIgnored ? elToggleIgnored.checked : false;
     const visibleSensors = sensorsCache.filter(
       (s) => showIgnored || (s.location_type !== "ignore" && s.is_trusted)
     );
 
-    if (visibleSensors.length === 0) {
-      elSensorEmpty.classList.remove("hidden");
-    } else {
-      elSensorEmpty.classList.add("hidden");
+    if (elSensorEmpty) {
+      if (visibleSensors.length === 0) {
+        elSensorEmpty.classList.remove("hidden");
+      } else {
+        elSensorEmpty.classList.add("hidden");
+      }
     }
 
     const visibleKeys = new Set(visibleSensors.map((s) => s.sensor_key));
@@ -925,38 +987,80 @@
 
   function updateChartFilterSummary() {
     if (!elFilterSummary) return;
-    const parts = [];
-    if (elFilterLocOutdoor && elFilterLocOutdoor.checked) parts.push("Outdoor (Trusted)");
-    if (elFilterLocIndoor && elFilterLocIndoor.checked) parts.push("Indoor (Trusted)");
-    if (elFilterLocReference && elFilterLocReference.checked) parts.push("Reference Baseline");
+    const outChecked = Boolean(elFilterLocOutdoor && elFilterLocOutdoor.checked);
+    const inChecked = Boolean(elFilterLocIndoor && elFilterLocIndoor.checked);
+    const refChecked = Boolean(elFilterLocReference && elFilterLocReference.checked);
+
     const sensorCheckboxes = elFilterSensorList
       ? Array.from(elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]'))
       : [];
-    if (sensorCheckboxes.length > 0) {
-      const checkedCount = sensorCheckboxes.filter((cb) => cb.checked).length;
-      if (checkedCount < sensorCheckboxes.length) {
-        parts.push(`${checkedCount}/${sensorCheckboxes.length} Stations`);
-      }
+    const checkedSensors = sensorCheckboxes.filter((cb) => cb.checked);
+
+    if (!outChecked && !inChecked && !refChecked && checkedSensors.length === 0) {
+      elFilterSummary.textContent = "No Streams Selected";
+      return;
     }
-    elFilterSummary.textContent = parts.length > 0 ? parts.join(" + ") : "No Streams Selected";
+
+    const parts = [];
+    if (outChecked && inChecked) {
+      parts.push("Outdoor + Indoor");
+    } else if (outChecked) {
+      parts.push("Outdoor (Trusted)");
+    } else if (inChecked) {
+      parts.push("Indoor (Trusted)");
+    }
+
+    if (refChecked) {
+      parts.push("Reference");
+    }
+
+    if (sensorCheckboxes.length > 0 && checkedSensors.length > 0 && checkedSensors.length < sensorCheckboxes.length) {
+      parts.push(`${checkedSensors.length} Station(s)`);
+    } else if (!outChecked && !inChecked && checkedSensors.length > 0) {
+      parts.push(`${checkedSensors.length} Streams Selected`);
+    }
+
+    const totalStreams = (outChecked ? 1 : 0) + (inChecked ? 1 : 0) + (refChecked ? 1 : 0);
+    if (totalStreams === 3 && checkedSensors.length === sensorCheckboxes.length) {
+      elFilterSummary.textContent = "3 Streams Selected";
+      return;
+    }
+
+    elFilterSummary.textContent = parts.length > 0 ? parts.join(" + ") : "Outdoor (Trusted)";
   }
 
-  function populateChartSensorCheckboxes() {
+  function populateChartSensorCheckboxes(syncFromCategory) {
     if (!elFilterSensorList) return;
     const includeOutdoor = elFilterLocOutdoor ? elFilterLocOutdoor.checked : true;
     const includeIndoor = elFilterLocIndoor ? elFilterLocIndoor.checked : false;
 
-    const trustedStations = sensorsCache.filter((s) => {
-      if (!s.is_trusted || s.location_type === "ignore") return false;
-      if (s.location_type === "outdoor" && includeOutdoor) return true;
-      if (s.location_type === "indoor" && includeIndoor) return true;
-      return false;
-    });
+    const trustedStations = sensorsCache.filter(
+      (s) => s.is_trusted && s.location_type !== "ignore"
+    );
 
     if (trustedStations.length === 0) {
-      elFilterSensorList.innerHTML = `<span class="text-muted">No matching trusted Outdoor/Indoor stations configured.</span>`;
+      elFilterSensorList.innerHTML = `<span class="text-muted">No trusted Outdoor/Indoor stations configured yet.</span>`;
       updateChartFilterSummary();
       return;
+    }
+
+    if (syncFromCategory) {
+      trustedStations.forEach((s) => {
+        if (s.location_type === "outdoor") {
+          if (includeOutdoor) uncheckedSensorKeys.delete(s.sensor_key);
+          else uncheckedSensorKeys.add(s.sensor_key);
+        } else if (s.location_type === "indoor") {
+          if (includeIndoor) uncheckedSensorKeys.delete(s.sensor_key);
+          else uncheckedSensorKeys.add(s.sensor_key);
+        }
+      });
+    } else {
+      trustedStations.forEach((s) => {
+        if (s.location_type === "indoor" && !includeIndoor && !uncheckedSensorKeys.has(s.sensor_key)) {
+          // By default indoor stations follow the indoor category checkbox unless explicitly checked
+          uncheckedSensorKeys.add(s.sensor_key);
+        }
+      });
     }
 
     const html = trustedStations
@@ -965,7 +1069,7 @@
         const locTag = s.location_type === "indoor" ? "IN" : "OUT";
         return `
           <label class="checkbox-label filter-item">
-            <input type="checkbox" name="chart_sensor_cb" value="${escapeHtml(s.sensor_key)}" ${isChecked ? "checked" : ""} />
+            <input type="checkbox" name="chart_sensor_cb" data-loc="${escapeHtml(s.location_type || "outdoor")}" value="${escapeHtml(s.sensor_key)}" ${isChecked ? "checked" : ""} />
             <span>[${locTag}] ${escapeHtml(s.display_name)}</span>
           </label>`;
       })
@@ -976,6 +1080,9 @@
       cb.addEventListener("change", () => {
         if (cb.checked) {
           uncheckedSensorKeys.delete(cb.value);
+          const loc = cb.getAttribute("data-loc");
+          if (loc === "outdoor" && elFilterLocOutdoor) elFilterLocOutdoor.checked = true;
+          if (loc === "indoor" && elFilterLocIndoor) elFilterLocIndoor.checked = true;
         } else {
           uncheckedSensorKeys.add(cb.value);
         }
@@ -988,9 +1095,9 @@
 
   async function fetchAndUpdateCharts() {
     if (typeof Chart === "undefined") return;
-    const hours = elChartHours.value || "24";
-    const bucket = elChartBucket.value || "auto";
-    const showEnsemble = elChartToggleEnsemble.checked;
+    const hours = elChartHours ? elChartHours.value || "24" : "24";
+    const bucket = elChartBucket ? elChartBucket.value || "auto" : "auto";
+    const showEnsemble = elChartToggleEnsemble ? elChartToggleEnsemble.checked : true;
 
     const locs = [];
     if (!elFilterLocOutdoor || elFilterLocOutdoor.checked) locs.push("outdoor");
@@ -1005,9 +1112,11 @@
 
     if (elFilterSensorList) {
       const allCbs = Array.from(elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]'));
-      if (allCbs.length > 0 && uncheckedSensorKeys.size > 0) {
+      if (allCbs.length > 0) {
         const activeKeys = allCbs.filter((cb) => cb.checked).map((cb) => cb.value);
-        params.set("sensors", activeKeys.join(","));
+        if (activeKeys.length < allCbs.length) {
+          params.set("sensors", activeKeys.join(","));
+        }
       }
     }
 
@@ -1023,8 +1132,12 @@
     const ensemble = data.ensemble || {};
     const reference = data.reference || {};
 
-    elChartMetaTemp.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals (Trusted only)`;
-    elChartMetaRh.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
+    if (elChartMetaTemp) {
+      elChartMetaTemp.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals (Trusted only)`;
+    }
+    if (elChartMetaRh) {
+      elChartMetaRh.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
+    }
 
     const tempDatasets = [];
     if (showEnsemble && Array.isArray(ensemble.temp_f) && ensemble.temp_f.some((v) => v !== null)) {
@@ -1227,6 +1340,7 @@
   // VIEW 4: RAW SQLITE TELEMETRY LOG EXPLORER
   // ==========================================================================
   function populateLogSensorDropdown() {
+    if (!elLogSensor) return;
     const currentVal = elLogSensor.value;
     const options = [`<option value="">All Registered Sensors</option>`];
     sensorsCache.forEach((s) => {
@@ -1244,9 +1358,10 @@
   }
 
   async function loadLogExplorerTable() {
-    const sensorKey = elLogSensor.value;
-    const hours = elLogHours.value || "24";
-    const limit = elLogLimit.value || "250";
+    if (!elLogTableBody) return;
+    const sensorKey = elLogSensor ? elLogSensor.value : "";
+    const hours = elLogHours ? elLogHours.value || "24" : "24";
+    const limit = elLogLimit ? elLogLimit.value || "250" : "250";
 
     const params = new URLSearchParams({ hours, limit });
     if (sensorKey) params.set("sensor_key", sensorKey);
@@ -1256,7 +1371,9 @@
     const data = await res.json();
     const rows = Array.isArray(data.readings) ? data.readings : [];
 
-    elLogSummary.textContent = `${rows.length} records loaded`;
+    if (elLogSummary) {
+      elLogSummary.textContent = `${rows.length} records loaded`;
+    }
     logsLoadedOnce = true;
 
     if (rows.length === 0) {
@@ -1320,34 +1437,36 @@
   // ==========================================================================
   function openSensorModal(sensorKey) {
     const sensor = sensorsCache.find((s) => s.sensor_key === sensorKey);
-    if (!sensor) return;
+    if (!sensor || !elModalBackdrop) return;
 
-    elModalSensorKey.value = sensor.sensor_key;
-    elModalSubtitle.textContent = `${sensor.model} #${sensor.sensor_id} (Key: ${sensor.sensor_key})`;
-    elModalAlias.value = sensor.alias || "";
+    if (elModalSensorKey) elModalSensorKey.value = sensor.sensor_key;
+    if (elModalSubtitle) {
+      elModalSubtitle.textContent = `${sensor.model} #${sensor.sensor_id} (Key: ${sensor.sensor_key})`;
+    }
+    if (elModalAlias) elModalAlias.value = sensor.alias || "";
     const curLoc = sensor.location_type === "unassigned" ? "ignore" : (sensor.location_type || "ignore");
-    elModalLocation.value = curLoc;
-    elModalTrusted.checked = Boolean(sensor.is_trusted);
-    elModalBattReset.checked = false;
-    elModalPurgeOutliers.checked = false;
+    if (elModalLocation) elModalLocation.value = curLoc;
+    if (elModalTrusted) elModalTrusted.checked = Boolean(sensor.is_trusted);
+    if (elModalBattReset) elModalBattReset.checked = false;
+    if (elModalPurgeOutliers) elModalPurgeOutliers.checked = false;
 
     const hiddenSet = new Set(sensor.hidden_metrics || []);
     document.querySelectorAll('input[name="vis_metric"]').forEach((cb) => {
       cb.checked = !hiddenSet.has(cb.value);
     });
 
-    elModalFeedback.classList.add("hidden");
+    if (elModalFeedback) elModalFeedback.classList.add("hidden");
     elModalBackdrop.classList.remove("hidden");
-    elModalAlias.focus();
+    if (elModalAlias) elModalAlias.focus();
   }
 
   function closeSensorModal() {
-    elModalBackdrop.classList.add("hidden");
+    if (elModalBackdrop) elModalBackdrop.classList.add("hidden");
   }
 
   async function handleSaveSensorModal(evt) {
     evt.preventDefault();
-    const sensorKey = elModalSensorKey.value;
+    const sensorKey = elModalSensorKey ? elModalSensorKey.value : "";
     if (!sensorKey) return;
 
     const hiddenMetrics = [];
@@ -1358,12 +1477,12 @@
     });
 
     const payload = {
-      alias: elModalAlias.value.trim(),
-      location_type: elModalLocation.value,
-      is_trusted: elModalTrusted.checked,
+      alias: elModalAlias ? elModalAlias.value.trim() : "",
+      location_type: elModalLocation ? elModalLocation.value : "ignore",
+      is_trusted: elModalTrusted ? elModalTrusted.checked : false,
       hidden_metrics: hiddenMetrics,
-      mark_battery_replaced: elModalBattReset.checked,
-      purge_sensor_outliers: elModalPurgeOutliers.checked,
+      mark_battery_replaced: elModalBattReset ? elModalBattReset.checked : false,
+      purge_sensor_outliers: elModalPurgeOutliers ? elModalPurgeOutliers.checked : false,
     };
 
     try {
@@ -1386,14 +1505,16 @@
       showToast(`Saved settings for ${data.sensor ? data.sensor.display_name : sensorKey}`);
       await refreshAll(true);
     } catch (err) {
-      elModalFeedback.textContent = err.message || "Failed to save sensor configuration.";
-      elModalFeedback.className = "form-feedback error";
-      elModalFeedback.classList.remove("hidden");
+      if (elModalFeedback) {
+        elModalFeedback.textContent = err.message || "Failed to save sensor configuration.";
+        elModalFeedback.className = "form-feedback error";
+        elModalFeedback.classList.remove("hidden");
+      }
     }
   }
 
   async function handlePurgeOutliersClick() {
-    elBtnPurgeOutliers.disabled = true;
+    if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = true;
     try {
       const res = await authorizedWriteFetch("/api/maintenance/purge-outliers", {
         method: "POST",
@@ -1409,7 +1530,7 @@
       showToast(err.message || "Failed to purge outliers.");
       console.error("Failed to purge outliers:", err);
     } finally {
-      elBtnPurgeOutliers.disabled = false;
+      if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = false;
     }
   }
 
@@ -1441,7 +1562,7 @@
   }
 
   async function handleSyncReferenceClick() {
-    elBtnSyncRef.disabled = true;
+    if (elBtnSyncRef) elBtnSyncRef.disabled = true;
     try {
       const res = await authorizedWriteFetch("/api/maintenance/sync-reference", {
         method: "POST",
@@ -1457,133 +1578,196 @@
       showToast(err.message || "Failed to sync regional barometer.");
       console.error("Failed to sync regional barometer:", err);
     } finally {
-      elBtnSyncRef.disabled = false;
+      if (elBtnSyncRef) elBtnSyncRef.disabled = false;
     }
   }
 
   // ==========================================================================
-  // POLLING & EVENT BINDINGS
+  // POLLING & EVENT BINDINGS (ISOLATED SUB-TASKS FOR CRASH-PROOF SYNC)
   // ==========================================================================
   async function refreshAll(forceActiveViewRefresh) {
-    elSyncDot.classList.add("syncing");
+    if (elSyncDot) elSyncDot.classList.add("syncing");
     try {
-      await Promise.all([fetchStatus(), fetchOverview(), fetchSensors()]);
+      await Promise.allSettled([
+        fetchStatus().catch((err) => console.error("SkyScry status fetch error:", err)),
+        fetchOverview().catch((err) => console.error("SkyScry overview fetch error:", err)),
+        fetchSensors().catch((err) => console.error("SkyScry sensors fetch error:", err)),
+      ]);
+
       if (activeTab === "charts" || forceActiveViewRefresh) {
-        await fetchAndUpdateCharts();
+        try {
+          await fetchAndUpdateCharts();
+        } catch (err) {
+          console.error("SkyScry charts fetch error:", err);
+        }
       }
       if ((activeTab === "logs" && !logsLoadedOnce) || forceActiveViewRefresh) {
-        await loadLogExplorerTable();
+        try {
+          await loadLogExplorerTable();
+        } catch (err) {
+          console.error("SkyScry logs fetch error:", err);
+        }
       }
       const now = new Date();
-      elLastSync.textContent = now.toTimeString().split(" ")[0];
+      if (elLastSync) {
+        elLastSync.textContent = now.toTimeString().split(" ")[0];
+      }
     } catch (err) {
       console.error("SkyScry telemetry sync error:", err);
     } finally {
-      setTimeout(() => elSyncDot.classList.remove("syncing"), 250);
+      setTimeout(() => {
+        if (elSyncDot) elSyncDot.classList.remove("syncing");
+      }, 250);
     }
   }
 
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".view-panel").forEach((p) => p.classList.remove("active"));
+  function initEventListenersAndStart() {
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".view-panel").forEach((p) => p.classList.remove("active"));
 
-      btn.classList.add("active");
-      activeTab = btn.getAttribute("data-tab");
-      const targetPanel = document.getElementById(`view-${activeTab}`);
-      if (targetPanel) targetPanel.classList.add("active");
+        btn.classList.add("active");
+        activeTab = btn.getAttribute("data-tab") || "overview";
+        const targetPanel = document.getElementById(`view-${activeTab}`);
+        if (targetPanel) targetPanel.classList.add("active");
 
-      if (activeTab === "charts") {
-        fetchAndUpdateCharts();
-      } else if (activeTab === "logs" && !logsLoadedOnce) {
-        loadLogExplorerTable();
-      }
+        if (activeTab === "charts") {
+          fetchAndUpdateCharts().catch((err) => console.error("Charts load error:", err));
+        } else if (activeTab === "logs" && !logsLoadedOnce) {
+          loadLogExplorerTable().catch((err) => console.error("Logs load error:", err));
+        }
+      });
     });
-  });
 
-  elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
-  elBtnRefresh.addEventListener("click", () => refreshAll(true));
-  if (elBtnTriggerUpdate) {
-    elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
-  }
-  elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
-  elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
+    if (elToggleIgnored) {
+      elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
+    }
+    if (elBtnRefresh) {
+      elBtnRefresh.addEventListener("click", () => refreshAll(true));
+    }
+    if (elBtnTriggerUpdate) {
+      elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
+    }
+    if (elBtnPurgeOutliers) {
+      elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
+    }
+    if (elBtnSyncRef) {
+      elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
+    }
 
-  elChartHours.addEventListener("change", fetchAndUpdateCharts);
-  elChartBucket.addEventListener("change", fetchAndUpdateCharts);
-  elChartToggleEnsemble.addEventListener("change", fetchAndUpdateCharts);
-
-  if (elFilterBtn && elFilterMenu) {
-    elFilterBtn.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      const isHidden = elFilterMenu.classList.toggle("hidden");
-      elFilterBtn.setAttribute("aria-expanded", String(!isHidden));
-    });
-    document.addEventListener("click", (evt) => {
-      if (elFilterDropdown && !elFilterDropdown.contains(evt.target)) {
-        elFilterMenu.classList.add("hidden");
-        elFilterBtn.setAttribute("aria-expanded", "false");
-      }
-    });
-  }
-
-  [elFilterLocOutdoor, elFilterLocIndoor, elFilterLocReference].forEach((cb) => {
-    if (cb) {
-      cb.addEventListener("change", () => {
-        populateChartSensorCheckboxes();
-        fetchAndUpdateCharts();
+    if (elChartHours) {
+      elChartHours.addEventListener("change", () => {
+        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
       });
     }
-  });
+    if (elChartBucket) {
+      elChartBucket.addEventListener("change", () => {
+        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
+      });
+    }
+    if (elChartToggleEnsemble) {
+      elChartToggleEnsemble.addEventListener("change", () => {
+        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
+      });
+    }
 
-  if (elModalLocation) {
-    elModalLocation.addEventListener("change", () => {
-      if (elModalLocation.value === "outdoor" || elModalLocation.value === "indoor") {
-        elModalTrusted.checked = true;
-      } else if (elModalLocation.value === "ignore") {
-        elModalTrusted.checked = false;
+    if (elFilterBtn && elFilterMenu) {
+      elFilterBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        const isHidden = elFilterMenu.classList.toggle("hidden");
+        elFilterBtn.setAttribute("aria-expanded", String(!isHidden));
+      });
+      document.addEventListener("click", (evt) => {
+        if (elFilterDropdown && !elFilterDropdown.contains(evt.target)) {
+          elFilterMenu.classList.add("hidden");
+          elFilterBtn.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
+
+    [elFilterLocOutdoor, elFilterLocIndoor, elFilterLocReference].forEach((cb) => {
+      if (cb) {
+        cb.addEventListener("change", () => {
+          populateChartSensorCheckboxes(true);
+          fetchAndUpdateCharts().catch((err) => console.error("Charts filter error:", err));
+        });
       }
     });
+
+    if (elModalLocation && elModalTrusted) {
+      elModalLocation.addEventListener("change", () => {
+        if (elModalLocation.value === "outdoor" || elModalLocation.value === "indoor") {
+          elModalTrusted.checked = true;
+        } else if (elModalLocation.value === "ignore") {
+          elModalTrusted.checked = false;
+        }
+      });
+    }
+
+    if (elBtnRunLogQuery) {
+      elBtnRunLogQuery.addEventListener("click", () => {
+        loadLogExplorerTable().catch((err) => console.error("Logs query error:", err));
+      });
+    }
+    if (elBtnExportCsv) {
+      elBtnExportCsv.addEventListener("click", () => {
+        const params = new URLSearchParams({
+          hours: elLogHours ? elLogHours.value || "24" : "24",
+          limit: elLogLimit ? elLogLimit.value || "500" : "500",
+          format: "csv",
+        });
+        if (elLogSensor && elLogSensor.value) params.set("sensor_key", elLogSensor.value);
+        window.location.href = `/api/readings?${params.toString()}`;
+      });
+    }
+    if (elBtnExportJson) {
+      elBtnExportJson.addEventListener("click", () => {
+        const params = new URLSearchParams({
+          hours: elLogHours ? elLogHours.value || "24" : "24",
+          limit: elLogLimit ? elLogLimit.value || "500" : "500",
+        });
+        if (elLogSensor && elLogSensor.value) params.set("sensor_key", elLogSensor.value);
+        window.open(`/api/readings?${params.toString()}`, "_blank");
+      });
+    }
+
+    if (elBtnCloseModal) elBtnCloseModal.addEventListener("click", closeSensorModal);
+    if (elBtnCancelModal) elBtnCancelModal.addEventListener("click", closeSensorModal);
+    if (elBtnClearAlias && elModalAlias) {
+      elBtnClearAlias.addEventListener("click", () => {
+        elModalAlias.value = "";
+        elModalAlias.focus();
+      });
+    }
+    if (elBtnMarkAppliance && elModalLocation && elModalTrusted && elModalPurgeOutliers && elModalForm) {
+      elBtnMarkAppliance.addEventListener("click", () => {
+        elModalLocation.value = "ignore";
+        elModalTrusted.checked = false;
+        elModalPurgeOutliers.checked = true;
+        elModalForm.requestSubmit();
+      });
+    }
+    if (elModalBackdrop) {
+      elModalBackdrop.addEventListener("click", (evt) => {
+        if (evt.target === elModalBackdrop) closeSensorModal();
+      });
+    }
+    if (elModalForm) {
+      elModalForm.addEventListener("submit", handleSaveSensorModal);
+    }
+
+    // Initial render
+    if (elHeroIcon) {
+      elHeroIcon.innerHTML = getAnimatedWeatherSvg("partly-cloudy-day");
+    }
+    refreshAll(false);
+    setInterval(() => refreshAll(false), POLL_INTERVAL_MS);
   }
 
-  elBtnRunLogQuery.addEventListener("click", loadLogExplorerTable);
-  elBtnExportCsv.addEventListener("click", () => {
-    const params = new URLSearchParams({
-      hours: elLogHours.value || "24",
-      limit: elLogLimit.value || "500",
-      format: "csv",
-    });
-    if (elLogSensor.value) params.set("sensor_key", elLogSensor.value);
-    window.location.href = `/api/readings?${params.toString()}`;
-  });
-  elBtnExportJson.addEventListener("click", () => {
-    const params = new URLSearchParams({
-      hours: elLogHours.value || "24",
-      limit: elLogLimit.value || "500",
-    });
-    if (elLogSensor.value) params.set("sensor_key", elLogSensor.value);
-    window.open(`/api/readings?${params.toString()}`, "_blank");
-  });
-
-  elBtnCloseModal.addEventListener("click", closeSensorModal);
-  elBtnCancelModal.addEventListener("click", closeSensorModal);
-  elBtnClearAlias.addEventListener("click", () => {
-    elModalAlias.value = "";
-    elModalAlias.focus();
-  });
-  elBtnMarkAppliance.addEventListener("click", () => {
-    elModalLocation.value = "ignore";
-    elModalTrusted.checked = false;
-    elModalPurgeOutliers.checked = true;
-    elModalForm.requestSubmit();
-  });
-  elModalBackdrop.addEventListener("click", (evt) => {
-    if (evt.target === elModalBackdrop) closeSensorModal();
-  });
-  elModalForm.addEventListener("submit", handleSaveSensorModal);
-
-  // Initial render
-  elHeroIcon.innerHTML = getAnimatedWeatherSvg("partly-cloudy-day");
-  refreshAll(false);
-  setInterval(() => refreshAll(false), POLL_INTERVAL_MS);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initEventListenersAndStart);
+  } else {
+    initEventListenersAndStart();
+  }
 })();

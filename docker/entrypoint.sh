@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SkyScry v0.0.8 - Smart Linux / TrueNAS SCALE Container Entrypoint
+# SkyScry v0.0.9 - Smart Linux / TrueNAS SCALE Container Entrypoint
 # ============================================================================
 set -e
 
 echo "============================================================================"
-echo "  SkyScry v0.0.8 - Container Startup & Hardware Pre-Flight"
+echo "  SkyScry v0.0.9 - Container Startup & Hardware Pre-Flight"
 echo "============================================================================"
 
 cd /app
@@ -16,16 +16,35 @@ if [ -f "/app/data/skyscry.db" ]; then
     python -c "import sqlite3; c=sqlite3.connect('/app/data/skyscry.db', timeout=5.0); c.execute('PRAGMA wal_checkpoint(TRUNCATE);'); c.close()" 2>/dev/null || true
 fi
 
-# 2. Optional Git & Python Dependency Self-Update on Container Restart
+# 2. Initialize in-place Git tracking & Optional Git + Python Dependency Self-Update
+REPO_URL="${SKYSCRY_REPO_URL:-https://github.com/Cave404/SkyScry.git}"
 AUTO_UPDATE="${AUTO_UPDATE_ON_START:-true}"
+
+if command -v git >/dev/null 2>&1; then
+    git config --global --add safe.directory "*" 2>/dev/null || true
+    if [ ! -d "/app/.git" ]; then
+        echo "[ENTRYPOINT] No /app/.git found; initializing in-place Git tracking from ${REPO_URL}..."
+        git init -b main 2>/dev/null || git init 2>/dev/null || true
+        git remote add origin "${REPO_URL}" 2>/dev/null || git remote set-url origin "${REPO_URL}" 2>/dev/null || true
+        if git fetch origin main --depth=1 2>/dev/null; then
+            git reset --mixed origin/main 2>/dev/null || true
+            git branch -M main 2>/dev/null || true
+            echo "[ENTRYPOINT] In-place Git repository linked to origin/main."
+        else
+            echo "[ENTRYPOINT] Notice: Could not reach GitHub during initial .git bootstrap; continuing offline."
+        fi
+    fi
+fi
+
 if [ "${AUTO_UPDATE}" = "true" ] || [ "${AUTO_UPDATE}" = "1" ]; then
     if [ -d "/app/.git" ] && command -v git >/dev/null 2>&1; then
         echo "[ENTRYPOINT] AUTO_UPDATE_ON_START=true: Checking GitHub (origin/main) for updates..."
-        git config --global --add safe.directory /app 2>/dev/null || true
-        if git pull --rebase --autostash origin main 2>/dev/null; then
-            echo "[ENTRYPOINT] Git repository synchronized with origin/main."
+        if git fetch origin main 2>/dev/null; then
+            if git pull --rebase --autostash origin main 2>/dev/null || git reset --hard origin/main 2>/dev/null; then
+                echo "[ENTRYPOINT] Git repository synchronized with origin/main ($(git rev-parse --short HEAD 2>/dev/null || echo 'latest'))."
+            fi
         else
-            echo "[ENTRYPOINT] Git pull skipped or offline; continuing with existing image build."
+            echo "[ENTRYPOINT] Git fetch skipped or offline; continuing with existing image build."
         fi
     fi
 

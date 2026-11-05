@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SkyScry v{{ version }} | 433.92 MHz Microclimate Telemetry Console</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ version }}" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -283,7 +283,7 @@
               </label>
               <label class="checkbox-label filter-item">
                 <input type="checkbox" id="filter-loc-reference" value="reference" />
-                <span>Reference / Regional Weather Baseline</span>
+                <span>Regional Reference Baseline</span>
               </label>
               <div class="filter-divider"></div>
               <div class="filter-section-title">Active Trusted Stations</div>
@@ -553,6 +553,6 @@
     </div>
   </div>
 
-  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}?v={{ version }}"></script>
 </body>
 </html>

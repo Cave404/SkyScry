@@ -31,6 +31,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 LAST_DEP_CHECK_FILE = DATA_DIR / ".last_dep_check"
 RTL433_VERSION_FILE = PROJECT_ROOT / ".rtl_433_version"
+REPO_URL = os.environ.get("SKYSCRY_REPO_URL", "https://github.com/Cave404/SkyScry.git")
 
 
 def _checkpoint_sqlite_wal() -> None:
@@ -77,11 +78,112 @@ def _warn(msg: str) -> None:
     print(f"{ts} | WARNING | [UPDATER] {msg}", flush=True)
 
 
+def _ensure_git_safe_directory(git_bin: str) -> None:
+    """Configure global safe.directory so Docker container root ownership never triggers dubious ownership."""
+    try:
+        subprocess.run(
+            [git_bin, "config", "--global", "--add", "safe.directory", "*"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def ensure_git_repo_initialized() -> bool:
+    """Ensure `.git` exists in `PROJECT_ROOT`, initializing it in-place from GitHub if running in a Docker image without `.git`."""
+    git_bin = shutil.which("git")
+    if not git_bin:
+        return False
+
+    _ensure_git_safe_directory(git_bin)
+    git_dir = PROJECT_ROOT / ".git"
+    if git_dir.exists():
+        return True
+
+    _log(f"No .git metadata found in {PROJECT_ROOT}; initializing in-place Git tracking from {REPO_URL}...")
+    try:
+        init_res = subprocess.run(
+            [git_bin, "init", "-b", "main"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+        if init_res.returncode != 0:
+            subprocess.run(
+                [git_bin, "init"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+
+        subprocess.run(
+            [git_bin, "remote", "add", "origin", REPO_URL],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+            check=False,
+        )
+        subprocess.run(
+            [git_bin, "remote", "set-url", "origin", REPO_URL],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+            check=False,
+        )
+
+        fetch_res = subprocess.run(
+            [git_bin, "fetch", "origin", "main", "--depth=1"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=12.0,
+            check=False,
+        )
+        if fetch_res.returncode == 0:
+            subprocess.run(
+                [git_bin, "reset", "--mixed", "origin/main"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=6.0,
+                check=False,
+            )
+            subprocess.run(
+                [git_bin, "branch", "-M", "main"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=4.0,
+                check=False,
+            )
+            _log("In-place Git repository initialized and synchronized with origin/main.")
+            return True
+    except Exception as exc:
+        _warn(f"In-place Git initialization skipped: {exc}")
+    return git_dir.exists()
+
+
 def get_git_commit_info() -> dict[str, Optional[str]]:
     """Return current local short Git commit hash and branch using standard-library subprocess."""
     git_dir = PROJECT_ROOT / ".git"
     git_bin = shutil.which("git")
-    if not git_dir.exists() or not git_bin:
+    if not git_bin:
+        return {"commit_short": None, "branch": None, "remote_commit_short": None}
+
+    _ensure_git_safe_directory(git_bin)
+    if not git_dir.exists():
+        ensure_git_repo_initialized()
+    if not git_dir.exists():
         return {"commit_short": None, "branch": None, "remote_commit_short": None}
 
     commit_short: Optional[str] = None
@@ -132,10 +234,12 @@ def get_git_commit_info() -> dict[str, Optional[str]]:
 
 def check_and_apply_git_update() -> dict[str, Any]:
     """Fetch `origin/main` with an 8s timeout and pull if local HEAD is behind upstream."""
-    git_dir = PROJECT_ROOT / ".git"
     git_bin = shutil.which("git")
-    if not git_dir.exists() or not git_bin:
+    if not git_bin:
         return {"updated": False, "reason": "git_unavailable"}
+
+    if not ensure_git_repo_initialized():
+        return {"updated": False, "reason": "git_init_failed"}
 
     try:
         fetch_res = subprocess.run(
@@ -167,10 +271,13 @@ def check_and_apply_git_update() -> dict[str, Any]:
             check=False,
         ).stdout.strip()
 
-        if not local_head or not remote_head or local_head == remote_head:
+        if not remote_head:
+            return {"updated": False, "reason": "no_remote_head"}
+
+        if local_head == remote_head:
             return {"updated": False, "local_head": local_head[:7], "remote_head": remote_head[:7]}
 
-        # Check if local is behind origin/main
+        # Check if local is behind origin/main (or if HEAD was freshly initialized)
         behind_res = subprocess.run(
             [git_bin, "rev-list", "--count", "HEAD..origin/main"],
             cwd=str(PROJECT_ROOT),
@@ -179,8 +286,8 @@ def check_and_apply_git_update() -> dict[str, Any]:
             timeout=4.0,
             check=False,
         )
-        behind_count = int(behind_res.stdout.strip() or "0") if behind_res.returncode == 0 else 0
-        if behind_count <= 0:
+        behind_count = int(behind_res.stdout.strip() or "0") if behind_res.returncode == 0 else 1
+        if behind_count <= 0 and local_head:
             return {"updated": False, "local_head": local_head[:7], "remote_head": remote_head[:7]}
 
         _log(
@@ -194,15 +301,25 @@ def check_and_apply_git_update() -> dict[str, Any]:
             timeout=20.0,
             check=False,
         )
+        if pull_res.returncode != 0:
+            # Fallback for shallow/in-place initialized Docker working tree (never touches untracked /app/data or /app/config)
+            pull_res = subprocess.run(
+                [git_bin, "reset", "--hard", "origin/main"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+                check=False,
+            )
         if pull_res.returncode == 0:
             _log(f"Successfully updated repository to {remote_head[:7]}.")
             return {
                 "updated": True,
-                "previous_head": local_head[:7],
+                "previous_head": local_head[:7] if local_head else "init",
                 "new_head": remote_head[:7],
                 "commits_pulled": behind_count,
             }
-        _warn(f"git pull returned non-zero ({pull_res.returncode}): {pull_res.stderr.strip()[:160]}")
+        _warn(f"git update returned non-zero ({pull_res.returncode}): {pull_res.stderr.strip()[:160]}")
         return {"updated": False, "reason": "pull_failed"}
     except subprocess.TimeoutExpired:
         _warn("GitHub update check timed out after 8s; continuing with local build.")

@@ -1,6 +1,6 @@
-# TrueNAS SCALE & Cloudflare Tunnel Deployment Guide (`v0.0.8`)
+# TrueNAS SCALE & Cloudflare Tunnel Deployment Guide (`v0.0.9`)
 
-This guide walks through deploying **SkyScry (`v0.0.8`)** on **TrueNAS SCALE** (Electric Eel `24.10+` or Dragonfish) as a self-updating Docker Compose application with direct **NooElec / RTL2832U RTL-SDR USB passthrough**, automated **Watchtower** GHCR updates, and zero-port HTTPS access via **Cloudflare Tunnel (`cloudflared`)**.
+This guide walks through deploying **SkyScry (`v0.0.9`)** on **TrueNAS SCALE** (Electric Eel `24.10+` or Dragonfish) as a self-updating Docker Compose application with direct **NooElec / RTL2832U RTL-SDR USB passthrough**, automated **Watchtower** GHCR updates, and zero-port HTTPS access via **Cloudflare Tunnel (`cloudflared`)**.
 
 ---
 

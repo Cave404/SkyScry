@@ -760,28 +760,35 @@ input[type="text"]:focus {
 }
 
 .multi-filter-btn {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
+  background-color: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
   border-radius: 6px;
   padding: 8px 12px;
+  min-height: 37px;
   font-size: 13px;
+  font-weight: 500;
   font-family: var(--font-sans);
   display: flex;
   justify-content: space-between;
   align-items: center;
   cursor: pointer;
   text-align: left;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .multi-filter-btn:hover,
 .multi-filter-btn:focus {
+  background-color: #1e293b;
   border-color: var(--border-highlight);
 }
 
 .dropdown-caret {
-  color: var(--text-secondary);
+  color: #94a3b8;
   font-size: 11px;
   margin-left: 8px;
 }
@@ -790,18 +797,19 @@ input[type="text"]:focus {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  width: 320px;
-  max-height: 360px;
-  overflow-y: auto;
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-highlight);
+  z-index: 100;
+  background-color: #1e293b;
+  border: 1px solid #334155;
   border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.65);
-  z-index: 200;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  padding: 10px;
+  min-width: 260px;
+  width: 100%;
+  max-height: 320px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .filter-section-title {
@@ -809,30 +817,32 @@ input[type="text"]:focus {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-muted);
-  margin-bottom: 2px;
+  color: #94a3b8;
+  padding: 2px 4px;
 }
 
 .filter-item {
-  padding: 3px 4px;
-  border-radius: 4px;
-  color: var(--text-primary);
+  padding: 5px 6px;
+  border-radius: 5px;
+  color: #f8fafc;
+  width: 100%;
+  transition: background-color 0.12s ease;
 }
 
 .filter-item:hover {
-  background-color: var(--bg-elevated);
+  background-color: rgba(59, 130, 246, 0.14);
 }
 
 .filter-divider {
   height: 1px;
-  background-color: var(--border-color);
+  background-color: #334155;
   margin: 4px 0;
 }
 
 .filter-sensor-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 /* ==========================================================================

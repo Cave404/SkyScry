@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.8)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.9)."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ def create_app(
         static_folder="static",
     )
     app.config["JSON_SORT_KEYS"] = False
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     # Wrap WSGI app with ProxyFix so Cloudflare Tunnel (cloudflared) and reverse
     # proxies pass accurate client IPs (X-Forwarded-For), HTTPS scheme, and host.
