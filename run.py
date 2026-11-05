@@ -128,6 +128,14 @@ def format_reading_summary(
     if reading.lux is not None:
         metrics.append(f"Light: {reading.lux:.0f} lux")
 
+    if reading.snr is not None or reading.rssi is not None:
+        rf_parts: list[str] = []
+        if reading.rssi is not None:
+            rf_parts.append(f"RSSI {reading.rssi:.1f}dB")
+        if reading.snr is not None:
+            rf_parts.append(f"SNR {reading.snr:.1f}dB")
+        metrics.append(f"RF: {'/'.join(rf_parts)} ({reading.signal_quality})")
+
     if reading.battery_ok is not None:
         metrics.append("Batt: OK" if reading.battery_ok else "Batt: LOW")
 

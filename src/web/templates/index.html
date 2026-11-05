@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SkyScry v{{ version }} | 433.92 MHz Telemetry Console</title>
+  <title>SkyScry v{{ version }} | 433.92 MHz Microclimate Telemetry Console</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -13,7 +13,7 @@
       <div class="brand-mark">SS</div>
       <div>
         <div class="brand-title">SkyScry <span class="version-badge">v{{ version }}</span></div>
-        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry &amp; Weather Ingestion Daemon</div>
+        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry &amp; Local Weather Synthesis</div>
       </div>
     </div>
 
@@ -51,43 +51,259 @@
   <div id="sdr-error-banner" class="alert-banner hidden"></div>
 
   <main class="container">
-    <div class="nav-bar">
+    <nav class="nav-bar" aria-label="Main Views">
       <div class="tabs" role="tablist">
-        <button class="tab-btn active" data-tab="live-grid" role="tab">Live Sensor Grid</button>
-        <button class="tab-btn" data-tab="history-explorer" role="tab">Historical Telemetry &amp; DB Explorer</button>
+        <button class="tab-btn active" data-tab="overview" role="tab">1. Overview Dashboard</button>
+        <button class="tab-btn" data-tab="charts" role="tab">2. Historical Charts</button>
+        <button class="tab-btn" data-tab="sensors" role="tab">3. Sensors Manager</button>
+        <button class="tab-btn" data-tab="logs" role="tab">4. SQLite Log Explorer</button>
       </div>
 
       <div class="toolbar-controls">
+        <button id="btn-refresh-now" class="btn btn-secondary" type="button">Sync Now</button>
+      </div>
+    </nav>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 1: MAIN OVERVIEW DASHBOARD                                    -->
+    <!-- ================================================================== -->
+    <section id="view-overview" class="view-panel active">
+      <div class="overview-top-grid">
+        <!-- Hero Weather Condition & Animated SVG Card -->
+        <div class="hero-weather-card card">
+          <div class="hero-main">
+            <div id="hero-weather-icon" class="weather-icon-stage" aria-hidden="true"></div>
+            <div class="hero-temp-block">
+              <div class="hero-eyebrow">ESTIMATED LOCAL OUTDOOR CONDITION</div>
+              <div id="ov-condition-label" class="hero-condition-title">Synthesizing Telemetry...</div>
+              <div class="hero-temp-row">
+                <span id="ov-out-temp-f" class="hero-temp-primary">--.-&deg;F</span>
+                <span id="ov-out-temp-c" class="hero-temp-secondary">(--.-&deg;C)</span>
+              </div>
+              <div id="ov-out-spread" class="hero-spread-sub">Outdoor ensemble across -- station(s)</div>
+            </div>
+          </div>
+
+          <div class="hero-nowcast-box">
+            <div class="nowcast-header">
+              <span class="nowcast-title">LOCAL MICROCLIMATE NOWCAST &amp; TRENDS</span>
+              <div id="ov-trend-badges" class="trend-badge-row"></div>
+            </div>
+            <p id="ov-nowcast-text" class="nowcast-text">
+              Analyzing 1-hour and 3-hour telemetry deltas across trusted outdoor sensors...
+            </p>
+          </div>
+        </div>
+
+        <!-- Compact Indoor Summary & Quick Station Health -->
+        <div class="overview-side-stack">
+          <div class="indoor-summary-card card">
+            <div class="card-header">
+              <h3>Indoor Microclimate Summary</h3>
+              <span id="ov-in-count" class="badge">-- stations</span>
+            </div>
+            <div class="indoor-metrics-row">
+              <div class="indoor-stat">
+                <span class="metric-label">INDOOR TEMP</span>
+                <span id="ov-in-temp" class="indoor-val">--.-&deg;F</span>
+                <span id="ov-in-temp-c" class="metric-sub">--.-&deg;C</span>
+              </div>
+              <div class="indoor-stat">
+                <span class="metric-label">INDOOR HUMIDITY</span>
+                <span id="ov-in-rh" class="indoor-val">--%</span>
+                <span id="ov-in-comfort" class="metric-sub">--</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="quick-deltas-card card">
+            <div class="card-header">
+              <h3>Atmospheric Deltas</h3>
+              <span class="text-muted">SQLite History</span>
+            </div>
+            <div class="delta-grid">
+              <div class="delta-item">
+                <span class="metric-label">1H TEMP DELTA</span>
+                <span id="ov-delta-1h-temp" class="delta-val">--</span>
+              </div>
+              <div class="delta-item">
+                <span class="metric-label">3H TEMP DELTA</span>
+                <span id="ov-delta-3h-temp" class="delta-val">--</span>
+              </div>
+              <div class="delta-item">
+                <span class="metric-label">1H RH DELTA</span>
+                <span id="ov-delta-1h-rh" class="delta-val">--</span>
+              </div>
+              <div class="delta-item">
+                <span class="metric-label">DEW SPREAD</span>
+                <span id="ov-dew-spread" class="delta-val">--</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Synthesized Outdoor Ensemble Metric Tiles -->
+      <div class="ensemble-kpi-grid">
+        <div class="kpi-tile card">
+          <span class="metric-label">OUTDOOR HUMIDITY</span>
+          <div id="ov-out-rh" class="kpi-primary">--%</div>
+          <div id="ov-out-dp" class="kpi-sub">Dew Point: --.-&deg;F (--.-&deg;C)</div>
+        </div>
+
+        <div class="kpi-tile card">
+          <span class="metric-label">FEELS LIKE (APPARENT)</span>
+          <div id="ov-feels-f" class="kpi-primary">--.-&deg;F</div>
+          <div id="ov-feels-c" class="kpi-sub">Heat Index / Wind Chill: --.-&deg;C</div>
+        </div>
+
+        <div class="kpi-tile card">
+          <span class="metric-label">WIND SPEED &amp; COMPASS</span>
+          <div id="ov-wind-speed" class="kpi-primary">-- mph</div>
+          <div id="ov-wind-sub" class="kpi-sub">Gust: -- mph | Dir: --</div>
+        </div>
+
+        <div class="kpi-tile card">
+          <span class="metric-label">24H RAIN ACCUMULATION</span>
+          <div id="ov-rain-24h" class="kpi-primary">0.00 in</div>
+          <div id="ov-rain-mm" class="kpi-sub">0.0 mm over last 24 hours</div>
+        </div>
+
+        <div class="kpi-tile card">
+          <span class="metric-label">SOLAR / UV &amp; LIGHT</span>
+          <div id="ov-uv-lux" class="kpi-primary">UV --</div>
+          <div id="ov-lux-sub" class="kpi-sub">Illuminance: -- lux</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 2: HISTORICAL CHARTS (MULTI-SECTION CROSS-ANALYSIS)           -->
+    <!-- ================================================================== -->
+    <section id="view-charts" class="view-panel">
+      <div class="explorer-controls card">
+        <div class="control-group">
+          <label for="chart-hours-select">Time Window</label>
+          <select id="chart-hours-select">
+            <option value="1">Last 1 Hour (1m buckets)</option>
+            <option value="6">Last 6 Hours (5m buckets)</option>
+            <option value="24" selected>Last 24 Hours (15m buckets)</option>
+            <option value="72">Last 3 Days (1h buckets)</option>
+            <option value="168">Last 7 Days (1h buckets)</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="chart-location-select">Location Filter</label>
+          <select id="chart-location-select">
+            <option value="outdoor" selected>Outdoor &amp; Unassigned</option>
+            <option value="indoor">Indoor Only</option>
+            <option value="all">All Active Sensors</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="chart-bucket-select">Smoothing Bucket</label>
+          <select id="chart-bucket-select">
+            <option value="auto" selected>Auto-Bucket (Recommended)</option>
+            <option value="1">1 Minute</option>
+            <option value="5">5 Minutes</option>
+            <option value="15">15 Minutes</option>
+            <option value="60">60 Minutes</option>
+          </select>
+        </div>
+
+        <div class="control-actions">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chart-toggle-ensemble" checked />
+            <span>Show Dashed Outdoor Average Line</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="stacked-charts-grid">
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>1. Temperature Cross-Analysis (&deg;F)</h3>
+            <span id="chart-meta-temp" class="text-muted">Time-bucketed mean</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-temp"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>2. Relative Humidity Cross-Analysis (%)</h3>
+            <span id="chart-meta-rh" class="text-muted">Time-bucketed mean</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-rh"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>3. Wind Speed &amp; Peak Gusts (mph)</h3>
+            <span class="text-muted">Solid: Avg Wind | Dashed: Peak Gust</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-wind"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>4. Rainfall Accumulation in Window (in)</h3>
+            <span class="text-muted">Relative accumulation across selected window</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-rain"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 3: DEDICATED SENSORS MANAGEMENT PAGE                          -->
+    <!-- ================================================================== -->
+    <section id="view-sensors" class="view-panel">
+      <div class="sensors-Subheader card">
+        <div>
+          <h3>Registered 433.92 MHz Sensor Fleet</h3>
+          <p class="text-muted">
+            Cards are locked in deterministic alphabetical order and update in place without DOM reflow. Configure aliases, location types, battery replacements, and per-sensor visible metrics.
+          </p>
+        </div>
         <label class="checkbox-label">
           <input type="checkbox" id="toggle-show-ignored" />
           <span>Show Ignored Sensors</span>
         </label>
-        <button id="btn-refresh-now" class="btn btn-secondary" type="button">Refresh Now</button>
       </div>
-    </div>
 
-    <!-- TAB 1: LIVE SENSOR GRID -->
-    <section id="tab-live-grid" class="tab-panel active">
       <div id="sensor-grid-empty" class="empty-state hidden">
         <h3>No 433.92 MHz Sensors Discovered Yet</h3>
-        <p>Listening for incoming RF bursts via <code>rtl_433</code>. Discovered stations will automatically register here with default hardware identifiers (<code>{model} #{sensor_id}</code>).</p>
+        <p>Listening for incoming RF bursts via <code>rtl_433 -M time:utc -M level</code>. Discovered stations will automatically register here as <code>{model} #{sensor_id}</code>.</p>
       </div>
+
       <div id="sensor-grid" class="sensor-grid"></div>
     </section>
 
-    <!-- TAB 2: HISTORICAL TELEMETRY & DB EXPLORER -->
-    <section id="tab-history-explorer" class="tab-panel">
+    <!-- ================================================================== -->
+    <!-- VIEW 4: RAW SQLITE TELEMETRY LOG EXPLORER                          -->
+    <!-- ================================================================== -->
+    <section id="view-logs" class="view-panel">
       <div class="explorer-controls card">
         <div class="control-group">
-          <label for="history-sensor-select">Sensor Filter</label>
-          <select id="history-sensor-select">
+          <label for="log-sensor-select">Sensor Filter</label>
+          <select id="log-sensor-select">
             <option value="">All Registered Sensors</option>
           </select>
         </div>
 
         <div class="control-group">
-          <label for="history-hours-select">Time Window</label>
-          <select id="history-hours-select">
+          <label for="log-hours-select">Time Window</label>
+          <select id="log-hours-select">
             <option value="1">Last 1 Hour</option>
             <option value="6">Last 6 Hours</option>
             <option value="24" selected>Last 24 Hours</option>
@@ -97,65 +313,46 @@
         </div>
 
         <div class="control-group">
-          <label for="history-metric-select">Chart Metric</label>
-          <select id="history-metric-select">
-            <option value="temp_f" selected>Temperature (deg F)</option>
-            <option value="temp_c">Temperature (deg C)</option>
-            <option value="humidity">Relative Humidity (%)</option>
-            <option value="wind_avg_mph">Wind Avg (mph)</option>
-            <option value="rain_cumulative_in">Cumulative Rain (in)</option>
-            <option value="pressure_hpa">Pressure (hPa)</option>
-          </select>
-        </div>
-
-        <div class="control-group">
-          <label for="history-limit-select">Row Limit</label>
-          <select id="history-limit-select">
+          <label for="log-limit-select">Row Limit</label>
+          <select id="log-limit-select">
             <option value="100">100 rows</option>
             <option value="250" selected>250 rows</option>
             <option value="500">500 rows</option>
+            <option value="1000">1000 rows</option>
           </select>
         </div>
 
         <div class="control-actions">
-          <button id="btn-run-query" class="btn btn-primary" type="button">Load Telemetry</button>
-        </div>
-      </div>
-
-      <div class="chart-card card">
-        <div class="card-header">
-          <h3 id="chart-title">Time-Series Telemetry</h3>
-          <span id="history-record-summary" class="text-muted">0 records loaded</span>
-        </div>
-        <div class="chart-wrapper">
-          <canvas id="telemetry-chart"></canvas>
+          <button id="btn-run-log-query" class="btn btn-primary" type="button">Filter Logs</button>
+          <button id="btn-export-csv" class="btn btn-secondary" type="button">Export CSV</button>
+          <button id="btn-export-json" class="btn btn-secondary" type="button">Export JSON</button>
         </div>
       </div>
 
       <div class="table-card card">
         <div class="card-header">
-          <h3>SQLite Reading Log</h3>
-          <span class="text-muted">Ordered newest to oldest (UTC)</span>
+          <h3>SQLite Telemetry Packet Inspector</h3>
+          <span id="log-record-summary" class="text-muted">0 records loaded</span>
         </div>
         <div class="table-responsive">
           <table class="data-table">
             <thead>
               <tr>
-                <th>Timestamp (UTC)</th>
+                <th>Local Time</th>
+                <th>UTC ISO-8601</th>
                 <th>Sensor Display Name</th>
-                <th>Hardware Key</th>
                 <th>Loc</th>
                 <th>Temp (F / C)</th>
-                <th>RH</th>
+                <th>RH / DewPt</th>
                 <th>Wind (mph / dir)</th>
                 <th>Rain (in / mm)</th>
-                <th>UV / Lux</th>
+                <th>RF (RSSI / SNR / Noise)</th>
                 <th>Batt</th>
               </tr>
             </thead>
-            <tbody id="history-table-body">
+            <tbody id="log-table-body">
               <tr>
-                <td colspan="10" class="text-center text-muted">No readings loaded.</td>
+                <td colspan="10" class="text-center text-muted">No telemetry records loaded.</td>
               </tr>
             </tbody>
           </table>
@@ -164,12 +361,14 @@
     </section>
   </main>
 
-  <!-- INLINE SENSOR CONFIGURATION MODAL -->
+  <!-- ================================================================== -->
+  <!-- SENSOR CONFIGURATION MODAL (ALIAS, LOCATION, METRIC MASKING, BATT) -->
+  <!-- ================================================================== -->
   <div id="sensor-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-card">
       <div class="modal-header">
         <div>
-          <h3 id="modal-title">Configure Sensor Metadata</h3>
+          <h3 id="modal-title">Configure Sensor Metadata &amp; Visible Metrics</h3>
           <div id="modal-subtitle" class="modal-subtitle">--</div>
         </div>
         <button id="btn-close-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
@@ -192,17 +391,51 @@
         <div class="form-group">
           <label for="modal-location-select">Location Classification</label>
           <select id="modal-location-select">
-            <option value="unassigned">Unassigned</option>
-            <option value="indoor">Indoor</option>
+            <option value="unassigned">Unassigned (Included in Outdoor fallback)</option>
             <option value="outdoor">Outdoor</option>
-            <option value="ignore">Ignore (Hide from default grid)</option>
+            <option value="indoor">Indoor</option>
+            <option value="ignore">Ignore (Hide entire sensor)</option>
           </select>
+        </div>
+
+        <div class="form-group">
+          <label>Visible Metrics (Uncheck to hide broken/unused sub-sensors)</label>
+          <div class="metrics-checkbox-grid">
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="temperature" checked />
+              <span>Temperature</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="humidity" checked />
+              <span>Humidity</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="wind" checked />
+              <span>Wind Speed &amp; Dir</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="rain" checked />
+              <span>Rainfall</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="uv_light" checked />
+              <span>UV / Light</span>
+            </label>
+          </div>
+          <small class="form-hint">Unchecked metrics are hidden on this sensor's card and excluded from charts and weather calculations.</small>
         </div>
 
         <div class="form-group">
           <label class="checkbox-label">
             <input type="checkbox" id="modal-trusted-checkbox" />
-            <span>Trusted Station (Include in local microclimate modeling)</span>
+            <span>Trusted Station (Include visible metrics in local weather synthesis)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-battery-reset-checkbox" />
+            <span>Mark Battery Replaced Today (Resets "Days on current battery" counter to 0d)</span>
           </label>
         </div>
 
@@ -222,4 +455,3 @@
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>
-

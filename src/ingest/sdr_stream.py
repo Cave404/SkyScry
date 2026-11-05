@@ -60,7 +60,7 @@ class SDRStream:
         return resolved
 
     def build_command(self) -> list[str]:
-        """Construct the command-line invocation for `rtl_433`."""
+        """Construct the command-line invocation for `rtl_433` with UTC timestamps and RF signal levels."""
         binary = self.resolve_binary()
         cmd = [
             binary,
@@ -68,6 +68,10 @@ class SDRStream:
             self.config.frequency,
             "-d",
             str(self.config.device_index),
+            "-M",
+            "time:utc",
+            "-M",
+            "level",
             "-F",
             "json",
         ]

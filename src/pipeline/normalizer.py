@@ -153,19 +153,36 @@ class PacketNormalizer:
 
     @staticmethod
     def _parse_timestamp(raw_time: Any) -> datetime:
-        """Parse rtl_433 timestamp string into a timezone-aware UTC datetime."""
+        """Parse rtl_433 timestamp string into a strict timezone-aware UTC datetime.
+
+        We always compare against `datetime.now(timezone.utc)` so that if `rtl_433`
+        was invoked without `-M time:utc` (emitting naive local wall-clock time),
+        or if clock skew exists, ingestion timestamps never drift by the host's
+        UTC offset (e.g., 6 hours in CST).
+        """
+        now_utc = datetime.now(timezone.utc)
         if isinstance(raw_time, str) and raw_time.strip():
             cleaned = raw_time.strip()
             if cleaned.endswith("Z"):
                 cleaned = cleaned[:-1] + "+00:00"
             try:
                 dt = datetime.fromisoformat(cleaned)
-                if dt.tzinfo is None:
-                    return dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc)
+                if dt.tzinfo is not None:
+                    dt_utc = dt.astimezone(timezone.utc)
+                else:
+                    # Naive string: check whether treating it as UTC matches real-time UTC
+                    candidate_utc = dt.replace(tzinfo=timezone.utc)
+                    if abs((now_utc - candidate_utc).total_seconds()) <= 120.0:
+                        dt_utc = candidate_utc
+                    else:
+                        # Naive local timestamp from rtl_433; convert local -> UTC
+                        dt_utc = dt.astimezone().astimezone(timezone.utc)
+
+                if abs((now_utc - dt_utc).total_seconds()) <= 300.0:
+                    return dt_utc.replace(microsecond=0)
             except ValueError:
                 pass
-        return datetime.now(timezone.utc)
+        return now_utc.replace(microsecond=0)
 
     @staticmethod
     def _normalize_battery(raw_battery: Any) -> Optional[bool]:
@@ -320,6 +337,10 @@ class PacketNormalizer:
 
         canonical_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
+        rssi_val = _to_float(payload.get("rssi"))
+        snr_val = _to_float(payload.get("snr"))
+        noise_val = _to_float(payload.get("noise"))
+
         return NormalizedReading(
             timestamp=self._parse_timestamp(payload.get("time")),
             sensor_id=sensor_id,
@@ -336,7 +357,9 @@ class PacketNormalizer:
             rain_rate_mm_h=self._normalize_rain_rate_mm_h(payload),
             uv_index=_to_float(payload.get("uv", payload.get("uvi", payload.get("uv_index")))),
             lux=_to_float(payload.get("light_lux", payload.get("lux"))),
-            rssi=_to_float(payload.get("rssi", payload.get("snr"))),
+            rssi=round(rssi_val, 2) if rssi_val is not None else None,
+            snr=round(snr_val, 2) if snr_val is not None else None,
+            noise=round(noise_val, 2) if noise_val is not None else None,
             raw_json=canonical_json,
         )
 

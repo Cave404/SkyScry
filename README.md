@@ -1,23 +1,23 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-**SkyScry** is an open-source, cross-platform **433.92 MHz microclimate telemetry and weather ingestion daemon** with a hosted dark-mode WebUI, REST API, and SQLite Write-Ahead Logging (`WAL`) storage engine.
+**SkyScry** is an open-source, cross-platform **433.92 MHz microclimate telemetry and weather ingestion daemon** with a hosted 4-view dark-mode WebUI, local weather synthesis & nowcasting engine, REST API, and SQLite Write-Ahead Logging (`WAL`) storage engine.
 
-It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations via an RTL-SDR dongle and `rtl_433`, filters out non-meteorological RF chatter (such as tire pressure sensors and keyfobs), deduplicates redundant multi-frame RF bursts using a sliding window, normalizes all measurements into standardized SI units (with computed imperial and 16-point compass properties), and auto-registers discovered stations in a persistent SQLite device registry.
+It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations via an RTL-SDR dongle and `rtl_433 -M time:utc -M level`, filters out non-meteorological RF chatter (such as tire pressure sensors and keyfobs), deduplicates redundant multi-frame RF bursts using a sliding window, normalizes all measurements into standardized SI units (with computed imperial, dew point, apparent temperature, and 16-point compass properties), and auto-registers discovered stations in a persistent SQLite device registry.
 
 ---
 
-## Key Features (`v0.1.1`)
+## Key Features (`v0.0.4`)
 
+- **4-View WebUI Architecture (`0.0.0.0:8080`):**
+  1. **Overview Dashboard:** Synthesizes all trusted outdoor/indoor streams into a unified local weather station display featuring custom CSS-animated SVG weather condition icons, ensemble Outdoor Temperature (mean + spread), Dew Point, Feels Like (Heat Index / Wind Chill), 24h Rainfall, Indoor Comfort summary, 1h/3h atmospheric deltas, and a plain-English local Nowcast.
+  2. **Historical Charts:** Dedicated multi-section cross-analysis page with stacked charts for Temperature (`°F`), Relative Humidity (`%`), Wind Speed & Peak Gusts (`mph`), and Rainfall (`in`) using time-bucketed smoothing (`GET /api/charts`) and a dashed **Outdoor Average (Ensemble Mean)** line.
+  3. **Sensors Manager:** Deterministic alphabetical card ordering with in-place DOM patching (zero card jumping or flashing), real-time `"Last packet: Xs ago"` counters, RF signal quality (`RSSI`, `SNR`, `Noise` via `-M level`), battery lifecycle tracking (`Days on current battery` & `Est. life`), and per-sensor **Granular Metric Masking (`hidden_metrics`)**.
+  4. **SQLite Log Explorer:** Raw packet table inspector with sensor/time filters and one-click CSV/JSON export.
 - **Zero Hardcoded Station Assumptions:** Discovered 433.92 MHz sensors are automatically registered in the SQLite `sensors` table upon first packet reception and default strictly to `{model} #{sensor_id}` (e.g., `Acurite-Tower #11873`) until assigned a custom alias in the WebUI.
-- **Hosted Dark-Mode WebUI & REST API (`0.0.0.0:8080`):**
-  - **System Status Header:** Real-time SDR daemon status, active sensor count, total logged packets, SQLite WAL database size, and daemon uptime.
-  - **Live Sensor Grid:** Responsive cards for each discovered station displaying temperature (`°F` & `°C`), relative humidity, wind speed/gust/cardinal direction, cumulative rainfall, UV/light, battery health badge (`OK` / `LOW`), and time since last packet.
-  - **Inline Sensor Management Modal:** Assign or reset custom station aliases, classify location types (`indoor`, `outdoor`, `ignore`, `unassigned`), and toggle `is_trusted` for local weather modeling directly via `PATCH /api/sensors/<sensor_key>`.
-  - **Historical Telemetry & DB Explorer:** Interactive Chart.js time-series visualization and tabular log explorer filterable by sensor, metric, and time window (`1h` to `7d`).
 - **Sliding-Window Burst Deduplication:** Suppresses redundant 433 MHz burst frames (default `4.0s` window) keyed on `(model, sensor_id, msg_type)` with periodic stale-key pruning.
 - **Cross-Platform & Container-Ready:** Runs natively on Windows, Linux, and macOS, or in Docker / TrueNAS SCALE with direct USB hardware passthrough (`/dev/bus/usb`).
 
@@ -170,9 +170,11 @@ docker compose logs -f skyscry
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/api/status` | Returns daemon version, uptime, SDR stream status (`running` / `disconnected`), SQLite WAL size in MB, active/total sensors, and total stored packets. |
-| `GET` | `/api/sensors` | Lists all auto-discovered sensors in the `sensors` registry with their latest telemetry reading and user metadata (`alias`, `location_type`, `is_trusted`). |
-| `PATCH` | `/api/sensors/<sensor_key>` | Updates `alias` (string or empty to reset), `location_type` (`indoor`, `outdoor`, `ignore`, `unassigned`), and `is_trusted` (boolean) for `<sensor_key>`. |
-| `GET` | `/api/readings` | Queries historical time-series telemetry (`?sensor_key=Model_ID&hours=24&limit=200`). |
+| `GET` | `/api/overview` | Returns synthesized outdoor/indoor ensemble metrics, animated weather condition code, 1h/3h trends, and plain-English local nowcast. |
+| `GET` | `/api/charts` | Returns time-bucketed, smoothed chart series per sensor plus Outdoor Ensemble Average lines (`?hours=24&bucket_minutes=auto&location=outdoor`). |
+| `GET` | `/api/sensors` | Lists all auto-discovered sensors sorted deterministically by display name with RF signal levels, battery lifecycle stats, and `hidden_metrics`. |
+| `PATCH` | `/api/sensors/<sensor_key>` | Updates `alias`, `location_type`, `is_trusted`, `hidden_metrics` (e.g. `["wind", "rain"]`), and `mark_battery_replaced`. |
+| `GET` | `/api/readings` | Queries historical time-series telemetry (`?sensor_key=Model_ID&hours=24&limit=250&format=csv`). |
 
 ---
 
