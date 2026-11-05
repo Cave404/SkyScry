@@ -1,0 +1,73 @@
+# ============================================================================
+# SkyScry (v0.1.0) — Configuration Template
+# ============================================================================
+# Copy this file to `config/config.yaml` to customize your local deployment:
+#   cp config/config.example.yaml config/config.yaml
+#
+# Note: `config/config.yaml` is git-ignored so local paths and station labels
+# are never committed to version control.
+# ============================================================================
+
+sdr:
+  # Explicit path to the rtl_433 binary, or null/empty to auto-resolve via:
+  #   1. SKYSCRY_RTL433_BIN environment variable
+  #   2. System PATH (rtl_433, rtl_433-rtlsdr.exe, rtl_433.exe)
+  #   3. Local ./bin/ directory or repository root
+  binary_path: null
+
+  # Center frequency to tune the RTL-SDR receiver
+  frequency: "433.92M"
+
+  # RTL-SDR device index or serial number (0 = first available dongle)
+  device_index: 0
+
+  # Optional extra CLI arguments passed directly to rtl_433 (e.g., ["-g", "40"])
+  extra_args: []
+
+  # Automatically restart rtl_433 with exponential backoff if the stream drops
+  auto_reconnect: false
+  reconnect_delay_seconds: 5.0
+
+database:
+  # SQLite database path (WAL mode enabled automatically; parent dirs created on init)
+  path: "data/skyscry.db"
+
+pipeline:
+  # Sliding time window (in seconds) to suppress redundant 433 MHz burst frames
+  # keyed on (model, sensor_id, msg_type). Most sensors transmit 3 identical frames
+  # within 100-300ms per burst.
+  dedup_window_seconds: 4.0
+
+  # Maximum number of tracked sensor burst keys before stale entry pruning triggers
+  dedup_prune_interval_seconds: 300.0
+
+logging:
+  # Console log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # Display unit system in console logs: "both", "imperial", or "metric"
+  console_units: "both"
+
+# Friendly station aliases and metadata keyed by stringified sensor_id
+# Optional model-specific keys (`Model:ID`) are also supported if two sensors share an ID.
+sensors:
+  "8364":
+    name: "Desk Indoor"
+    model: "Acurite-Tower"
+    location: "indoor"
+  "11873":
+    name: "Backyard Shaded"
+    model: "Acurite-Tower"
+    location: "outdoor"
+  "218":
+    name: "Neighborhood 7-in-1 Mast"
+    model: "Cotech-367959"
+    location: "outdoor"
+  "234":
+    name: "Garden Patio"
+    model: "Oregon-THGR810"
+    location: "outdoor"
+  "102":
+    name: "North Eave Probe"
+    model: "Acurite-606TX"
+    location: "outdoor"
+
