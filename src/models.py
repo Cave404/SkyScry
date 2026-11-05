@@ -52,6 +52,11 @@ class NormalizedReading:
     raw_json: str = "{}"
 
     @property
+    def sensor_key(self) -> str:
+        """Canonical composite key (`{model}_{sensor_id}`) for the device registry."""
+        return f"{self.model}_{self.sensor_id}"
+
+    @property
     def temp_f(self) -> Optional[float]:
         """Temperature in degrees Fahrenheit."""
         if self.temp_c is None:

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Main CLI entrypoint for the SkyScry 433.92 MHz weather ingestion daemon."""
+"""Main CLI and daemon entrypoint for SkyScry (v0.1.1).
+
+Runs the 433.92 MHz RTL-SDR ingestion pipeline in a background daemon thread alongside
+the hosted Flask/Werkzeug WebUI and REST API server on 0.0.0.0:8080.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,12 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 from dataclasses import replace
 from types import FrameType
 from typing import Optional
+
+from werkzeug.serving import BaseWSGIServer, make_server
 
 from src import __version__
 from src.config import AppConfig, load_config
@@ -17,12 +24,13 @@ from src.db import WeatherDatabase
 from src.ingest.sdr_stream import SDRStream, SDRStreamError
 from src.models import NormalizedReading
 from src.pipeline.normalizer import BurstDeduplicator, PacketNormalizer
+from src.web.app import create_app
 
 logger = logging.getLogger("skyscry")
 
 
 def setup_logging(level_name: str = "INFO") -> None:
-    """Configure clean, structured console logging."""
+    """Configure clean, technical console logging."""
     level = getattr(logging, level_name.upper(), logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter(
@@ -36,19 +44,35 @@ def setup_logging(level_name: str = "INFO") -> None:
     root.setLevel(level)
     root.addHandler(handler)
 
+    # Silence per-request Werkzeug access chatter unless DEBUG is active
+    logging.getLogger("werkzeug").setLevel(logging.WARNING if level > logging.DEBUG else logging.INFO)
+
+
+def resolve_display_name(
+    reading: NormalizedReading,
+    db: Optional[WeatherDatabase] = None,
+) -> str:
+    """Resolve the display name for a sensor reading.
+
+    If a user-defined `alias` is stored in SQLite, returns `{alias} [{model} #{sensor_id}]`.
+    Otherwise defaults strictly to `{model} #{sensor_id}`.
+    """
+    default_id = f"{reading.model} #{reading.sensor_id}"
+    if db is None:
+        return default_id
+    alias = db.get_sensor_alias(reading.model, reading.sensor_id)
+    if alias:
+        return f"{alias} [{default_id}]"
+    return default_id
+
 
 def format_reading_summary(
     reading: NormalizedReading,
-    config: AppConfig,
+    db: Optional[WeatherDatabase] = None,
     units: str = "both",
 ) -> str:
-    """Build a human-readable single-line console telemetry summary."""
-    alias = config.get_sensor_label(reading.sensor_id, reading.model)
-    station_tag = (
-        f"{alias} [{reading.model} #{reading.sensor_id}]"
-        if alias
-        else f"{reading.model} #{reading.sensor_id}"
-    )
+    """Build a technical, single-line console telemetry summary free of hardcoded names or emojis."""
+    station_tag = resolve_display_name(reading, db=db)
     if reading.channel:
         station_tag += f" (CH {reading.channel})"
 
@@ -77,9 +101,7 @@ def format_reading_summary(
             wind_str = f"Wind: {reading.wind_avg_mph:.1f} mph ({reading.wind_avg_mps:.1f} m/s)"
 
         if reading.wind_gust_mps is not None and reading.wind_gust_mph is not None:
-            if units == "imperial":
-                wind_str += f" [Gust {reading.wind_gust_mph:.1f} mph]"
-            elif units == "metric":
+            if units == "metric":
                 wind_str += f" [Gust {reading.wind_gust_mps:.1f} m/s]"
             else:
                 wind_str += f" [Gust {reading.wind_gust_mph:.1f} mph]"
@@ -107,10 +129,10 @@ def format_reading_summary(
         metrics.append(f"Light: {reading.lux:.0f} lux")
 
     if reading.battery_ok is not None:
-        metrics.append("Batt: OK" if reading.battery_ok else "Batt: LOW [!]")
+        metrics.append("Batt: OK" if reading.battery_ok else "Batt: LOW")
 
     metrics_body = " | ".join(metrics) if metrics else "Telemetry received"
-    return f"{station_tag:<46} -> {metrics_body}"
+    return f"{station_tag:<42} -> {metrics_body}"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -119,7 +141,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="skyscry",
         description=(
             f"SkyScry v{__version__} - Open-source 433.92 MHz microclimate telemetry "
-            "and weather ingestion daemon."
+            "and weather ingestion daemon with hosted WebUI."
         ),
     )
     parser.add_argument(
@@ -162,6 +184,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Override burst deduplication sliding window in seconds (default: 4.0).",
     )
     parser.add_argument(
+        "--host",
+        type=str,
+        default=None,
+        help="Override WebUI bind host address (default: 0.0.0.0).",
+    )
+    parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        default=None,
+        help="Override WebUI HTTP port (default: 8080).",
+    )
+    parser.add_argument(
+        "--no-web",
+        action="store_true",
+        help="Run the SDR ingestion daemon without starting the HTTP WebUI server.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Stream and normalize SDR telemetry to console without writing to SQLite.",
@@ -176,14 +216,61 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_sdr_ingest_loop(
+    stream: SDRStream,
+    normalizer: PacketNormalizer,
+    db: Optional[WeatherDatabase],
+    config: AppConfig,
+    stop_event: threading.Event,
+) -> None:
+    """Background worker loop that ingests, deduplicates, logs, and persists RTL-SDR bursts."""
+    while not stop_event.is_set():
+        try:
+            for raw_line in stream.stream_lines():
+                if stop_event.is_set():
+                    break
+                reading = normalizer.process_line(raw_line)
+                if reading is None:
+                    continue
+
+                if db is not None:
+                    db.insert_reading(reading)
+
+                summary = format_reading_summary(
+                    reading=reading,
+                    db=db,
+                    units=config.logging.console_units,
+                )
+                logger.info(summary)
+
+                if reading.battery_ok is False:
+                    station_label = resolve_display_name(reading, db=db)
+                    logger.warning(
+                        "LOW BATTERY reported by %s (sensor_key=%s)",
+                        station_label,
+                        reading.sensor_key,
+                    )
+        except SDRStreamError as exc:
+            if stop_event.is_set():
+                break
+            logger.error("SDR stream error: %s", exc)
+            if not config.sdr.auto_reconnect:
+                break
+            stop_event.wait(timeout=max(1.0, config.sdr.reconnect_delay_seconds))
+        except Exception as exc:
+            if stop_event.is_set():
+                break
+            logger.exception("Unexpected error in SDR ingestion worker: %s", exc)
+            stop_event.wait(timeout=5.0)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    """Run the SkyScry ingestion daemon."""
+    """Run the SkyScry ingestion daemon and WebUI server."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
 
-    # Apply CLI overrides cleanly
     sdr_cfg = config.sdr
     if args.binary_path:
         sdr_cfg = replace(sdr_cfg, binary_path=args.binary_path)
@@ -198,6 +285,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.dedup_window is not None:
         pipe_cfg = replace(pipe_cfg, dedup_window_seconds=args.dedup_window)
 
+    web_cfg = config.web
+    if args.host:
+        web_cfg = replace(web_cfg, host=args.host)
+    if args.port is not None:
+        web_cfg = replace(web_cfg, port=args.port)
+    if args.no_web:
+        web_cfg = replace(web_cfg, enabled=False)
+
     log_cfg = config.logging
     if args.log_level:
         log_cfg = replace(log_cfg, level=args.log_level)
@@ -207,6 +302,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         sdr=sdr_cfg,
         database=db_cfg,
         pipeline=pipe_cfg,
+        web=web_cfg,
         logging=log_cfg,
     )
 
@@ -220,59 +316,74 @@ def main(argv: Optional[list[str]] = None) -> int:
     normalizer = PacketNormalizer(deduplicator=deduplicator)
     stream = SDRStream(sdr_config=config.sdr)
 
-    db: Optional[WeatherDatabase] = None
+    db_path = ":memory:" if args.dry_run else config.database.path
+    db = WeatherDatabase(db_path=db_path)
     if args.dry_run:
-        logger.info("DRY-RUN mode enabled: SQLite persistence is disabled.")
+        logger.info("DRY-RUN mode enabled: using transient in-memory SQLite database.")
     else:
-        db = WeatherDatabase(db_path=config.database.path)
         logger.info("SQLite WAL storage active at %s", config.database.path)
 
-    def _handle_shutdown(signum: int, _frame: Optional[FrameType]) -> None:
-        sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
-        logger.info("Received %s — shutting down gracefully...", sig_name)
-        stream.stop()
+    stop_event = threading.Event()
+    http_server: Optional[BaseWSGIServer] = None
 
-    signal.signal(signal.SIGINT, _handle_shutdown)
+    def _initiate_shutdown(signum: int, _frame: Optional[FrameType]) -> None:
+        if stop_event.is_set():
+            return
+        sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+        logger.info("Received %s - shutting down SkyScry services...", sig_name)
+        stop_event.set()
+        stream.stop()
+        if http_server is not None:
+            threading.Thread(target=http_server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, _initiate_shutdown)
     if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, _handle_shutdown)
+        signal.signal(signal.SIGTERM, _initiate_shutdown)
+
+    ingest_thread = threading.Thread(
+        target=_run_sdr_ingest_loop,
+        args=(stream, normalizer, None if args.dry_run else db, config, stop_event),
+        name="skyscry-sdr-ingest",
+        daemon=True,
+    )
+    ingest_thread.start()
 
     exit_code = 0
     try:
-        for raw_line in stream.stream_lines():
-            reading = normalizer.process_line(raw_line)
-            if reading is None:
-                continue
-
-            if db is not None:
-                db.insert_reading(reading)
-
-            summary = format_reading_summary(
-                reading=reading,
-                config=config,
-                units=config.logging.console_units,
+        if config.web.enabled:
+            flask_app = create_app(db=db, sdr_stream=stream)
+            http_server = make_server(
+                config.web.host,
+                config.web.port,
+                flask_app,
+                threaded=True,
             )
-            logger.info(summary)
-
-            if reading.battery_ok is False:
-                alias = config.get_sensor_label(reading.sensor_id, reading.model) or reading.model
-                logger.warning(
-                    "LOW BATTERY reported by %s (model=%s, id=%s)",
-                    alias,
-                    reading.model,
-                    reading.sensor_id,
-                )
+            logger.info(
+                "Hosted WebUI & REST API listening on http://%s:%d",
+                config.web.host,
+                config.web.port,
+            )
+            http_server.serve_forever()
+        else:
+            logger.info("WebUI disabled (--no-web); running headless SDR ingestion loop.")
+            while ingest_thread.is_alive() and not stop_event.is_set():
+                ingest_thread.join(timeout=0.5)
     except KeyboardInterrupt:
-        logger.info("Interrupted by user — stopping SkyScry.")
-    except SDRStreamError as exc:
-        logger.error("SDR stream error: %s", exc)
-        exit_code = 1
+        logger.info("Interrupted by user - stopping SkyScry.")
     except Exception as exc:
-        logger.exception("Unhandled fatal exception in SkyScry daemon: %s", exc)
+        logger.exception("Fatal exception in SkyScry daemon: %s", exc)
         exit_code = 1
     finally:
+        stop_event.set()
         stream.stop()
-        if db is not None:
-            db.close()
+        if http_server is not None:
+            try:
+                http_server.server_close()
+            except Exception:
+                pass
+        if ingest_thread.is_alive():
+            ingest_thread.join(timeout=3.0)
+        db.close()
         logger.info("SkyScry stopped cleanly.")
 
     return exit_code

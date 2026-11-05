@@ -1,11 +1,13 @@
 # ============================================================================
-# SkyScry (v0.1.0) — Configuration Template
+# SkyScry (v0.1.1) — Configuration Template
 # ============================================================================
 # Copy this file to `config/config.yaml` to customize your local deployment:
 #   cp config/config.example.yaml config/config.yaml
 #
-# Note: `config/config.yaml` is git-ignored so local paths and station labels
+# Note: `config/config.yaml` is git-ignored so local paths and host settings
 # are never committed to version control.
+# Sensor aliases and location types are managed dynamically via the WebUI
+# and persisted directly in SQLite (`sensors` table).
 # ============================================================================
 
 sdr:
@@ -24,8 +26,8 @@ sdr:
   # Optional extra CLI arguments passed directly to rtl_433 (e.g., ["-g", "40"])
   extra_args: []
 
-  # Automatically restart rtl_433 with exponential backoff if the stream drops
-  auto_reconnect: false
+  # Automatically restart rtl_433 with backoff if the USB stream drops
+  auto_reconnect: true
   reconnect_delay_seconds: 5.0
 
 database:
@@ -38,36 +40,18 @@ pipeline:
   # within 100-300ms per burst.
   dedup_window_seconds: 4.0
 
-  # Maximum number of tracked sensor burst keys before stale entry pruning triggers
+  # Interval (in seconds) between stale deduplication key pruning passes
   dedup_prune_interval_seconds: 300.0
+
+web:
+  # Enable the built-in WebUI and REST API server
+  enabled: true
+  # Bind address and port for the HTTP server
+  host: "0.0.0.0"
+  port: 8080
 
 logging:
   # Console log level: DEBUG, INFO, WARNING, ERROR
   level: "INFO"
   # Display unit system in console logs: "both", "imperial", or "metric"
   console_units: "both"
-
-# Friendly station aliases and metadata keyed by stringified sensor_id
-# Optional model-specific keys (`Model:ID`) are also supported if two sensors share an ID.
-sensors:
-  "8364":
-    name: "Desk Indoor"
-    model: "Acurite-Tower"
-    location: "indoor"
-  "11873":
-    name: "Backyard Shaded"
-    model: "Acurite-Tower"
-    location: "outdoor"
-  "218":
-    name: "Neighborhood 7-in-1 Mast"
-    model: "Cotech-367959"
-    location: "outdoor"
-  "234":
-    name: "Garden Patio"
-    model: "Oregon-THGR810"
-    location: "outdoor"
-  "102":
-    name: "North Eave Probe"
-    model: "Acurite-606TX"
-    location: "outdoor"
-

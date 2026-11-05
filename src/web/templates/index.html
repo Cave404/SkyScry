@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkyScry v{{ version }} | 433.92 MHz Telemetry Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">SS</div>
+      <div>
+        <div class="brand-title">SkyScry <span class="version-badge">v{{ version }}</span></div>
+        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry &amp; Weather Ingestion Daemon</div>
+      </div>
+    </div>
+
+    <div class="status-strip">
+      <div class="status-metric">
+        <span class="metric-label">SDR STREAM</span>
+        <span id="stat-sdr-status" class="status-pill status-unknown">CHECKING</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">ACTIVE SENSORS</span>
+        <span id="stat-sensor-count" class="metric-value">--</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">PACKETS LOGGED</span>
+        <span id="stat-reading-count" class="metric-value">--</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">DB SIZE (WAL)</span>
+        <span id="stat-db-size" class="metric-value">-- MB</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">UPTIME</span>
+        <span id="stat-uptime" class="metric-value">--</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">SYNC</span>
+        <div class="sync-row">
+          <span id="stat-sync-indicator" class="sync-dot"></span>
+          <span id="stat-last-sync" class="metric-sub">--:--:--</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="sdr-error-banner" class="alert-banner hidden"></div>
+
+  <main class="container">
+    <div class="nav-bar">
+      <div class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="live-grid" role="tab">Live Sensor Grid</button>
+        <button class="tab-btn" data-tab="history-explorer" role="tab">Historical Telemetry &amp; DB Explorer</button>
+      </div>
+
+      <div class="toolbar-controls">
+        <label class="checkbox-label">
+          <input type="checkbox" id="toggle-show-ignored" />
+          <span>Show Ignored Sensors</span>
+        </label>
+        <button id="btn-refresh-now" class="btn btn-secondary" type="button">Refresh Now</button>
+      </div>
+    </div>
+
+    <!-- TAB 1: LIVE SENSOR GRID -->
+    <section id="tab-live-grid" class="tab-panel active">
+      <div id="sensor-grid-empty" class="empty-state hidden">
+        <h3>No 433.92 MHz Sensors Discovered Yet</h3>
+        <p>Listening for incoming RF bursts via <code>rtl_433</code>. Discovered stations will automatically register here with default hardware identifiers (<code>{model} #{sensor_id}</code>).</p>
+      </div>
+      <div id="sensor-grid" class="sensor-grid"></div>
+    </section>
+
+    <!-- TAB 2: HISTORICAL TELEMETRY & DB EXPLORER -->
+    <section id="tab-history-explorer" class="tab-panel">
+      <div class="explorer-controls card">
+        <div class="control-group">
+          <label for="history-sensor-select">Sensor Filter</label>
+          <select id="history-sensor-select">
+            <option value="">All Registered Sensors</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="history-hours-select">Time Window</label>
+          <select id="history-hours-select">
+            <option value="1">Last 1 Hour</option>
+            <option value="6">Last 6 Hours</option>
+            <option value="24" selected>Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168">Last 7 Days</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="history-metric-select">Chart Metric</label>
+          <select id="history-metric-select">
+            <option value="temp_f" selected>Temperature (deg F)</option>
+            <option value="temp_c">Temperature (deg C)</option>
+            <option value="humidity">Relative Humidity (%)</option>
+            <option value="wind_avg_mph">Wind Avg (mph)</option>
+            <option value="rain_cumulative_in">Cumulative Rain (in)</option>
+            <option value="pressure_hpa">Pressure (hPa)</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="history-limit-select">Row Limit</label>
+          <select id="history-limit-select">
+            <option value="100">100 rows</option>
+            <option value="250" selected>250 rows</option>
+            <option value="500">500 rows</option>
+          </select>
+        </div>
+
+        <div class="control-actions">
+          <button id="btn-run-query" class="btn btn-primary" type="button">Load Telemetry</button>
+        </div>
+      </div>
+
+      <div class="chart-card card">
+        <div class="card-header">
+          <h3 id="chart-title">Time-Series Telemetry</h3>
+          <span id="history-record-summary" class="text-muted">0 records loaded</span>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="telemetry-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="table-card card">
+        <div class="card-header">
+          <h3>SQLite Reading Log</h3>
+          <span class="text-muted">Ordered newest to oldest (UTC)</span>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Timestamp (UTC)</th>
+                <th>Sensor Display Name</th>
+                <th>Hardware Key</th>
+                <th>Loc</th>
+                <th>Temp (F / C)</th>
+                <th>RH</th>
+                <th>Wind (mph / dir)</th>
+                <th>Rain (in / mm)</th>
+                <th>UV / Lux</th>
+                <th>Batt</th>
+              </tr>
+            </thead>
+            <tbody id="history-table-body">
+              <tr>
+                <td colspan="10" class="text-center text-muted">No readings loaded.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- INLINE SENSOR CONFIGURATION MODAL -->
+  <div id="sensor-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-title">Configure Sensor Metadata</h3>
+          <div id="modal-subtitle" class="modal-subtitle">--</div>
+        </div>
+        <button id="btn-close-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
+      </div>
+
+      <form id="sensor-config-form">
+        <input type="hidden" id="modal-sensor-key" />
+
+        <div class="form-group">
+          <label for="modal-alias-input">Custom Alias / Station Label</label>
+          <input
+            type="text"
+            id="modal-alias-input"
+            placeholder="Leave blank to use default {model} #{sensor_id}"
+            maxlength="80"
+          />
+          <small class="form-hint">If cleared, the display name strictly defaults to hardware model and ID.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="modal-location-select">Location Classification</label>
+          <select id="modal-location-select">
+            <option value="unassigned">Unassigned</option>
+            <option value="indoor">Indoor</option>
+            <option value="outdoor">Outdoor</option>
+            <option value="ignore">Ignore (Hide from default grid)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-trusted-checkbox" />
+            <span>Trusted Station (Include in local microclimate modeling)</span>
+          </label>
+        </div>
+
+        <div id="modal-feedback" class="form-feedback hidden"></div>
+
+        <div class="modal-footer">
+          <button id="btn-clear-alias" class="btn btn-secondary" type="button">Reset Alias</button>
+          <div class="modal-footer-right">
+            <button id="btn-cancel-modal" class="btn btn-secondary" type="button">Cancel</button>
+            <button id="btn-save-modal" class="btn btn-primary" type="submit">Save Changes</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+

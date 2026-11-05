@@ -32,7 +32,19 @@ class SDRStream:
         self._stderr_thread: Optional[threading.Thread] = None
         self._stderr_tail: collections.deque[str] = collections.deque(maxlen=40)
         self._stop_requested: bool = False
+        self._last_error: Optional[str] = None
         self._lock = threading.Lock()
+
+    @property
+    def is_running(self) -> bool:
+        """Return True if the underlying `rtl_433` child process is currently alive."""
+        with self._lock:
+            return self._process is not None and self._process.poll() is None
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """Return the most recent hardware or subprocess diagnostic message, if any."""
+        return self._last_error
 
     def resolve_binary(self) -> str:
         """Locate the `rtl_433` binary or raise an actionable SDRStreamError."""
@@ -122,6 +134,7 @@ class SDRStream:
 
             cmd = self.build_command()
             self._stderr_tail.clear()
+            self._last_error = None
             logger.info("Starting RTL-SDR stream: %s", " ".join(cmd))
 
             try:
@@ -181,6 +194,7 @@ class SDRStream:
 
             exit_code = proc.wait()
             diagnostic = self._diagnose_failure(exit_code)
+            self._last_error = diagnostic
             if on_diagnostic:
                 on_diagnostic(diagnostic)
             else:

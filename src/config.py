@@ -26,15 +26,6 @@ RTL433_CANDIDATES: tuple[str, ...] = (
     "rtl_433",
 )
 
-# Default station metadata for out-of-the-box operation when config.yaml is absent
-DEFAULT_SENSORS: dict[str, dict[str, str]] = {
-    "8364": {"name": "Desk Indoor", "model": "Acurite-Tower", "location": "indoor"},
-    "11873": {"name": "Backyard Shaded", "model": "Acurite-Tower", "location": "outdoor"},
-    "218": {"name": "Neighborhood 7-in-1 Mast", "model": "Cotech-367959", "location": "outdoor"},
-    "234": {"name": "Garden Patio", "model": "Oregon-THGR810", "location": "outdoor"},
-    "102": {"name": "North Eave Probe", "model": "Acurite-606TX", "location": "outdoor"},
-}
-
 
 @dataclass(frozen=True)
 class SDRConfig:
@@ -44,7 +35,7 @@ class SDRConfig:
     frequency: str = "433.92M"
     device_index: int = 0
     extra_args: list[str] = field(default_factory=list)
-    auto_reconnect: bool = False
+    auto_reconnect: bool = True
     reconnect_delay_seconds: float = 5.0
 
 
@@ -64,20 +55,20 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
+class WebConfig:
+    """Hosted WebUI and REST API server configuration."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     """Console and daemon logging configuration."""
 
     level: str = "INFO"
     console_units: str = "both"
-
-
-@dataclass(frozen=True)
-class SensorMeta:
-    """Friendly label and metadata for a known 433 MHz sensor."""
-
-    name: str
-    model: Optional[str] = None
-    location: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -87,20 +78,8 @@ class AppConfig:
     sdr: SDRConfig = field(default_factory=SDRConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    sensors: dict[str, SensorMeta] = field(default_factory=dict)
-
-    def get_sensor_label(self, sensor_id: str, model: Optional[str] = None) -> Optional[str]:
-        """Resolve a human-friendly station name for a given sensor ID and optional model."""
-        if model:
-            composite_key = f"{model}:{sensor_id}"
-            if composite_key in self.sensors:
-                return self.sensors[composite_key].name
-
-        meta = self.sensors.get(str(sensor_id))
-        if meta:
-            return meta.name
-        return None
 
 
 def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str]:
@@ -113,7 +92,6 @@ def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str
       4. Local `./bin/` directory inside the repository
       5. Repository root directory (`./`)
     """
-    # 1 & 2: Explicit config path or environment variable override
     env_override = os.environ.get("SKYSCRY_RTL433_BIN") or os.environ.get("RTL433_BIN")
     for raw_candidate in (configured_path, env_override):
         if not raw_candidate:
@@ -129,13 +107,11 @@ def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str
         if which_match:
             return which_match
 
-    # 3: System PATH via shutil.which
     for binary_name in RTL433_CANDIDATES:
         which_match = shutil.which(binary_name)
         if which_match:
             return which_match
 
-    # 4 & 5: Local ./bin/ folder and repository root fallbacks
     search_dirs = (
         PROJECT_ROOT / "bin",
         PROJECT_ROOT,
@@ -149,24 +125,6 @@ def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str
                 return str(local_candidate.resolve())
 
     return None
-
-
-def _parse_sensors(raw_sensors: Any) -> dict[str, SensorMeta]:
-    """Convert raw YAML sensor mappings into strongly-typed SensorMeta objects."""
-    if not isinstance(raw_sensors, dict):
-        raw_sensors = DEFAULT_SENSORS
-
-    parsed: dict[str, SensorMeta] = {}
-    for key, value in raw_sensors.items():
-        str_key = str(key).strip()
-        if isinstance(value, str):
-            parsed[str_key] = SensorMeta(name=value)
-        elif isinstance(value, dict):
-            name = str(value.get("name") or f"Sensor {str_key}")
-            model = str(value["model"]) if value.get("model") else None
-            location = str(value["location"]) if value.get("location") else None
-            parsed[str_key] = SensorMeta(name=name, model=model, location=location)
-    return parsed
 
 
 def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
@@ -203,8 +161,8 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
     sdr_raw = raw_data.get("sdr") if isinstance(raw_data.get("sdr"), dict) else {}
     db_raw = raw_data.get("database") if isinstance(raw_data.get("database"), dict) else {}
     pipe_raw = raw_data.get("pipeline") if isinstance(raw_data.get("pipeline"), dict) else {}
+    web_raw = raw_data.get("web") if isinstance(raw_data.get("web"), dict) else {}
     log_raw = raw_data.get("logging") if isinstance(raw_data.get("logging"), dict) else {}
-    sensors_raw = raw_data.get("sensors", DEFAULT_SENSORS)
 
     extra_args_raw = sdr_raw.get("extra_args")
     extra_args = [str(arg) for arg in extra_args_raw] if isinstance(extra_args_raw, list) else []
@@ -214,7 +172,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         frequency=str(sdr_raw.get("frequency", "433.92M")),
         device_index=int(sdr_raw.get("device_index", 0)),
         extra_args=extra_args,
-        auto_reconnect=bool(sdr_raw.get("auto_reconnect", False)),
+        auto_reconnect=bool(sdr_raw.get("auto_reconnect", True)),
         reconnect_delay_seconds=float(sdr_raw.get("reconnect_delay_seconds", 5.0)),
     )
 
@@ -227,6 +185,12 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         dedup_prune_interval_seconds=float(pipe_raw.get("dedup_prune_interval_seconds", 300.0)),
     )
 
+    web_cfg = WebConfig(
+        enabled=bool(web_raw.get("enabled", True)),
+        host=str(web_raw.get("host", "0.0.0.0")),
+        port=int(web_raw.get("port", 8080)),
+    )
+
     log_cfg = LoggingConfig(
         level=str(log_raw.get("level", "INFO")).upper(),
         console_units=str(log_raw.get("console_units", "both")).lower(),
@@ -236,7 +200,6 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         sdr=sdr_cfg,
         database=db_cfg,
         pipeline=pipe_cfg,
+        web=web_cfg,
         logging=log_cfg,
-        sensors=_parse_sensors(sensors_raw),
     )
-
