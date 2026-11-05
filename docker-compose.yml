@@ -16,10 +16,10 @@ services:
       - "${SKYSCRY_DATA_DIR:-./data}:/app/data"
       - "${SKYSCRY_CONFIG_DIR:-./config}:/app/config"
     environment:
-      - TZ=${TZ:-America/Chicago}
+      - TZ=${TZ:-UTC}
       - AUTO_UPDATE_ON_START=${AUTO_UPDATE_ON_START:-true}
-      - LATITUDE=${LATITUDE:-38.7042}
-      - LONGITUDE=${LONGITUDE:--91.4374}
+      - LATITUDE=${LATITUDE:-}
+      - LONGITUDE=${LONGITUDE:-}
       - ADMIN_PIN=${ADMIN_PIN:-}
       - READ_ONLY_PUBLIC=${READ_ONLY_PUBLIC:-false}
     labels:

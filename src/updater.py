@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,21 @@ DATA_DIR = PROJECT_ROOT / "data"
 REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 LAST_DEP_CHECK_FILE = DATA_DIR / ".last_dep_check"
 RTL433_VERSION_FILE = PROJECT_ROOT / ".rtl_433_version"
+
+
+def _checkpoint_sqlite_wal() -> None:
+    """Safely flush and truncate SQLite WAL journal before any git pull or process re-exec."""
+    db_file = DATA_DIR / "skyscry.db"
+    if not db_file.is_file():
+        return
+    try:
+        conn = sqlite3.connect(str(db_file), timeout=5.0)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 RTL433_RELEASES_API = "https://api.github.com/repos/merbanan/rtl_433/releases/latest"
 DEP_CHECK_INTERVAL_SECONDS = 86400.0  # 24 hours
@@ -493,6 +509,7 @@ def run_startup_bootstrap(argv: Optional[list[str]] = None) -> None:
     # Re-exec the Python process if Git pulled new source code or missing packages were just installed
     if (git_updated or deps_installed) and "--skip-bootstrap" not in sys.argv:
         _log("Restarting SkyScry process to load updated code/dependencies...")
+        _checkpoint_sqlite_wal()
         os.environ["SKYSCRY_RESTARTED"] = "1"
         new_argv = [sys.executable, *sys.argv, "--skip-bootstrap"]
         os.execv(sys.executable, new_argv)

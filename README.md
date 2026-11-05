@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.7-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.8-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,9 +10,14 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.7`)
+## Key Features (`v0.0.8`)
 
-- **Turnkey TrueNAS SCALE, GHCR & Cloudflare Tunnel Stack (`v0.0.7`):**
+- **Opt-In Sensor Trust & TPMS / Soil / Barometer Gate (`v0.0.8`):**
+  - **Opt-In Trust Model:** All newly discovered 433.92 MHz sensors default strictly to `location_type = 'ignore'` and `is_trusted = 0`. Only sensors explicitly configured by the user as **Outdoor** or **Indoor** in the WebUI participate in dashboard weather synthesis and historical charts.
+  - **Vehicle TPMS & Soil Probe Hard-Drop:** Passing cars (`Ford`, `Citroen`, `Renault`, `Schrader`, `"type": "TPMS"`, `pressure_kPa`/`pressure_PSI`) and soil/appliance probes (`RainPoint`, `EcoWitt-WH51`, `Acurite-986`, `Maverick`, `ThermoPro`, `Inkbird`) are dropped at the normalizer gate and purged from SQLite.
+  - **Barometric Pressure Plausibility Clamp (`870–1085 hPa`):** Atmospheric pressure is strictly clamped to `870.0–1085.0 hPa` (`25.69–32.04 inHg`) so tire inflation pressures (`~213 kPa`) can never skew the barometer.
+  - **Multi-Checkbox Chart Stream Filter:** Mix and match `Outdoor Sensors (Trusted)`, `Indoor Sensors (Trusted)`, `Reference / Regional Weather Baseline`, and individual station checkboxes on the Historical Charts view.
+- **Turnkey TrueNAS SCALE, GHCR & Cloudflare Tunnel Stack (`v0.0.7+`):**
   - **Automated GHCR Builds:** GitHub Actions (`.github/workflows/docker-publish.yml`) automatically builds and publishes `ghcr.io/cave404/skyscry:latest` on every push to `main`.
   - **Smart Container Entrypoint (`docker/entrypoint.sh`):** Automatically unloads conflicting Linux DVB-T kernel modules (`dvb_usb_rtl28xxu`, `rtl2832`), verifies `/dev/bus/usb` passthrough, and pulls latest GitHub updates on container restart when `AUTO_UPDATE_ON_START=true`.
   - **TrueNAS SCALE 1-Click YAML (`docker-compose.truenas.yml`):** Copy-pasteable stack bundling `skyscry`, `cloudflared` (zero-port HTTPS tunnel to `http://skyscry:8080`), and `watchtower` (hourly automated container image updates). See **[`docs/TRUENAS_SETUP.md`](docs/TRUENAS_SETUP.md)**.
@@ -60,7 +65,7 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.7")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.8")
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
 │   ├── models.py                   # NormalizedReading dataclass with SI & imperial properties
@@ -130,7 +135,7 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.7`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth_required`/`read_only_public` flags, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.8`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth_required`/`read_only_public` flags, active/total sensors, and total stored packets. |
 | `GET` | `/api/update-status` | Returns Git commit/branch status, `rtl_433` binary version & path, and last dependency check timestamp. |
 | `POST` | `/api/trigger-update` | Manually triggers Git pull, `pip install --upgrade -r requirements.txt`, and `rtl_433` Windows binary check from the WebUI (protected by `ADMIN_PIN` if set). |
 | `GET` | `/api/overview` | Returns synthesized outdoor/indoor ensemble metrics, barometric pressure (`inHg`/`hPa`), 24h barometric forecast, animated weather condition code, and 1h/3h trends. |

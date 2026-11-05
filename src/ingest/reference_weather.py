@@ -23,8 +23,8 @@ class ReferenceWeatherService:
     def __init__(
         self,
         db: WeatherDatabase,
-        default_lat: float = 38.7042,
-        default_lon: float = -91.4374,
+        default_lat: float = 0.0,
+        default_lon: float = 0.0,
     ) -> None:
         self.db = db
         self.default_lat = float(default_lat)
@@ -51,6 +51,16 @@ class ReferenceWeatherService:
             lon = float(longitude)
             self.db.set_location_coordinates(lat, lon)
 
+        if abs(lat) < 0.001 and abs(lon) < 0.001:
+            logger.debug("Skipping Open-Meteo regional sync: station coordinates are not configured (0.0, 0.0).")
+            return {
+                "synced_records": 0,
+                "latitude": lat,
+                "longitude": lon,
+                "latest_pressure_hpa": None,
+                "latest_pressure_inhg": None,
+            }
+
         query_params = {
             "latitude": f"{lat:.4f}",
             "longitude": f"{lon:.4f}",
@@ -65,7 +75,7 @@ class ReferenceWeatherService:
         url = f"{OPEN_METEO_URL}?{urllib.parse.urlencode(query_params)}"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "SkyScry/0.0.5 (https://github.com/Cave404/SkyScry)"},
+            headers={"User-Agent": "SkyScry/0.0.8 (https://github.com/Cave404/SkyScry)"},
         )
 
         with urllib.request.urlopen(req, timeout=12.0) as resp:

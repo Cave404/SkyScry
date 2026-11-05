@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.8)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,12 @@ from src.models import (
     compute_signal_bars,
     compute_signal_quality,
 )
-from src.pipeline.normalizer import check_physical_bounds, is_appliance_model
+from src.pipeline.normalizer import (
+    MAX_PLAUSIBLE_PRESSURE_HPA,
+    MIN_PLAUSIBLE_PRESSURE_HPA,
+    check_physical_bounds,
+    is_appliance_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +61,8 @@ CREATE TABLE IF NOT EXISTS sensors (
     sensor_id TEXT NOT NULL,
     channel TEXT,
     alias TEXT,
-    location_type TEXT DEFAULT 'unassigned',
-    is_trusted INTEGER DEFAULT 1,
+    location_type TEXT DEFAULT 'ignore',
+    is_trusted INTEGER DEFAULT 0,
     hidden_metrics TEXT DEFAULT '[]',
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
@@ -162,6 +167,11 @@ def _enrich_reading_dict(row_dict: dict[str, Any]) -> dict[str, Any]:
     temp_c = row_dict.get("temp_c")
     humidity = row_dict.get("humidity")
     pressure_hpa = row_dict.get("pressure_hpa")
+    if pressure_hpa is not None:
+        p_val = float(pressure_hpa)
+        if p_val < MIN_PLAUSIBLE_PRESSURE_HPA or p_val > MAX_PLAUSIBLE_PRESSURE_HPA:
+            pressure_hpa = None
+            row_dict["pressure_hpa"] = None
     wind_avg_mps = row_dict.get("wind_avg_mps")
     wind_gust_mps = row_dict.get("wind_gust_mps")
     wind_dir_deg = row_dict.get("wind_dir_deg")
@@ -209,7 +219,7 @@ def _enrich_reading_dict(row_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 class WeatherDatabase:
-    """Thread-safe SQLite WAL database manager with outlier expunging and barometric synthesis."""
+    """Thread-safe SQLite WAL database manager with opt-in sensor trust, TPMS/outlier expunging, and barometric synthesis."""
 
     def __init__(self, db_path: str | Path = "data/skyscry.db") -> None:
         self.db_path = Path(db_path)
@@ -241,46 +251,82 @@ class WeatherDatabase:
             finally:
                 cursor.close()
 
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        """Idempotently add a column to `table` after inspecting `PRAGMA table_info()`."""
+        if self._conn is None:
+            return
+        existing_cols = {
+            str(row["name"]).lower()
+            for row in self._conn.execute(f"PRAGMA table_info({table});").fetchall()
+        }
+        if column.lower() not in existing_cols:
+            try:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition};")
+            except sqlite3.OperationalError:
+                pass
+
     def _initialize_schema(self) -> None:
-        """Create tables, run non-destructive migrations, and expunge skewed historical outliers."""
+        """Create tables, run idempotent migrations, and expunge TPMS/skewed historical outliers."""
         with self._lock:
             if self._conn is None:
                 return
             with self._conn:
                 self._conn.executescript(SCHEMA_SQL)
 
-                sensor_migrations = [
-                    "ALTER TABLE sensors ADD COLUMN hidden_metrics TEXT DEFAULT '[]'",
-                    "ALTER TABLE sensors ADD COLUMN last_snr REAL",
-                    "ALTER TABLE sensors ADD COLUMN last_noise REAL",
-                    "ALTER TABLE sensors ADD COLUMN last_rssi REAL",
-                    "ALTER TABLE sensors ADD COLUMN packet_count INTEGER DEFAULT 0",
-                    "ALTER TABLE sensors ADD COLUMN expunged_count INTEGER DEFAULT 0",
-                    "ALTER TABLE sensors ADD COLUMN last_expunged_reason TEXT",
-                    "ALTER TABLE sensors ADD COLUMN battery_changed_at TEXT",
-                    "ALTER TABLE sensors ADD COLUMN battery_low_at TEXT",
-                    "ALTER TABLE sensors ADD COLUMN estimated_battery_days INTEGER",
-                ]
-                for stmt in sensor_migrations:
-                    try:
-                        self._conn.execute(stmt)
-                    except sqlite3.OperationalError:
-                        pass
+                # Idempotent column checks via PRAGMA table_info
+                self._ensure_column("sensors", "hidden_metrics", "TEXT DEFAULT '[]'")
+                self._ensure_column("sensors", "last_snr", "REAL")
+                self._ensure_column("sensors", "last_noise", "REAL")
+                self._ensure_column("sensors", "last_rssi", "REAL")
+                self._ensure_column("sensors", "packet_count", "INTEGER DEFAULT 0")
+                self._ensure_column("sensors", "expunged_count", "INTEGER DEFAULT 0")
+                self._ensure_column("sensors", "last_expunged_reason", "TEXT")
+                self._ensure_column("sensors", "battery_changed_at", "TEXT")
+                self._ensure_column("sensors", "battery_low_at", "TEXT")
+                self._ensure_column("sensors", "estimated_battery_days", "INTEGER")
+                self._ensure_column("sensors", "sensor_key", "TEXT")
 
-                reading_migrations = [
-                    "ALTER TABLE sensor_readings ADD COLUMN snr REAL",
-                    "ALTER TABLE sensor_readings ADD COLUMN noise REAL",
-                    "ALTER TABLE sensor_readings ADD COLUMN rssi REAL",
-                ]
-                for stmt in reading_migrations:
-                    try:
-                        self._conn.execute(stmt)
-                    except sqlite3.OperationalError:
-                        pass
+                self._ensure_column("sensor_readings", "snr", "REAL")
+                self._ensure_column("sensor_readings", "noise", "REAL")
+                self._ensure_column("sensor_readings", "rssi", "REAL")
+                self._ensure_column("sensor_readings", "sensor_key", "TEXT")
+
+                # Populate computed/indexed sensor_key column on sensor_readings for fast indexed joins
+                self._conn.execute(
+                    """
+                    UPDATE sensor_readings
+                    SET sensor_key = (model || '_' || sensor_id)
+                    WHERE sensor_key IS NULL;
+                    """
+                )
+                self._conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_sensor_readings_sensor_key_time
+                    ON sensor_readings (sensor_key, timestamp DESC);
+                    """
+                )
+
+                # One-time migration for v0.0.8 Opt-In Trust Model:
+                # Convert any legacy 'unassigned' sensors (while preserving user-configured 'outdoor' and 'indoor')
+                # to location_type = 'ignore' and is_trusted = 0.
+                mig_row = self._conn.execute(
+                    "SELECT value FROM system_settings WHERE key = 'migration_v008_opt_in_trust';"
+                ).fetchone()
+                if not mig_row:
+                    self._conn.execute(
+                        """
+                        UPDATE sensors
+                        SET location_type = 'ignore', is_trusted = 0
+                        WHERE location_type = 'unassigned' OR location_type IS NULL;
+                        """
+                    )
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('migration_v008_opt_in_trust', '1');"
+                    )
 
                 self._repair_shifted_timestamps()
 
-        # Run startup outlier & appliance auto-purge
+        # Run startup TPMS, barometric outlier, & appliance auto-purge
         self.expunge_skewed_history()
 
     def _repair_shifted_timestamps(self) -> None:
@@ -319,7 +365,7 @@ class WeatherDatabase:
         return f"{model}_{sensor_id}"
 
     def _get_active_outdoor_median_temp_f(self) -> Optional[float]:
-        """Compute the current outdoor ensemble median temperature (°F) across trusted active sensors."""
+        """Compute the current outdoor ensemble median temperature (°F) across trusted active outdoor sensors."""
         if self._conn is None:
             return None
         cutoff_iso = format_utc_z(datetime.now(timezone.utc) - timedelta(minutes=60))
@@ -332,7 +378,7 @@ class WeatherDatabase:
                     ORDER BY sr.timestamp DESC, sr.id DESC LIMIT 1) AS latest_tc
             FROM sensors s
             WHERE s.is_trusted = 1
-              AND s.location_type IN ('outdoor', 'unassigned')
+              AND s.location_type = 'outdoor'
               AND s.packet_count >= 2;
             """,
             (cutoff_iso,),
@@ -368,7 +414,7 @@ class WeatherDatabase:
             )
 
     def expunge_skewed_history(self, target_sensor_key: Optional[str] = None) -> dict[str, Any]:
-        """Purge corrupted RF bit-flip outliers, fridge/meat-probe readings, and phantom sensors from SQLite."""
+        """Purge vehicle TPMS, soil/appliance probes, invalid barometric pressures, and bit-flip outliers from SQLite."""
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database connection is closed.")
@@ -377,22 +423,61 @@ class WeatherDatabase:
             deleted_sensors = 0
 
             with self._conn:
-                # 1. Auto-classify any known kitchen/fridge/meat-probe sensors as 'ignore' & untrusted
+                # 1. Completely purge vehicle TPMS, soil moisture, and appliance models from sensors & sensor_readings
                 all_s = self._conn.execute("SELECT sensor_key, model FROM sensors;").fetchall()
+                tpms_or_app_keys: list[str] = []
                 for s in all_s:
                     if is_appliance_model(s["model"]):
-                        self._conn.execute(
-                            """
-                            UPDATE sensors
-                            SET location_type = 'ignore', is_trusted = 0
-                            WHERE sensor_key = ?;
-                            """,
-                            (s["sensor_key"],),
-                        )
+                        tpms_or_app_keys.append(str(s["sensor_key"]))
 
-                # 2. Delete readings that violate hard physical meteorological bounds
+                if tpms_or_app_keys:
+                    ph = ",".join("?" for _ in tpms_or_app_keys)
+                    cur_del_sr = self._conn.execute(
+                        f"DELETE FROM sensor_readings WHERE COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph});",
+                        tpms_or_app_keys,
+                    )
+                    deleted_readings += int(cur_del_sr.rowcount or 0)
+                    cur_del_s = self._conn.execute(
+                        f"DELETE FROM sensors WHERE sensor_key IN ({ph});",
+                        tpms_or_app_keys,
+                    )
+                    deleted_sensors += int(cur_del_s.rowcount or 0)
+
+                # Also sweep any raw readings matching vehicle/TPMS/soil prefixes directly in sensor_readings
+                distinct_models = self._conn.execute(
+                    "SELECT DISTINCT model FROM sensor_readings;"
+                ).fetchall()
+                bad_models = [str(r["model"]) for r in distinct_models if is_appliance_model(str(r["model"]))]
+                if bad_models:
+                    ph_m = ",".join("?" for _ in bad_models)
+                    cur_m = self._conn.execute(
+                        f"DELETE FROM sensor_readings WHERE model IN ({ph_m});",
+                        bad_models,
+                    )
+                    deleted_readings += int(cur_m.rowcount or 0)
+
+                # 2. Delete or clamp any impossible barometric pressure readings outside [870, 1085] hPa (e.g. 2130 hPa / 62.90 inHg)
+                cur_baro = self._conn.execute(
+                    """
+                    DELETE FROM sensor_readings
+                    WHERE pressure_hpa IS NOT NULL
+                      AND (pressure_hpa < 870.0 OR pressure_hpa > 1085.0);
+                    """
+                )
+                deleted_readings += int(cur_baro.rowcount or 0)
+
+                self._conn.execute(
+                    """
+                    DELETE FROM reference_weather_history
+                    WHERE pressure_hpa IS NOT NULL
+                      AND (pressure_hpa < 870.0 OR pressure_hpa > 1085.0);
+                    """
+                )
+
+                # 3. Delete readings that violate hard physical meteorological bounds
                 #    (temp_f < -25F [-31.67C] or temp_f > 130F [54.44C], humidity < 1 or > 100, wind > 130 mph [58.1 m/s])
-                where_target = "AND (model || '_' || sensor_id) = ?" if target_sensor_key else ""
+                where_target_del = "AND COALESCE(sensor_key, model || '_' || sensor_id) = ?" if target_sensor_key else ""
+                where_target_sr = "AND COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) = ?" if target_sensor_key else ""
                 params_target = (target_sensor_key,) if target_sensor_key else ()
 
                 cur_bounds = self._conn.execute(
@@ -405,53 +490,30 @@ class WeatherDatabase:
                         OR humidity > 100.0
                         OR wind_avg_mps > 58.1
                         OR wind_gust_mps > 58.1
-                    ) {where_target};
+                    ) {where_target_del};
                     """,
                     params_target,
                 )
                 deleted_readings += int(cur_bounds.rowcount or 0)
 
-                # 3. Delete readings from ignored/untrusted appliance probes when purging
-                if target_sensor_key:
-                    s_row = self._conn.execute(
-                        "SELECT model, sensor_id, location_type, is_trusted FROM sensors WHERE sensor_key = ?;",
-                        (target_sensor_key,),
-                    ).fetchone()
-                    if s_row and (s_row["location_type"] == "ignore" or int(s_row["is_trusted"] or 0) == 0):
-                        cur_ign = self._conn.execute(
-                            "DELETE FROM sensor_readings WHERE model = ? AND sensor_id = ?;",
-                            (s_row["model"], s_row["sensor_id"]),
-                        )
-                        deleted_readings += int(cur_ign.rowcount or 0)
-                else:
-                    cur_app = self._conn.execute(
-                        """
-                        DELETE FROM sensor_readings
-                        WHERE (model || '_' || sensor_id) IN (
-                            SELECT sensor_key FROM sensors
-                            WHERE location_type = 'ignore' OR is_trusted = 0
-                        );
-                        """
-                    )
-                    deleted_readings += int(cur_app.rowcount or 0)
-
                 # 4. Consensus Hourly Median Outlier Sweep:
-                #    Group outdoor/unassigned readings by hour and purge any reading deviating > 24F (13.33C)
+                #    Group outdoor readings by hour and purge any reading deviating > 24F (13.33C)
                 #    from that hour's multi-sensor median.
                 rows_cand = self._conn.execute(
                     f"""
-                    SELECT sr.id, sr.timestamp, sr.temp_c, (sr.model || '_' || sr.sensor_id) AS skey,
-                           COALESCE(s.location_type, 'unassigned') AS loc
+                    SELECT sr.id, sr.timestamp, sr.temp_c,
+                           COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
+                           COALESCE(s.location_type, 'ignore') AS loc
                     FROM sensor_readings sr
-                    LEFT JOIN sensors s ON s.sensor_key = (sr.model || '_' || sr.sensor_id)
+                    LEFT JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
                     WHERE sr.temp_c IS NOT NULL
-                      AND COALESCE(s.location_type, 'unassigned') != 'indoor'
-                      {where_target};
+                      AND COALESCE(s.location_type, 'ignore') = 'outdoor'
+                      {where_target_sr};
                     """,
                     params_target,
                 ).fetchall()
 
-                by_hour: dict[str, list[ sqlite3.Row ]] = {}
+                by_hour: dict[str, list[sqlite3.Row]] = {}
                 for r in rows_cand:
                     hr_key = str(r["timestamp"])[:13]
                     by_hour.setdefault(hr_key, []).append(r)
@@ -485,7 +547,7 @@ class WeatherDatabase:
                             (cnt, skey),
                         )
 
-                # 5. Recompute accurate packet_count on all sensors and remove orphaned 0-packet phantom sensors
+                # 5. Recompute accurate packet_count on all sensors
                 self._conn.execute(
                     """
                     UPDATE sensors
@@ -496,19 +558,9 @@ class WeatherDatabase:
                     """
                 )
 
-                cur_orphans = self._conn.execute(
-                    """
-                    DELETE FROM sensors
-                    WHERE packet_count = 0
-                      AND alias IS NULL
-                      AND (is_trusted = 0 OR location_type IN ('unassigned', 'ignore'));
-                    """
-                )
-                deleted_sensors = int(cur_orphans.rowcount or 0)
-
             if deleted_readings > 0 or deleted_sensors > 0:
                 logger.info(
-                    "[AUTO-EXPUNGE] Purged %d skewed/outlier reading(s) and %d phantom sensor(s) from SQLite.",
+                    "[AUTO-EXPUNGE] Purged %d skewed/TPMS reading(s) and %d non-weather sensor(s) from SQLite.",
                     deleted_readings,
                     deleted_sensors,
                 )
@@ -519,9 +571,9 @@ class WeatherDatabase:
             }
 
     def insert_reading(self, reading: NormalizedReading) -> Optional[int]:
-        """Validate, filter appliances/outliers, and persist a NormalizedReading into SQLite.
+        """Validate, filter TPMS/appliances/outliers, and persist a NormalizedReading into SQLite.
 
-        Returns the inserted row ID, or `None` if the reading was auto-expunged as an appliance or outlier.
+        Newly discovered sensors default strictly to `location_type='ignore'` and `is_trusted=0` (Opt-In Trust Model).
         """
         with self._lock:
             if self._conn is None:
@@ -529,16 +581,15 @@ class WeatherDatabase:
 
             sensor_key = self.make_sensor_key(reading.model, reading.sensor_id)
 
-            # 1. Check if this model is a known kitchen/fridge/meat probe appliance
+            # 1. Hard-drop if this model is a vehicle TPMS, soil probe, or kitchen/fridge appliance
             if is_appliance_model(reading.model):
-                logger.info(
-                    "[AUTO-EXPUNGED APPLIANCE] Ignored non-weather probe %s (temp=%sF)",
+                logger.debug(
+                    "[AUTO-EXPUNGED NON-WEATHER] Ignored TPMS/soil/appliance probe %s",
                     sensor_key,
-                    reading.temp_f,
                 )
                 return None
 
-            # 2. Check Hard Physical Meteorological Bounds (-25F to 130F, RH 1-100%, Wind <= 130 mph)
+            # 2. Check Hard Physical Meteorological Bounds (-25F to 130F, RH 1-100%, Pressure 870-1085 hPa, Wind <= 130 mph)
             bounds_err = check_physical_bounds(reading)
             if bounds_err is not None:
                 logger.warning(
@@ -559,16 +610,8 @@ class WeatherDatabase:
                 (sensor_key,),
             ).fetchone()
 
-            # If sensor was explicitly marked as 'ignore' or untrusted by the user, do not pollute sensor_readings
-            if existing is not None and (
-                existing["location_type"] == "ignore" or int(existing["is_trusted"] or 0) == 0
-            ):
-                logger.debug("Skipped reading from ignored/untrusted sensor %s", sensor_key)
-                return None
-
             # 3. Rate-of-Change Spike Filter & Dynamic Outdoor Consensus Median Filter
             if reading.temp_f is not None:
-                # Check against sensor's own previous reading within last 10 minutes
                 prev_row = self._conn.execute(
                     """
                     SELECT timestamp, temp_c FROM sensor_readings
@@ -593,10 +636,9 @@ class WeatherDatabase:
                             self._record_expunged_packet(reading, reason)
                             return None
 
-                # Check outdoor/unassigned sensors against the active outdoor ensemble median
-                loc_type = existing["location_type"] if existing is not None else "unassigned"
+                loc_type = existing["location_type"] if existing is not None else "ignore"
                 pkt_cnt = int(existing["packet_count"] or 0) if existing is not None else 0
-                if loc_type in ("outdoor", "unassigned"):
+                if loc_type == "outdoor":
                     outdoor_median_f = self._get_active_outdoor_median_temp_f()
                     if outdoor_median_f is not None:
                         dev_f = abs(reading.temp_f - outdoor_median_f)
@@ -616,6 +658,7 @@ class WeatherDatabase:
             if reading.battery_ok is not None:
                 battery_int = 1 if reading.battery_ok else 0
 
+            # Opt-In Trust Model: Newly discovered sensors register as location_type='ignore' and is_trusted=0
             if existing is None:
                 batt_changed_at = utc_ts if battery_int == 1 else None
                 batt_low_at = utc_ts if battery_int == 0 else None
@@ -628,7 +671,7 @@ class WeatherDatabase:
                             first_seen, last_seen, battery_ok,
                             last_rssi, last_snr, last_noise, packet_count, expunged_count,
                             battery_changed_at, battery_low_at, estimated_battery_days
-                        ) VALUES (?, ?, ?, ?, NULL, 'unassigned', 1, '[]', ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NULL);
+                        ) VALUES (?, ?, ?, ?, NULL, 'ignore', 0, '[]', ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NULL);
                         """,
                         (
                             sensor_key,
@@ -697,10 +740,21 @@ class WeatherDatabase:
                         ),
                     )
 
+                # If sensor is currently in 'ignore' / untrusted state, keep only its latest reading row
+                # so the user can see live telemetry on the Sensors Manager card to identify it,
+                # without accumulating historical rows for unconfigured neighborhood sensors.
+                if existing["location_type"] == "ignore" or int(existing["is_trusted"] or 0) == 0:
+                    with self._conn:
+                        self._conn.execute(
+                            "DELETE FROM sensor_readings WHERE model = ? AND sensor_id = ?;",
+                            (reading.model, reading.sensor_id),
+                        )
+
             reading_params = (
                 utc_ts,
                 reading.sensor_id,
                 reading.model,
+                sensor_key,
                 reading.channel,
                 battery_int,
                 reading.temp_c,
@@ -723,11 +777,11 @@ class WeatherDatabase:
                 cursor = self._conn.execute(
                     """
                     INSERT INTO sensor_readings (
-                        timestamp, sensor_id, model, channel, battery_ok,
+                        timestamp, sensor_id, model, sensor_key, channel, battery_ok,
                         temp_c, humidity, pressure_hpa, wind_avg_mps, wind_gust_mps,
                         wind_dir_deg, rain_cumulative_mm, rain_rate_mm_h,
                         uv_index, lux, rssi, snr, noise, raw_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     reading_params,
                 )
@@ -735,10 +789,10 @@ class WeatherDatabase:
 
     def get_location_coordinates(
         self,
-        default_lat: float = 38.7042,
-        default_lon: float = -91.4374,
+        default_lat: float = 0.0,
+        default_lon: float = 0.0,
     ) -> dict[str, float]:
-        """Return configured station coordinates from `system_settings` or defaults."""
+        """Return configured station coordinates from `system_settings` or neutral `0.0, 0.0` defaults."""
         with self._lock:
             if self._conn is None:
                 return {"latitude": default_lat, "longitude": default_lon}
@@ -940,8 +994,8 @@ class WeatherDatabase:
                     "channel": raw["channel"],
                     "alias": alias,
                     "display_name": display_name,
-                    "location_type": raw.get("location_type") or "unassigned",
-                    "is_trusted": bool(int(raw.get("is_trusted", 1)) != 0),
+                    "location_type": raw.get("location_type") or "ignore",
+                    "is_trusted": bool(int(raw.get("is_trusted") or 0) != 0),
                     "hidden_metrics": hidden_metrics,
                     "first_seen": format_utc_z(first_seen_dt) if first_seen_dt else raw["first_seen"],
                     "last_seen": format_utc_z(last_seen_dt) if last_seen_dt else raw["last_seen"],
@@ -990,7 +1044,7 @@ class WeatherDatabase:
                 stripped = str(alias).strip()
                 cleaned_alias = stripped if stripped else None
 
-            resolved_location: str = existing["location_type"] or "unassigned"
+            resolved_location: str = existing["location_type"] or "ignore"
             if location_type is not None:
                 loc_candidate = str(location_type).strip().lower()
                 if loc_candidate not in VALID_LOCATION_TYPES:
@@ -1000,11 +1054,13 @@ class WeatherDatabase:
                     )
                 resolved_location = loc_candidate
 
-            resolved_trusted: int = int(existing["is_trusted"])
+            resolved_trusted: int = int(existing["is_trusted"] or 0)
             if is_trusted is not None:
                 resolved_trusted = 1 if bool(is_trusted) else 0
             elif resolved_location == "ignore":
                 resolved_trusted = 0
+            elif resolved_location in ("outdoor", "indoor") and existing["location_type"] in ("ignore", "unassigned"):
+                resolved_trusted = 1
 
             resolved_hidden: list[str] = _parse_hidden_metrics(existing["hidden_metrics"])
             if hidden_metrics is not None:
@@ -1045,7 +1101,7 @@ class WeatherDatabase:
                     ),
                 )
 
-            if purge_sensor_outliers or resolved_location == "ignore" or resolved_trusted == 0:
+            if purge_sensor_outliers:
                 self.expunge_skewed_history(target_sensor_key=sensor_key)
 
         for sensor in self.get_all_sensors():
@@ -1068,7 +1124,7 @@ class WeatherDatabase:
         where_clauses = ["sr.timestamp >= ?"]
 
         if sensor_key and sensor_key.strip():
-            where_clauses.append("(sr.model || '_' || sr.sensor_id) = ?")
+            where_clauses.append("COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) = ?")
             params.append(sensor_key.strip())
 
         params.append(safe_limit)
@@ -1080,7 +1136,7 @@ class WeatherDatabase:
             sr.timestamp,
             sr.sensor_id,
             sr.model,
-            (sr.model || '_' || sr.sensor_id) AS sensor_key,
+            COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS sensor_key,
             s.alias,
             s.location_type,
             s.is_trusted,
@@ -1101,7 +1157,7 @@ class WeatherDatabase:
             sr.snr,
             sr.noise
         FROM sensor_readings sr
-        LEFT JOIN sensors s ON s.sensor_key = (sr.model || '_' || sr.sensor_id)
+        LEFT JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
         WHERE {where_sql}
         ORDER BY sr.timestamp DESC, sr.id DESC
         LIMIT ?;
@@ -1120,7 +1176,7 @@ class WeatherDatabase:
             item["alias"] = alias
             item["display_name"] = alias if alias else f"{item['model']} #{item['sensor_id']}"
             item["is_trusted"] = (
-                bool(int(item["is_trusted"]) != 0) if item.get("is_trusted") is not None else True
+                bool(int(item["is_trusted"]) != 0) if item.get("is_trusted") is not None else False
             )
             item["hidden_metrics"] = _parse_hidden_metrics(item.get("hidden_metrics"))
             results.append(item)
@@ -1131,8 +1187,11 @@ class WeatherDatabase:
         hours: float = 24.0,
         bucket_minutes: Optional[int] = None,
         location_filter: str = "outdoor",
+        locations: Optional[list[str]] = None,
+        sensor_keys: Optional[list[str]] = None,
+        include_reference: bool = False,
     ) -> dict[str, Any]:
-        """Compute time-bucketed, smoothed chart series per trusted sensor plus Outdoor Ensemble & Barometer."""
+        """Compute time-bucketed, smoothed chart series with multi-checkbox location & sensor filtering."""
         safe_hours = max(0.5, min(float(hours), 24.0 * 30.0))
         if bucket_minutes is None or bucket_minutes <= 0:
             if safe_hours <= 1.5:
@@ -1153,6 +1212,45 @@ class WeatherDatabase:
 
         all_sensors = {s["sensor_key"]: s for s in self.get_all_sensors()}
 
+        # Determine requested location set (default strictly to {"outdoor"} if not specified)
+        active_locs: set[str] = set()
+        if locations is not None:
+            for loc_item in locations:
+                cleaned_loc = str(loc_item).strip().lower()
+                if cleaned_loc in ("outdoor", "indoor", "reference"):
+                    if cleaned_loc == "reference":
+                        include_reference = True
+                    else:
+                        active_locs.add(cleaned_loc)
+        else:
+            loc_filter_norm = (location_filter or "outdoor").strip().lower()
+            if loc_filter_norm == "all":
+                active_locs = {"outdoor", "indoor"}
+            elif loc_filter_norm == "indoor":
+                active_locs = {"indoor"}
+            elif loc_filter_norm == "none":
+                active_locs = set()
+            else:
+                active_locs = {"outdoor"}
+
+        explicit_sensor_set: Optional[set[str]] = None
+        if sensor_keys is not None:
+            explicit_sensor_set = {str(k).strip() for k in sensor_keys if str(k).strip()}
+
+        eligible_sensors: dict[str, dict[str, Any]] = {}
+        for skey, smeta in all_sensors.items():
+            loc = smeta["location_type"]
+            if loc == "ignore" or not smeta["is_trusted"]:
+                continue
+
+            if explicit_sensor_set is not None:
+                if skey in explicit_sensor_set:
+                    eligible_sensors[skey] = smeta
+                continue
+
+            if loc in active_locs:
+                eligible_sensors[skey] = smeta
+
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database connection is closed.")
@@ -1160,7 +1258,7 @@ class WeatherDatabase:
                 """
                 SELECT
                     timestamp,
-                    (model || '_' || sensor_id) AS sensor_key,
+                    COALESCE(sensor_key, model || '_' || sensor_id) AS sensor_key,
                     temp_c,
                     humidity,
                     pressure_hpa,
@@ -1177,7 +1275,7 @@ class WeatherDatabase:
 
             ref_rows = self._conn.execute(
                 """
-                SELECT timestamp, pressure_hpa, temp_c, humidity
+                SELECT timestamp, pressure_hpa, temp_c, humidity, wind_avg_mps, wind_gust_mps, rain_mm
                 FROM reference_weather_history
                 WHERE timestamp >= ?
                 ORDER BY timestamp ASC;
@@ -1185,21 +1283,9 @@ class WeatherDatabase:
                 (cutoff_iso,),
             ).fetchall()
 
-        # Filter active TRUSTED sensors based on location_filter (strictly excluding untrusted & ignored)
-        loc_filter_norm = (location_filter or "outdoor").strip().lower()
-        eligible_sensors: dict[str, dict[str, Any]] = {}
-        for skey, smeta in all_sensors.items():
-            loc = smeta["location_type"]
-            if loc == "ignore" or not smeta["is_trusted"]:
-                continue
-            if loc_filter_norm == "outdoor" and loc not in ("outdoor", "unassigned"):
-                continue
-            if loc_filter_norm == "indoor" and loc != "indoor":
-                continue
-            eligible_sensors[skey] = smeta
-
         buckets: dict[int, dict[str, dict[str, list[float]]]] = {}
         baro_buckets: dict[int, list[float]] = {}
+        ref_buckets: dict[int, dict[str, list[float]]] = {}
         all_bucket_epochs: set[int] = set()
 
         for row in rows:
@@ -1236,7 +1322,9 @@ class WeatherDatabase:
             if "rain" not in hidden and row["rain_cumulative_mm"] is not None:
                 s_bucket["rain_in"].append(float(row["rain_cumulative_mm"]) / 25.4)
             if "pressure" not in hidden and row["pressure_hpa"] is not None:
-                baro_buckets.setdefault(b_epoch, []).append(float(row["pressure_hpa"]) * HPA_TO_INHG)
+                p_val = float(row["pressure_hpa"])
+                if MIN_PLAUSIBLE_PRESSURE_HPA <= p_val <= MAX_PLAUSIBLE_PRESSURE_HPA:
+                    baro_buckets.setdefault(b_epoch, []).append(p_val * HPA_TO_INHG)
 
         for rref in ref_rows:
             dt = parse_utc_iso(rref["timestamp"])
@@ -1244,8 +1332,26 @@ class WeatherDatabase:
                 continue
             b_epoch = (int(dt.timestamp()) // bucket_sec) * bucket_sec
             if rref["pressure_hpa"] is not None:
-                baro_buckets.setdefault(b_epoch, []).append(float(rref["pressure_hpa"]) * HPA_TO_INHG)
+                p_val = float(rref["pressure_hpa"])
+                if MIN_PLAUSIBLE_PRESSURE_HPA <= p_val <= MAX_PLAUSIBLE_PRESSURE_HPA:
+                    baro_buckets.setdefault(b_epoch, []).append(p_val * HPA_TO_INHG)
+                    if include_reference:
+                        all_bucket_epochs.add(b_epoch)
+
+            if include_reference:
                 all_bucket_epochs.add(b_epoch)
+                rb = ref_buckets.setdefault(
+                    b_epoch,
+                    {"temp_f": [], "humidity": [], "wind_avg_mph": [], "rain_in": []},
+                )
+                if rref["temp_c"] is not None:
+                    rb["temp_f"].append((float(rref["temp_c"]) * 9.0 / 5.0) + 32.0)
+                if rref["humidity"] is not None:
+                    rb["humidity"].append(float(rref["humidity"]))
+                if rref["wind_avg_mps"] is not None:
+                    rb["wind_avg_mph"].append(float(rref["wind_avg_mps"]) * 2.23693629)
+                if rref["rain_mm"] is not None:
+                    rb["rain_in"].append(float(rref["rain_mm"]) / 25.4)
 
         sorted_epochs = sorted(all_bucket_epochs)
         labels_iso = [
@@ -1333,20 +1439,23 @@ class WeatherDatabase:
         ensemble_temp_f: list[Optional[float]] = []
         ensemble_humidity: list[Optional[float]] = []
         pressure_inhg_pts: list[Optional[float]] = []
+        ref_temp_f: list[Optional[float]] = []
+        ref_humidity: list[Optional[float]] = []
+        ref_wind_mph: list[Optional[float]] = []
 
         for idx, ep in enumerate(sorted_epochs):
             t_vals = [
                 s["temp_f"][idx]
                 for s in sensor_series
                 if s["is_trusted"]
-                and s["location_type"] in ("outdoor", "unassigned")
+                and s["location_type"] == "outdoor"
                 and s["temp_f"][idx] is not None
             ]
             h_vals = [
                 s["humidity"][idx]
                 for s in sensor_series
                 if s["is_trusted"]
-                and s["location_type"] in ("outdoor", "unassigned")
+                and s["location_type"] == "outdoor"
                 and s["humidity"][idx] is not None
             ]
             ensemble_temp_f.append(round(sum(t_vals) / len(t_vals), 2) if t_vals else None)
@@ -1355,16 +1464,36 @@ class WeatherDatabase:
             b_vals = baro_buckets.get(ep)
             pressure_inhg_pts.append(round(sum(b_vals) / len(b_vals), 2) if b_vals else None)
 
+            if include_reference:
+                rb = ref_buckets.get(ep)
+                ref_temp_f.append(
+                    round(sum(rb["temp_f"]) / len(rb["temp_f"]), 2) if (rb and rb["temp_f"]) else None
+                )
+                ref_humidity.append(
+                    round(sum(rb["humidity"]) / len(rb["humidity"]), 1) if (rb and rb["humidity"]) else None
+                )
+                ref_wind_mph.append(
+                    round(sum(rb["wind_avg_mph"]) / len(rb["wind_avg_mph"]), 2)
+                    if (rb and rb["wind_avg_mph"])
+                    else None
+                )
+
         return {
             "hours": safe_hours,
             "bucket_minutes": resolved_bucket_min,
-            "location_filter": loc_filter_norm,
+            "locations": sorted(active_locs),
+            "include_reference": include_reference,
             "timestamps": labels_iso,
             "series": sensor_series,
             "ensemble": {
                 "temp_f": ensemble_temp_f,
                 "humidity": ensemble_humidity,
                 "pressure_inhg": pressure_inhg_pts,
+            },
+            "reference": {
+                "temp_f": ref_temp_f,
+                "humidity": ref_humidity,
+                "wind_avg_mph": ref_wind_mph,
             },
         }
 
@@ -1377,6 +1506,9 @@ class WeatherDatabase:
     ) -> dict[str, Any]:
         """Resolve Barometric Pressure (`inHg` & `hPa`), 3-hour tendency, and 24-hour AcuRite-style forecast."""
         now_utc = datetime.now(timezone.utc)
+        if rf_press_hpa is not None and not (MIN_PLAUSIBLE_PRESSURE_HPA <= rf_press_hpa <= MAX_PLAUSIBLE_PRESSURE_HPA):
+            rf_press_hpa = None
+
         source = "rf_sensor" if rf_press_hpa is not None else "regional_reference"
         current_hpa = rf_press_hpa
         past_3h_hpa: Optional[float] = None
@@ -1388,6 +1520,7 @@ class WeatherDatabase:
                         """
                         SELECT pressure_hpa FROM reference_weather_history
                         WHERE pressure_hpa IS NOT NULL
+                          AND pressure_hpa BETWEEN 870.0 AND 1085.0
                         ORDER BY timestamp DESC LIMIT 1;
                         """
                     ).fetchone()
@@ -1399,7 +1532,9 @@ class WeatherDatabase:
                 row_3h = self._conn.execute(
                     """
                     SELECT AVG(pressure_hpa) AS avg_p FROM reference_weather_history
-                    WHERE timestamp BETWEEN ? AND ? AND pressure_hpa IS NOT NULL;
+                    WHERE timestamp BETWEEN ? AND ?
+                      AND pressure_hpa IS NOT NULL
+                      AND pressure_hpa BETWEEN 870.0 AND 1085.0;
                     """,
                     (t_3h_start, t_3h_end),
                 ).fetchone()
@@ -1423,8 +1558,6 @@ class WeatherDatabase:
             round((current_hpa - past_3h_hpa) * HPA_TO_INHG, 2) if past_3h_hpa is not None else None
         )
 
-        # Standard meteorological 3-hour barometric tendency classification
-        # 0.06 inHg (~2.0 hPa) over 3h is rapid; 0.02 inHg (~0.7 hPa) is steady/rising/falling threshold
         if delta_3h_inhg is None:
             trend_label = "Steady"
         elif delta_3h_inhg >= 0.06:
@@ -1438,7 +1571,6 @@ class WeatherDatabase:
         else:
             trend_label = f"Steady ({delta_3h_inhg:+.2f} inHg/3h)"
 
-        # Classic AcuRite / Zambretti-inspired 12-24h Barometric Forecaster
         southerly_wind = wind_cardinal in ("S", "SSE", "SE", "ESE", "SSW", "SW")
         northerly_wind = wind_cardinal in ("N", "NNW", "NW", "WNW", "NNE", "NE")
 
@@ -1500,10 +1632,7 @@ class WeatherDatabase:
         outdoor_sensors: list[dict[str, Any]] = []
         indoor_sensors: list[dict[str, Any]] = []
 
-        has_explicit_outdoor = any(
-            s["location_type"] == "outdoor" and s["is_trusted"] for s in sensors
-        )
-
+        # Strict Opt-In Trust Model: Only explicitly trusted 'outdoor' or 'indoor' stations participate
         for s in sensors:
             if not s["is_trusted"] or s["location_type"] == "ignore":
                 continue
@@ -1512,15 +1641,8 @@ class WeatherDatabase:
                 continue
             if s["location_type"] == "indoor":
                 indoor_sensors.append(s)
-            elif s["location_type"] == "outdoor" or (
-                not has_explicit_outdoor and s["location_type"] == "unassigned"
-            ):
+            elif s["location_type"] == "outdoor":
                 outdoor_sensors.append(s)
-
-        if not outdoor_sensors:
-            for s in sensors:
-                if s["is_trusted"] and s["location_type"] == "unassigned":
-                    outdoor_sensors.append(s)
 
         out_temps_c: list[float] = []
         out_rh: list[float] = []
@@ -1543,7 +1665,9 @@ class WeatherDatabase:
             if "humidity" not in hidden and r.get("humidity") is not None:
                 out_rh.append(float(r["humidity"]))
             if "pressure" not in hidden and r.get("pressure_hpa") is not None:
-                out_press.append(float(r["pressure_hpa"]))
+                p_val = float(r["pressure_hpa"])
+                if MIN_PLAUSIBLE_PRESSURE_HPA <= p_val <= MAX_PLAUSIBLE_PRESSURE_HPA:
+                    out_press.append(p_val)
             if "wind" not in hidden:
                 if r.get("wind_avg_mps") is not None:
                     out_wind_mps.append(float(r["wind_avg_mps"]))
@@ -1608,8 +1732,6 @@ class WeatherDatabase:
         in_temp_f = round((in_temp_c * 9.0 / 5.0) + 32.0, 1) if in_temp_c is not None else None
         in_humidity = round(sum(in_rh) / len(in_rh), 1) if in_rh else None
 
-        # Compute 24h & 30m rainfall deltas + 1h & 3h temperature/humidity trends
-        # (using local SQLite readings first, with seamless fallback to reference_weather_history!)
         rain_24h_mm = 0.0
         rain_30m_mm = 0.0
         temp_delta_1h_f: Optional[float] = None
@@ -1637,12 +1759,12 @@ class WeatherDatabase:
 
                     rain_rows_24h = self._conn.execute(
                         f"""
-                        SELECT (model || '_' || sensor_id) AS skey,
+                        SELECT COALESCE(sensor_key, model || '_' || sensor_id) AS skey,
                                MAX(rain_cumulative_mm) - MIN(rain_cumulative_mm) AS delta_mm
                         FROM sensor_readings
                         WHERE timestamp >= ?
                           AND rain_cumulative_mm IS NOT NULL
-                          AND (model || '_' || sensor_id) IN ({placeholders})
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders})
                         GROUP BY skey;
                         """,
                         [cutoff_24h, *rain_keys],
@@ -1657,12 +1779,12 @@ class WeatherDatabase:
 
                     rain_rows_30m = self._conn.execute(
                         f"""
-                        SELECT (model || '_' || sensor_id) AS skey,
+                        SELECT COALESCE(sensor_key, model || '_' || sensor_id) AS skey,
                                MAX(rain_cumulative_mm) - MIN(rain_cumulative_mm) AS delta_mm
                         FROM sensor_readings
                         WHERE timestamp >= ?
                           AND rain_cumulative_mm IS NOT NULL
-                          AND (model || '_' || sensor_id) IN ({placeholders})
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders})
                         GROUP BY skey;
                         """,
                         [cutoff_30m, *rain_keys],
@@ -1684,7 +1806,7 @@ class WeatherDatabase:
                         SELECT AVG(temp_c) AS avg_tc, AVG(humidity) AS avg_rh, AVG(wind_dir_deg) AS avg_wdir
                         FROM sensor_readings
                         WHERE timestamp BETWEEN ? AND ?
-                          AND (model || '_' || sensor_id) IN ({placeholders});
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders});
                         """,
                         [t_1h_start, t_1h_end, *outdoor_keys],
                     ).fetchone()
@@ -1704,7 +1826,7 @@ class WeatherDatabase:
                         SELECT AVG(temp_c) AS avg_tc
                         FROM sensor_readings
                         WHERE timestamp BETWEEN ? AND ?
-                          AND (model || '_' || sensor_id) IN ({placeholders});
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders});
                         """,
                         [t_3h_start, t_3h_end, *outdoor_keys],
                     ).fetchone()
@@ -1712,7 +1834,6 @@ class WeatherDatabase:
                         past_3h_tf = (float(row_3h["avg_tc"]) * 9.0 / 5.0) + 32.0
                         temp_delta_3h_f = round(mean_temp_f - past_3h_tf, 1)
 
-                    # Fallback to Open-Meteo reference_weather_history if local sensor DB is < 3 hours old
                     if temp_delta_3h_f is None:
                         ref_3h = self._conn.execute(
                             """
@@ -1732,7 +1853,6 @@ class WeatherDatabase:
             else None
         )
 
-        # Compute Barometric Pressure (inHg + hPa) & 24h Barometric Forecast
         baro = self._compute_barometric_telemetry_and_forecast(
             rf_press_hpa=rf_mean_press,
             dew_spread_f=dew_spread_f,
@@ -1854,7 +1974,10 @@ class WeatherDatabase:
                 f"(Dew spread {dew_spread_f if dew_spread_f is not None else '--'}F). {baro_forecast}"
             )
         else:
-            nowcast_summary = "Awaiting outdoor telemetry bursts to synthesize local microclimate nowcast."
+            nowcast_summary = (
+                "No Outdoor trusted sensors configured yet. Open '3. Sensors Manager' and set your station(s) "
+                f"to Outdoor (Trusted) to synthesize local microclimate telemetry. {baro_forecast}"
+            )
 
         return {
             "generated_at": format_utc_z(now_utc),
@@ -1923,7 +2046,7 @@ class WeatherDatabase:
                 """
                 SELECT
                     COUNT(*) AS total_sensors,
-                    SUM(CASE WHEN location_type != 'ignore' AND is_trusted = 1 THEN 1 ELSE 0 END) AS active_sensors
+                    SUM(CASE WHEN location_type IN ('outdoor', 'indoor') AND is_trusted = 1 THEN 1 ELSE 0 END) AS active_sensors
                 FROM sensors;
                 """
             ).fetchone()
@@ -1965,12 +2088,21 @@ class WeatherDatabase:
             row = cursor.fetchone()
             return int(row[0]) if row else 0
 
+    def checkpoint_wal(self) -> None:
+        """Flush and truncate the SQLite Write-Ahead Log (`PRAGMA wal_checkpoint(TRUNCATE)`)."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except sqlite3.Error:
+                    pass
+
     def close(self) -> None:
         """Flush WAL checkpoints and close the underlying SQLite connection gracefully."""
         with self._lock:
             if self._conn is not None:
                 try:
-                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except sqlite3.Error:
                     pass
                 try:

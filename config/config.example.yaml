@@ -1,5 +1,5 @@
 # ============================================================================
-# SkyScry (v0.0.7) — Configuration Template
+# SkyScry (v0.0.8) — Configuration Template
 # ============================================================================
 # Copy this file to `config/config.yaml` to customize your local deployment:
 #   cp config/config.example.yaml config/config.yaml
@@ -51,9 +51,9 @@ pipeline:
 location:
   # Coordinates used for Open-Meteo regional barometric pressure (inHg/hPa)
   # and 48-hour historical weather backfill (can also be overridden via
-  # LATITUDE and LONGITUDE environment variables).
-  latitude: 38.7042
-  longitude: -91.4374
+  # LATITUDE and LONGITUDE environment variables or persisted in SQLite).
+  latitude: 0.0
+  longitude: 0.0
   enable_regional_backfill: true
   backfill_hours: 48
   sync_interval_minutes: 15

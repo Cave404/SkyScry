@@ -748,6 +748,93 @@ input[type="text"]:focus {
   width: 100%;
 }
 
+/* Multi-Checkbox Filter Dropdown */
+.filter-dropdown-group {
+  position: relative;
+  min-width: 240px;
+}
+
+.multi-filter-dropdown {
+  position: relative;
+  width: 100%;
+}
+
+.multi-filter-btn {
+  width: 100%;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  text-align: left;
+}
+
+.multi-filter-btn:hover,
+.multi-filter-btn:focus {
+  border-color: var(--border-highlight);
+}
+
+.dropdown-caret {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+.multi-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 320px;
+  max-height: 360px;
+  overflow-y: auto;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-highlight);
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.65);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.filter-item {
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--text-primary);
+}
+
+.filter-item:hover {
+  background-color: var(--bg-elevated);
+}
+
+.filter-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 4px 0;
+}
+
+.filter-sensor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ==========================================================================
    VIEW 3: DEDICATED SENSORS MANAGEMENT PAGE
    ========================================================================== */

@@ -64,8 +64,8 @@ class PipelineConfig:
 class LocationConfig:
     """Station coordinates and Open-Meteo regional barometric/history backfill configuration."""
 
-    latitude: float = 38.7042
-    longitude: float = -91.4374
+    latitude: float = 0.0
+    longitude: float = 0.0
     enable_regional_backfill: bool = True
     backfill_hours: int = 48
     sync_interval_minutes: int = 15
@@ -199,18 +199,18 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         dedup_prune_interval_seconds=float(pipe_raw.get("dedup_prune_interval_seconds", 300.0)),
     )
 
-    lat_val = float(loc_raw.get("latitude", 38.7042))
-    lon_val = float(loc_raw.get("longitude", -91.4374))
+    lat_val = float(loc_raw.get("latitude", 0.0) or 0.0)
+    lon_val = float(loc_raw.get("longitude", 0.0) or 0.0)
     env_lat = os.environ.get("LATITUDE") or os.environ.get("SKYSCRY_LATITUDE")
     env_lon = os.environ.get("LONGITUDE") or os.environ.get("SKYSCRY_LONGITUDE")
-    if env_lat:
+    if env_lat and env_lat.strip():
         try:
-            lat_val = float(env_lat)
+            lat_val = float(env_lat.strip())
         except ValueError:
             pass
-    if env_lon:
+    if env_lon and env_lon.strip():
         try:
-            lon_val = float(env_lon)
+            lon_val = float(env_lon.strip())
         except ValueError:
             pass
 

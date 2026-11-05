@@ -264,13 +264,34 @@
           </select>
         </div>
 
-        <div class="control-group">
-          <label for="chart-location-select">Location Filter</label>
-          <select id="chart-location-select">
-            <option value="outdoor" selected>Outdoor &amp; Unassigned (Trusted Only)</option>
-            <option value="indoor">Indoor Only (Trusted Only)</option>
-            <option value="all">All Trusted Sensors</option>
-          </select>
+        <div class="control-group filter-dropdown-group">
+          <label>Chart Streams &amp; Sensors</label>
+          <div class="multi-filter-dropdown" id="chart-filter-dropdown">
+            <button type="button" class="multi-filter-btn" id="chart-filter-btn" aria-expanded="false">
+              <span id="chart-filter-summary">Outdoor (Trusted)</span>
+              <span class="dropdown-caret">&#9662;</span>
+            </button>
+            <div class="multi-filter-menu hidden" id="chart-filter-menu">
+              <div class="filter-section-title">Location Groups</div>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-outdoor" value="outdoor" checked />
+                <span>Outdoor Sensors (Trusted)</span>
+              </label>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-indoor" value="indoor" />
+                <span>Indoor Sensors (Trusted)</span>
+              </label>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-reference" value="reference" />
+                <span>Reference / Regional Weather Baseline</span>
+              </label>
+              <div class="filter-divider"></div>
+              <div class="filter-section-title">Active Trusted Stations</div>
+              <div id="filter-sensor-list" class="filter-sensor-list">
+                <span class="text-muted">No trusted Outdoor/Indoor stations configured yet.</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="control-group">
@@ -343,12 +364,12 @@
         <div>
           <h3>Registered 433.92 MHz Sensor Fleet</h3>
           <p class="text-muted">
-            Cards are locked in deterministic alphabetical order and update in place. Fridge/meat probes and bit-flip outliers are automatically expunged.
+            Newly discovered stations default to <strong>Ignored / Untrusted (Opt-In)</strong>. Click <strong>Configure</strong> on your stations to set them to <strong>Outdoor</strong> or <strong>Indoor</strong>.
           </p>
         </div>
         <label class="checkbox-label">
-          <input type="checkbox" id="toggle-show-ignored" />
-          <span>Show Ignored / Appliance Sensors</span>
+          <input type="checkbox" id="toggle-show-ignored" checked />
+          <span>Show Ignored / Unconfigured Sensors</span>
         </label>
       </div>
 
@@ -460,12 +481,11 @@
         </div>
 
         <div class="form-group">
-          <label for="modal-location-select">Location Classification</label>
+          <label for="modal-location-select">Location Classification (Opt-In Trust)</label>
           <select id="modal-location-select">
-            <option value="unassigned">Unassigned (Included in Outdoor fallback)</option>
-            <option value="outdoor">Outdoor</option>
-            <option value="indoor">Indoor</option>
-            <option value="ignore">Ignore / Appliance Probe (Hide &amp; Exclude)</option>
+            <option value="ignore">Ignore / Unconfigured (Default - Exclude from Dashboard &amp; Charts)</option>
+            <option value="outdoor">Outdoor (Include in Local Weather Synthesis &amp; Charts)</option>
+            <option value="indoor">Indoor (Include in Indoor Microclimate Summary &amp; Charts)</option>
           </select>
         </div>
 

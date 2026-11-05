@@ -7,7 +7,7 @@ set "REPO_DIR=%~dp0"
 if "%REPO_DIR:~-1%"=="\" set "REPO_DIR=%REPO_DIR:~0,-1%"
 
 echo ============================================================================
-echo   SkyScry v0.0.7 - Windows Desktop Shortcut Generator
+echo   SkyScry v0.0.8 - Windows Desktop Shortcut Generator
 echo ============================================================================
 echo.
 

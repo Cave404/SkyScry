@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SkyScry v0.0.7 - Smart Linux / TrueNAS SCALE Container Entrypoint
+# SkyScry v0.0.8 - Smart Linux / TrueNAS SCALE Container Entrypoint
 # ============================================================================
 set -e
 
 echo "============================================================================"
-echo "  SkyScry v0.0.7 - Container Startup & Hardware Pre-Flight"
+echo "  SkyScry v0.0.8 - Container Startup & Hardware Pre-Flight"
 echo "============================================================================"
 
 cd /app
 
-# 1. Optional Git & Python Dependency Self-Update on Container Restart
+# 1. Ensure persistent volume directories exist and flush any existing SQLite WAL
+mkdir -p /app/data /app/config
+if [ -f "/app/data/skyscry.db" ]; then
+    python -c "import sqlite3; c=sqlite3.connect('/app/data/skyscry.db', timeout=5.0); c.execute('PRAGMA wal_checkpoint(TRUNCATE);'); c.close()" 2>/dev/null || true
+fi
+
+# 2. Optional Git & Python Dependency Self-Update on Container Restart
 AUTO_UPDATE="${AUTO_UPDATE_ON_START:-true}"
 if [ "${AUTO_UPDATE}" = "true" ] || [ "${AUTO_UPDATE}" = "1" ]; then
     if [ -d "/app/.git" ] && command -v git >/dev/null 2>&1; then
@@ -31,12 +37,12 @@ else
     echo "[ENTRYPOINT] AUTO_UPDATE_ON_START=${AUTO_UPDATE}: Skipping container startup Git pull."
 fi
 
-# 2. Unload conflicting Linux DVB-T TV tuner kernel modules if privileged
+# 3. Unload conflicting Linux DVB-T TV tuner kernel modules if privileged
 if command -v modprobe >/dev/null 2>&1; then
     modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
 fi
 
-# 3. Inspect /dev/bus/usb passthrough for RTL-SDR hardware
+# 4. Inspect /dev/bus/usb passthrough for RTL-SDR hardware
 if [ -d "/dev/bus/usb" ]; then
     echo "[ENTRYPOINT] USB bus (/dev/bus/usb) detected inside container."
     if command -v lsusb >/dev/null 2>&1; then
@@ -51,9 +57,5 @@ else
     echo "[ENTRYPOINT] WARNING: /dev/bus/usb is not mounted. Ensure devices: ['/dev/bus/usb:/dev/bus/usb'] or privileged: true is configured."
 fi
 
-# 4. Ensure persistent volume directories exist
-mkdir -p /app/data /app/config
-
 echo "[ENTRYPOINT] Launching SkyScry daemon..."
 exec "$@"
-

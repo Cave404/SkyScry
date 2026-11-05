@@ -1,9 +1,9 @@
 /**
- * SkyScry v0.0.5 — 4-View Frontend Controller
+ * SkyScry v0.0.8 — 4-View Frontend Controller
  * - View 1: Main Overview Dashboard with High-Clarity Animated SVG Weather Icons,
  *           Animated SVG Wind Compass Rose, Barometric Pressure (inHg/hPa) + 24h Forecast
- * - View 2: Multi-Section Time-Bucketed Historical Charts (Outliers & Appliances Expunged)
- * - View 3: Dedicated Sensors Manager with In-Place DOM Patching, Outlier Badges, & Metric Masking
+ * - View 2: Multi-Section Time-Bucketed Historical Charts with Multi-Checkbox Filter Dropdown
+ * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching, & Metric Masking
  * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export
  */
 
@@ -129,13 +129,21 @@
   const elOvRainMm = document.getElementById("ov-rain-mm");
   const elOvUvInline = document.getElementById("ov-uv-inline");
 
-  // View 2: Charts DOM
+  // View 2: Charts DOM & Multi-Checkbox Filter Dropdown
   const elChartHours = document.getElementById("chart-hours-select");
-  const elChartLocation = document.getElementById("chart-location-select");
   const elChartBucket = document.getElementById("chart-bucket-select");
   const elChartToggleEnsemble = document.getElementById("chart-toggle-ensemble");
   const elChartMetaTemp = document.getElementById("chart-meta-temp");
   const elChartMetaRh = document.getElementById("chart-meta-rh");
+  const elFilterDropdown = document.getElementById("chart-filter-dropdown");
+  const elFilterBtn = document.getElementById("chart-filter-btn");
+  const elFilterSummary = document.getElementById("chart-filter-summary");
+  const elFilterMenu = document.getElementById("chart-filter-menu");
+  const elFilterLocOutdoor = document.getElementById("filter-loc-outdoor");
+  const elFilterLocIndoor = document.getElementById("filter-loc-indoor");
+  const elFilterLocReference = document.getElementById("filter-loc-reference");
+  const elFilterSensorList = document.getElementById("filter-sensor-list");
+  const uncheckedSensorKeys = new Set();
 
   // View 3: Sensors DOM
   const elSensorGrid = document.getElementById("sensor-grid");
@@ -599,6 +607,7 @@
     sensorsCache = Array.isArray(data.sensors) ? data.sensors : [];
     patchSensorGridInPlace();
     populateLogSensorDropdown();
+    populateChartSensorCheckboxes();
   }
 
   function buildSignalBarsHtml(bars, rating) {
@@ -914,18 +923,93 @@
     return charts[key];
   }
 
+  function updateChartFilterSummary() {
+    if (!elFilterSummary) return;
+    const parts = [];
+    if (elFilterLocOutdoor && elFilterLocOutdoor.checked) parts.push("Outdoor (Trusted)");
+    if (elFilterLocIndoor && elFilterLocIndoor.checked) parts.push("Indoor (Trusted)");
+    if (elFilterLocReference && elFilterLocReference.checked) parts.push("Reference Baseline");
+    const sensorCheckboxes = elFilterSensorList
+      ? Array.from(elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]'))
+      : [];
+    if (sensorCheckboxes.length > 0) {
+      const checkedCount = sensorCheckboxes.filter((cb) => cb.checked).length;
+      if (checkedCount < sensorCheckboxes.length) {
+        parts.push(`${checkedCount}/${sensorCheckboxes.length} Stations`);
+      }
+    }
+    elFilterSummary.textContent = parts.length > 0 ? parts.join(" + ") : "No Streams Selected";
+  }
+
+  function populateChartSensorCheckboxes() {
+    if (!elFilterSensorList) return;
+    const includeOutdoor = elFilterLocOutdoor ? elFilterLocOutdoor.checked : true;
+    const includeIndoor = elFilterLocIndoor ? elFilterLocIndoor.checked : false;
+
+    const trustedStations = sensorsCache.filter((s) => {
+      if (!s.is_trusted || s.location_type === "ignore") return false;
+      if (s.location_type === "outdoor" && includeOutdoor) return true;
+      if (s.location_type === "indoor" && includeIndoor) return true;
+      return false;
+    });
+
+    if (trustedStations.length === 0) {
+      elFilterSensorList.innerHTML = `<span class="text-muted">No matching trusted Outdoor/Indoor stations configured.</span>`;
+      updateChartFilterSummary();
+      return;
+    }
+
+    const html = trustedStations
+      .map((s) => {
+        const isChecked = !uncheckedSensorKeys.has(s.sensor_key);
+        const locTag = s.location_type === "indoor" ? "IN" : "OUT";
+        return `
+          <label class="checkbox-label filter-item">
+            <input type="checkbox" name="chart_sensor_cb" value="${escapeHtml(s.sensor_key)}" ${isChecked ? "checked" : ""} />
+            <span>[${locTag}] ${escapeHtml(s.display_name)}</span>
+          </label>`;
+      })
+      .join("");
+
+    elFilterSensorList.innerHTML = html;
+    elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) {
+          uncheckedSensorKeys.delete(cb.value);
+        } else {
+          uncheckedSensorKeys.add(cb.value);
+        }
+        updateChartFilterSummary();
+        fetchAndUpdateCharts();
+      });
+    });
+    updateChartFilterSummary();
+  }
+
   async function fetchAndUpdateCharts() {
     if (typeof Chart === "undefined") return;
     const hours = elChartHours.value || "24";
-    const location = elChartLocation.value || "outdoor";
     const bucket = elChartBucket.value || "auto";
     const showEnsemble = elChartToggleEnsemble.checked;
 
+    const locs = [];
+    if (!elFilterLocOutdoor || elFilterLocOutdoor.checked) locs.push("outdoor");
+    if (elFilterLocIndoor && elFilterLocIndoor.checked) locs.push("indoor");
+    if (elFilterLocReference && elFilterLocReference.checked) locs.push("reference");
+
     const params = new URLSearchParams({
       hours,
-      location,
+      locations: locs.join(","),
       bucket_minutes: bucket,
     });
+
+    if (elFilterSensorList) {
+      const allCbs = Array.from(elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]'));
+      if (allCbs.length > 0 && uncheckedSensorKeys.size > 0) {
+        const activeKeys = allCbs.filter((cb) => cb.checked).map((cb) => cb.value);
+        params.set("sensors", activeKeys.join(","));
+      }
+    }
 
     const res = await fetch(`/api/charts?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -937,6 +1021,7 @@
     );
     const seriesList = Array.isArray(data.series) ? data.series : [];
     const ensemble = data.ensemble || {};
+    const reference = data.reference || {};
 
     elChartMetaTemp.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals (Trusted only)`;
     elChartMetaRh.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
@@ -952,6 +1037,22 @@
         borderDash: [6, 4],
         pointRadius: 0,
         pointHoverRadius: 5,
+        spanGaps: true,
+        cubicInterpolationMode: "monotone",
+        tension: 0.35,
+        order: 0,
+      });
+    }
+    if (Array.isArray(reference.temp_f) && reference.temp_f.some((v) => v !== null)) {
+      tempDatasets.push({
+        label: "Regional Reference Baseline (Open-Meteo)",
+        data: reference.temp_f,
+        borderColor: "#94a3b8",
+        backgroundColor: "rgba(148, 163, 184, 0.1)",
+        borderWidth: 2.0,
+        borderDash: [3, 3],
+        pointRadius: 0,
+        pointHoverRadius: 4,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -976,8 +1077,39 @@
         order: 0,
       });
     }
+    if (Array.isArray(reference.humidity) && reference.humidity.some((v) => v !== null)) {
+      rhDatasets.push({
+        label: "Regional Reference Baseline (Open-Meteo)",
+        data: reference.humidity,
+        borderColor: "#94a3b8",
+        backgroundColor: "rgba(148, 163, 184, 0.1)",
+        borderWidth: 2.0,
+        borderDash: [3, 3],
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        spanGaps: true,
+        cubicInterpolationMode: "monotone",
+        tension: 0.35,
+        order: 0,
+      });
+    }
 
     const windDatasets = [];
+    if (Array.isArray(reference.wind_avg_mph) && reference.wind_avg_mph.some((v) => v !== null)) {
+      windDatasets.push({
+        label: "Regional Reference Wind (mph)",
+        data: reference.wind_avg_mph,
+        borderColor: "#94a3b8",
+        backgroundColor: "rgba(148, 163, 184, 0.1)",
+        borderWidth: 1.8,
+        borderDash: [3, 3],
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        spanGaps: true,
+        cubicInterpolationMode: "monotone",
+        tension: 0.35,
+      });
+    }
     const rainDatasets = [];
 
     seriesList.forEach((s, idx) => {
@@ -1193,7 +1325,8 @@
     elModalSensorKey.value = sensor.sensor_key;
     elModalSubtitle.textContent = `${sensor.model} #${sensor.sensor_id} (Key: ${sensor.sensor_key})`;
     elModalAlias.value = sensor.alias || "";
-    elModalLocation.value = sensor.location_type || "unassigned";
+    const curLoc = sensor.location_type === "unassigned" ? "ignore" : (sensor.location_type || "ignore");
+    elModalLocation.value = curLoc;
     elModalTrusted.checked = Boolean(sensor.is_trusted);
     elModalBattReset.checked = false;
     elModalPurgeOutliers.checked = false;
@@ -1235,14 +1368,22 @@
 
     try {
       const res = await authorizedWriteFetch(`/api/sensors/${encodeURIComponent(sensorKey)}`, {
-        method: "PATCH",
+        method: "POST",
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      let data = {};
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const rawText = await res.text();
+        throw new Error(`Server returned HTTP ${res.status}: ${rawText.slice(0, 120)}`);
+      }
+      if (!res.ok || data.ok === false) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       closeSensorModal();
+      showToast(`Saved settings for ${data.sensor ? data.sensor.display_name : sensorKey}`);
       await refreshAll(true);
     } catch (err) {
       elModalFeedback.textContent = err.message || "Failed to save sensor configuration.";
@@ -1369,9 +1510,41 @@
   elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
 
   elChartHours.addEventListener("change", fetchAndUpdateCharts);
-  elChartLocation.addEventListener("change", fetchAndUpdateCharts);
   elChartBucket.addEventListener("change", fetchAndUpdateCharts);
   elChartToggleEnsemble.addEventListener("change", fetchAndUpdateCharts);
+
+  if (elFilterBtn && elFilterMenu) {
+    elFilterBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      const isHidden = elFilterMenu.classList.toggle("hidden");
+      elFilterBtn.setAttribute("aria-expanded", String(!isHidden));
+    });
+    document.addEventListener("click", (evt) => {
+      if (elFilterDropdown && !elFilterDropdown.contains(evt.target)) {
+        elFilterMenu.classList.add("hidden");
+        elFilterBtn.setAttribute("aria-expanded", "false");
+      }
+    });
+  }
+
+  [elFilterLocOutdoor, elFilterLocIndoor, elFilterLocReference].forEach((cb) => {
+    if (cb) {
+      cb.addEventListener("change", () => {
+        populateChartSensorCheckboxes();
+        fetchAndUpdateCharts();
+      });
+    }
+  });
+
+  if (elModalLocation) {
+    elModalLocation.addEventListener("change", () => {
+      if (elModalLocation.value === "outdoor" || elModalLocation.value === "indoor") {
+        elModalTrusted.checked = true;
+      } else if (elModalLocation.value === "ignore") {
+        elModalTrusted.checked = false;
+      }
+    });
+  }
 
   elBtnRunLogQuery.addEventListener("click", loadLogExplorerTable);
   elBtnExportCsv.addEventListener("click", () => {

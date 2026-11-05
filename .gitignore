@@ -16,6 +16,7 @@ data/
 .rtl_433_version
 config/config.yaml
 !config/config.example.yaml
+*truenas.local*
 
 # ============================================================================
 # Python / Bytecode / Packaging / Environments

@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
-title SkyScry v0.0.7 - 433.92 MHz Weather Telemetry Daemon
+title SkyScry v0.0.8 - 433.92 MHz Weather Telemetry Daemon
 
 :: 1. Ensure working directory is the SkyScry repository root
 cd /d "%~dp0"
 
 echo ============================================================================
-echo   SkyScry v0.0.7 - 433.92 MHz Microclimate Telemetry Daemon
+echo   SkyScry v0.0.8 - 433.92 MHz Microclimate Telemetry Daemon
 echo ============================================================================
 echo.
 

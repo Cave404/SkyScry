@@ -1,4 +1,4 @@
-"""Raw rtl_433 JSON parsing, SI unit normalization, appliance classification, and burst deduplication."""
+"""Raw rtl_433 JSON parsing, SI unit normalization, TPMS/appliance filtering, and burst deduplication."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 # Recognized meteorological keys in rtl_433 JSON output.
 # Payloads lacking all of these (e.g., TPMS tire sensors, car keyfobs, security contacts) are ignored.
+# NOTE: `pressure_kPa` and `pressure_PSI` are intentionally excluded because rtl_433 TPMS tire sensors
+# emit inflation pressure in kPa/PSI (~200-300 kPa), which is NOT atmospheric barometric pressure.
 WEATHER_TELEMETRY_KEYS: frozenset[str] = frozenset(
     {
         "temperature_C",
@@ -22,7 +24,6 @@ WEATHER_TELEMETRY_KEYS: frozenset[str] = frozenset(
         "temp_F",
         "humidity",
         "pressure_hPa",
-        "pressure_kPa",
         "pressure_inHg",
         "wind_avg_m_s",
         "wind_avg_km_h",
@@ -49,20 +50,45 @@ WEATHER_TELEMETRY_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Known kitchen, fridge/freezer, meat-probe, and pool/liquid probe protocols that broadcast on 433.92 MHz.
-# These are automatically classified as `location_type='ignore'` and `is_trusted=0` upon discovery.
-APPLIANCE_PROBE_PREFIXES: tuple[str, ...] = (
+# Vehicle TPMS, soil moisture probes, and kitchen/fridge/meat-probe protocols that broadcast on 433.92 MHz.
+# Any packet matching these prefixes is hard-dropped at the normalizer gate and purged from SQLite.
+NON_WEATHER_MODEL_PREFIXES: tuple[str, ...] = (
+    # Vehicle Tire Pressure Monitoring Systems (TPMS)
+    "ford",
+    "citroen",
+    "renault",
+    "toyota",
+    "nissan",
+    "schrader",
+    "jansite",
+    "pmv-107j",
+    "abarth",
+    "hyundai",
+    "peugeot",
+    "truck",
+    "tpms",
+    "kia",
+    "subaru",
+    "mazda",
+    "chevrolet",
+    "vdo",
+    "pacific",
+    # Soil moisture / irrigation probes
+    "rainpoint",
+    "ecowitt-wh51",
+    # Kitchen / Fridge / Freezer / Meat / Pool thermometers
     "acurite-986",
     "acurite-00275rm",
     "acurite-515",
-    "maverick-",
-    "thermopro-",
-    "thermopro_",
-    "inkbird-",
-    "inkbird_",
-    "govee-",
+    "maverick",
+    "thermopro",
+    "inkbird",
+    "govee",
     "oregon-sl109h",
 )
+
+# Backwards-compatible alias for db imports
+APPLIANCE_PROBE_PREFIXES: tuple[str, ...] = NON_WEATHER_MODEL_PREFIXES
 
 # Hard physical meteorological bounds for ambient surface weather stations
 MIN_PLAUSIBLE_TEMP_F = -25.0
@@ -70,12 +96,46 @@ MAX_PLAUSIBLE_TEMP_F = 130.0
 MIN_PLAUSIBLE_HUMIDITY = 1.0
 MAX_PLAUSIBLE_HUMIDITY = 100.0
 MAX_PLAUSIBLE_WIND_MPH = 130.0
+MIN_PLAUSIBLE_PRESSURE_HPA = 870.0   # 25.69 inHg
+MAX_PLAUSIBLE_PRESSURE_HPA = 1085.0  # 32.04 inHg
 
 
 def is_appliance_model(model: str) -> bool:
-    """Return True if the sensor model belongs to a fridge/freezer, meat, or liquid probe."""
+    """Return True if the sensor model belongs to a vehicle TPMS, soil probe, or kitchen/fridge probe."""
     lower = (model or "").strip().lower()
-    return any(lower.startswith(prefix) for prefix in APPLIANCE_PROBE_PREFIXES)
+    if not lower:
+        return False
+    return any(lower.startswith(prefix) for prefix in NON_WEATHER_MODEL_PREFIXES)
+
+
+def is_tpms_or_non_weather_payload(payload: dict[str, Any]) -> bool:
+    """Return True if a raw rtl_433 JSON payload is a vehicle TPMS, soil probe, or appliance packet."""
+    model = str(payload.get("model") or "").strip()
+    if is_appliance_model(model):
+        return True
+
+    pkt_type = str(payload.get("type") or "").strip().upper()
+    if pkt_type == "TPMS":
+        return True
+
+    # Tire pressure keys emitted by rtl_433 TPMS decoders
+    if any(
+        k in payload
+        for k in (
+            "pressure_kPa",
+            "pressure_PSI",
+            "tire_pressure_psi",
+            "wheel",
+            "moisture",
+        )
+    ):
+        return True
+
+    # TPMS status flags paired with missing humidity/wind/rain
+    if "flags" in payload and "humidity" not in payload and "wind_avg_m_s" not in payload and "rain_mm" not in payload:
+        return True
+
+    return False
 
 
 def check_physical_bounds(reading: NormalizedReading) -> Optional[str]:
@@ -92,6 +152,13 @@ def check_physical_bounds(reading: NormalizedReading) -> Optional[str]:
             return (
                 f"humidity {reading.humidity:.1f}% outside physical bounds "
                 f"[{MIN_PLAUSIBLE_HUMIDITY:.0f}%, {MAX_PLAUSIBLE_HUMIDITY:.0f}%]"
+            )
+
+    if reading.pressure_hpa is not None:
+        if reading.pressure_hpa < MIN_PLAUSIBLE_PRESSURE_HPA or reading.pressure_hpa > MAX_PLAUSIBLE_PRESSURE_HPA:
+            return (
+                f"pressure {reading.pressure_hpa:.1f} hPa outside physical barometric bounds "
+                f"[{MIN_PLAUSIBLE_PRESSURE_HPA:.0f}, {MAX_PLAUSIBLE_PRESSURE_HPA:.0f} hPa]"
             )
 
     if reading.wind_avg_mph is not None and reading.wind_avg_mph > MAX_PLAUSIBLE_WIND_MPH:
@@ -290,19 +357,28 @@ class PacketNormalizer:
 
     @staticmethod
     def _normalize_pressure_hpa(payload: dict[str, Any]) -> Optional[float]:
-        """Extract barometric pressure in hectopascals (hPa)."""
+        """Extract atmospheric barometric pressure in hectopascals (hPa), clamped to [870.0, 1085.0] hPa.
+
+        Never maps `pressure_kPa` or `pressure_PSI` from vehicle TPMS tire sensors.
+        """
         hpa = _to_float(payload.get("pressure_hPa"))
-        if hpa is not None:
+        if hpa is None:
+            inhg = _to_float(payload.get("pressure_inHg"))
+            if inhg is not None:
+                hpa = inhg * 33.8638866667
+
+        if hpa is None:
+            return None
+
+        if MIN_PLAUSIBLE_PRESSURE_HPA <= hpa <= MAX_PLAUSIBLE_PRESSURE_HPA:
             return round(hpa, 2)
 
-        kpa = _to_float(payload.get("pressure_kPa"))
-        if kpa is not None:
-            return round(kpa * 10.0, 2)
-
-        inhg = _to_float(payload.get("pressure_inHg"))
-        if inhg is not None:
-            return round(inhg * 33.8638866667, 2)
-
+        logger.debug(
+            "Discarded out-of-range barometric pressure value %.2f hPa (valid: %.0f-%.0f hPa)",
+            hpa,
+            MIN_PLAUSIBLE_PRESSURE_HPA,
+            MAX_PLAUSIBLE_PRESSURE_HPA,
+        )
         return None
 
     @staticmethod
@@ -350,6 +426,11 @@ class PacketNormalizer:
 
         model = str(payload.get("model") or "").strip()
         if not model:
+            return None
+
+        # Hard-drop vehicle TPMS, soil moisture, and appliance/kitchen probes at the normalizer gate
+        if is_tpms_or_non_weather_payload(payload):
+            logger.debug("Hard-dropped TPMS/soil/appliance RF packet from model=%s", model)
             return None
 
         if not self.has_weather_telemetry(payload):
