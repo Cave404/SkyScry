@@ -1,8 +1,9 @@
 /**
- * SkyScry v0.0.4 — 4-View Frontend Controller
- * - View 1: Main Overview Dashboard with Animated SVG Weather Icons, Outdoor/Indoor Ensemble, & Nowcast
- * - View 2: Multi-Section Time-Bucketed Historical Charts with Outdoor Ensemble Average Line
- * - View 3: Dedicated Sensors Manager with In-Place DOM Patching (No Jitter/Flashing), RF Signal Bars, Battery Lifecycle, & Per-Sensor Metric Masking
+ * SkyScry v0.0.5 — 4-View Frontend Controller
+ * - View 1: Main Overview Dashboard with High-Clarity Animated SVG Weather Icons,
+ *           Animated SVG Wind Compass Rose, Barometric Pressure (inHg/hPa) + 24h Forecast
+ * - View 2: Multi-Section Time-Bucketed Historical Charts (Outliers & Appliances Expunged)
+ * - View 3: Dedicated Sensors Manager with In-Place DOM Patching, Outlier Badges, & Metric Masking
  * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export
  */
 
@@ -16,7 +17,6 @@
   let currentIconCode = "";
   let logsLoadedOnce = false;
 
-  // Persistent Chart.js instances (mutated in-place, never destroyed on poll)
   const charts = {
     temp: null,
     rh: null,
@@ -24,16 +24,23 @@
     rain: null,
   };
 
-  // Header DOM
+  // Header & Banners DOM
+  const elGitCommit = document.getElementById("stat-git-commit");
+  const elRtl433Ver = document.getElementById("stat-rtl433-ver");
   const elSdrStatus = document.getElementById("stat-sdr-status");
   const elSensorCount = document.getElementById("stat-sensor-count");
+  const elBaroHeader = document.getElementById("stat-baro-header");
   const elReadingCount = document.getElementById("stat-reading-count");
   const elDbSize = document.getElementById("stat-db-size");
   const elUptime = document.getElementById("stat-uptime");
   const elSyncDot = document.getElementById("stat-sync-indicator");
   const elLastSync = document.getElementById("stat-last-sync");
   const elErrorBanner = document.getElementById("sdr-error-banner");
+  const elToastBanner = document.getElementById("maintenance-toast");
   const elBtnRefresh = document.getElementById("btn-refresh-now");
+  const elBtnTriggerUpdate = document.getElementById("btn-trigger-update");
+  const elBtnSyncRef = document.getElementById("btn-sync-reference");
+  const elBtnPurgeOutliers = document.getElementById("btn-purge-outliers");
 
   // View 1: Overview DOM
   const elHeroIcon = document.getElementById("hero-weather-icon");
@@ -50,18 +57,26 @@
   const elOvInComfort = document.getElementById("ov-in-comfort");
   const elOvDelta1hTemp = document.getElementById("ov-delta-1h-temp");
   const elOvDelta3hTemp = document.getElementById("ov-delta-3h-temp");
-  const elOvDelta1hRh = document.getElementById("ov-delta-1h-rh");
+  const elOvDelta3hBaro = document.getElementById("ov-delta-3h-baro");
   const elOvDewSpread = document.getElementById("ov-dew-spread");
+
+  // Wind Compass & KPI Tiles DOM
+  const elOvWindSpeed = document.getElementById("ov-wind-speed");
+  const elOvWindGust = document.getElementById("ov-wind-gust");
+  const elOvWindBearing = document.getElementById("ov-wind-bearing");
+  const elCompassNeedle = document.getElementById("compass-needle-group");
+  const elCompassPulseRing = document.getElementById("compass-pulse-ring");
+
+  const elOvBaroInhg = document.getElementById("ov-baro-inhg");
+  const elOvBaroHpa = document.getElementById("ov-baro-hpa");
+  const elOvBaroSource = document.getElementById("ov-baro-source");
+
   const elOvOutRh = document.getElementById("ov-out-rh");
   const elOvOutDp = document.getElementById("ov-out-dp");
-  const elOvFeelsF = document.getElementById("ov-feels-f");
-  const elOvFeelsC = document.getElementById("ov-feels-c");
-  const elOvWindSpeed = document.getElementById("ov-wind-speed");
-  const elOvWindSub = document.getElementById("ov-wind-sub");
+  const elOvFeelsInline = document.getElementById("ov-feels-inline");
   const elOvRain24h = document.getElementById("ov-rain-24h");
   const elOvRainMm = document.getElementById("ov-rain-mm");
-  const elOvUvLux = document.getElementById("ov-uv-lux");
-  const elOvLuxSub = document.getElementById("ov-lux-sub");
+  const elOvUvInline = document.getElementById("ov-uv-inline");
 
   // View 2: Charts DOM
   const elChartHours = document.getElementById("chart-hours-select");
@@ -95,10 +110,18 @@
   const elModalLocation = document.getElementById("modal-location-select");
   const elModalTrusted = document.getElementById("modal-trusted-checkbox");
   const elModalBattReset = document.getElementById("modal-battery-reset-checkbox");
+  const elModalPurgeOutliers = document.getElementById("modal-purge-outliers-checkbox");
   const elModalFeedback = document.getElementById("modal-feedback");
   const elBtnCloseModal = document.getElementById("btn-close-modal");
   const elBtnCancelModal = document.getElementById("btn-cancel-modal");
   const elBtnClearAlias = document.getElementById("btn-clear-alias");
+  const elBtnMarkAppliance = document.getElementById("btn-mark-appliance");
+
+  function showToast(msg) {
+    elToastBanner.textContent = msg;
+    elToastBanner.classList.remove("hidden");
+    setTimeout(() => elToastBanner.classList.add("hidden"), 4500);
+  }
 
   function escapeHtml(str) {
     if (str === null || str === undefined) return "";
@@ -163,148 +186,172 @@
   }
 
   // ==========================================================================
-  // ANIMATED WEATHER CONDITION SVG LIBRARY
+  // HIGH-CLARITY ANIMATED WEATHER CONDITION SVG LIBRARY
+  // (Warm-gold visible crescent moon, crisp 4-point diamond stars, translucent clouds)
   // ==========================================================================
   function getAnimatedWeatherSvg(code) {
     switch (code) {
       case "clear-day":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <g class="wx-sun-rays" stroke="#fbbf24" stroke-width="4" stroke-linecap="round">
-              <line x1="48" y1="10" x2="48" y2="20" />
-              <line x1="48" y1="76" x2="48" y2="86" />
-              <line x1="10" y1="48" x2="20" y2="48" />
-              <line x1="76" y1="48" x2="86" y2="48" />
-              <line x1="21" y1="21" x2="28" y2="28" />
-              <line x1="68" y1="68" x2="75" y2="75" />
-              <line x1="75" y1="21" x2="68" y2="28" />
-              <line x1="28" y1="68" x2="21" y2="75" />
-            </g>
-            <circle cx="48" cy="48" r="18" fill="url(#sunGrad)" />
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <radialGradient id="sunGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(44 42) scale(24)">
-                <stop stop-color="#fde047" />
-                <stop offset="1" stop-color="#f59e0b" />
+              <radialGradient id="sunCore" cx="55" cy="55" r="24" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FEF08A" />
+                <stop offset="65%" stop-color="#FBBF24" />
+                <stop offset="100%" stop-color="#F59E0B" />
               </radialGradient>
             </defs>
+            <g class="wx-sun-rays" style="transform-origin: 55px 55px;" stroke="#FBBF24" stroke-width="4.2" stroke-linecap="round">
+              <line x1="55" y1="10" x2="55" y2="21" />
+              <line x1="55" y1="89" x2="55" y2="100" />
+              <line x1="10" y1="55" x2="21" y2="55" />
+              <line x1="89" y1="55" x2="100" y2="55" />
+              <line x1="23" y1="23" x2="31" y2="31" />
+              <line x1="79" y1="79" x2="87" y2="87" />
+              <line x1="87" y1="23" x2="79" y2="31" />
+              <line x1="31" y1="79" x2="23" y2="87" />
+            </g>
+            <circle cx="55" cy="55" r="22" fill="url(#sunCore)" stroke="#FDE047" stroke-width="1.5" />
           </svg>`;
 
       case "clear-night":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle class="wx-star" cx="24" cy="24" r="2.2" fill="#fde047" />
-            <circle class="wx-star" cx="74" cy="22" r="1.8" fill="#93c5fd" />
-            <circle class="wx-star" cx="20" cy="64" r="1.6" fill="#e2e8f0" />
-            <path d="M58 22C45 24 36 35 36 48C36 62 47 73 61 73C68 73 74 70 78 65C66 66 55 57 55 44C55 34 60 26 58 22Z"
-                  fill="url(#moonGrad)" stroke="#93c5fd" stroke-width="1.5" />
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <linearGradient id="moonGrad" x1="36" y1="22" x2="78" y2="73" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#e0f2fe" />
-                <stop offset="1" stop-color="#60a5fa" />
+              <linearGradient id="goldMoon" x1="30" y1="18" x2="85" y2="85" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FEF08A" />
+                <stop offset="55%" stop-color="#FBBF24" />
+                <stop offset="100%" stop-color="#D97706" />
               </linearGradient>
+              <filter id="moonGlow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#FBBF24" flood-opacity="0.45" />
+              </filter>
             </defs>
+            <!-- Crisp 4-point diamond stars -->
+            <path class="wx-diamond-star-1" d="M24 20 L26 25 L31 27 L26 29 L24 34 L22 29 L17 27 L22 25 Z" fill="#FDE047" />
+            <path class="wx-diamond-star-2" d="M84 22 L85.5 26 L89.5 27.5 L85.5 29 L84 33 L82.5 29 L78.5 27.5 L82.5 26 Z" fill="#E0F2FE" />
+            <path class="wx-diamond-star-1" d="M22 68 L23.2 71 L26.2 72.2 L23.2 73.4 L22 76.4 L20.8 73.4 L17.8 72.2 L20.8 71 Z" fill="#BAE6FD" />
+            <!-- High-contrast warm gold crescent moon -->
+            <path filter="url(#moonGlow)"
+                  d="M66 18 C46 20 32 36 32 56 C32 76 48 91 68 91 C78 91 87 87 93 80 C77 82 62 70 62 52 C62 37 70 25 66 18 Z"
+                  fill="url(#goldMoon)" stroke="#FDE047" stroke-width="1.5" />
           </svg>`;
 
       case "cloudy-night":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle class="wx-star" cx="22" cy="22" r="2" fill="#fde047" />
-            <path d="M58 18C47 20 40 29 40 40C40 51 49 60 60 60C65 60 70 58 74 54C64 55 56 47 56 37C56 29 60 22 58 18Z"
-                  fill="#93c5fd" opacity="0.85" />
-            <g class="wx-cloud-body">
-              <path d="M26 68H68C75 68 80 63 80 56C80 50 75 45 69 45C67 36 59 30 49 30C38 30 30 38 29 48C23 49 18 54 18 60C18 65 22 68 26 68Z"
-                    fill="url(#cloudNightGrad)" stroke="#475569" stroke-width="1.5" />
-            </g>
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <linearGradient id="cloudNightGrad" x1="20" y1="30" x2="78" y2="68" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#94a3b8" />
-                <stop offset="1" stop-color="#475569" />
+              <linearGradient id="goldMoonCloud" x1="50" y1="10" x2="98" y2="62" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FEF08A" />
+                <stop offset="60%" stop-color="#FBBF24" />
+                <stop offset="100%" stop-color="#D97706" />
               </linearGradient>
+              <linearGradient id="slateCloud" x1="16" y1="42" x2="84" y2="88" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#CBD5E1" stop-opacity="0.94" />
+                <stop offset="100%" stop-color="#64748B" stop-opacity="0.94" />
+              </linearGradient>
+              <filter id="moonGlow2" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="0" stdDeviation="3.5" flood-color="#FBBF24" flood-opacity="0.45" />
+              </filter>
             </defs>
+            <!-- Crisp 4-point diamond stars in upper-left sky -->
+            <path class="wx-diamond-star-1" d="M22 18 L23.8 22.5 L28.3 24.3 L23.8 26.1 L22 30.6 L20.2 26.1 L15.7 24.3 L20.2 22.5 Z" fill="#FDE047" />
+            <path class="wx-diamond-star-2" d="M42 12 L43.2 15 L46.2 16.2 L43.2 17.4 L42 20.4 L40.8 17.4 L37.8 16.2 L40.8 15 Z" fill="#E0F2FE" />
+
+            <!-- Large warm-gold Crescent Moon positioned high in upper-right so >70% is clearly visible -->
+            <path filter="url(#moonGlow2)"
+                  d="M75 11 C59 13 48 26 48 42 C48 58 61 70 77 70 C85 70 92 67 97 61 C84 62 72 52 72 38 C72 26 78 17 75 11 Z"
+                  fill="url(#goldMoonCloud)" stroke="#FDE047" stroke-width="1.4" />
+
+            <!-- Softly drifting foreground cloud positioned lower-left -->
+            <g class="wx-cloud-body">
+              <path d="M24 84 H74 C82 84 88 78 88 70 C88 63 82 57 75 57 C73 46 63 39 51 39 C38 39 29 48 27 60 C20 61 14 67 14 74 C14 80 18 84 24 84 Z"
+                    fill="url(#slateCloud)" stroke="#E2E8F0" stroke-width="1.4" />
+            </g>
           </svg>`;
 
       case "rain":
       case "heavy-rain":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <g class="wx-cloud-back">
-              <path d="M32 54H72C77 54 82 50 82 44C82 39 78 35 73 35C71 27 64 22 56 22C46 22 39 29 38 37C33 38 29 42 29 47C29 51 30 54 32 54Z"
+              <path d="M36 58 H82 C88 58 93 53 93 46 C93 40 88 35 82 35 C80 26 72 20 62 20 C51 20 43 28 41 38 C35 39 31 44 31 50 C31 55 33 58 36 58 Z"
                     fill="#334155" />
             </g>
             <g class="wx-cloud-body">
-              <path d="M24 62H66C73 62 78 57 78 50C78 44 73 39 67 39C65 30 57 24 47 24C36 24 28 32 27 42C21 43 16 48 16 54C16 59 20 62 24 62Z"
-                    fill="#64748b" stroke="#94a3b8" stroke-width="1.2" />
+              <path d="M24 68 H74 C82 68 88 62 88 54 C88 47 82 41 75 41 C73 30 63 23 51 23 C38 23 29 32 27 44 C20 45 14 51 14 58 C14 64 18 68 24 68 Z"
+                    fill="#64748B" stroke="#CBD5E1" stroke-width="1.4" />
             </g>
-            <g stroke="#38bdf8" stroke-width="3.2" stroke-linecap="round">
-              <line class="wx-drop-1" x1="32" y1="68" x2="28" y2="80" />
-              <line class="wx-drop-2" x1="48" y1="68" x2="44" y2="80" />
-              <line class="wx-drop-3" x1="64" y1="68" x2="60" y2="80" />
+            <g stroke="#38BDF8" stroke-width="3.6" stroke-linecap="round">
+              <line class="wx-drop-1" x1="34" y1="74" x2="29" y2="90" />
+              <line class="wx-drop-2" x1="52" y1="74" x2="47" y2="90" />
+              <line class="wx-drop-3" x1="70" y1="74" x2="65" y2="90" />
             </g>
           </svg>`;
 
       case "windy":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <g class="wx-cloud-body">
-              <path d="M24 54H66C72 54 76 50 76 44C76 38 72 34 66 34C64 26 57 20 48 20C38 20 30 27 29 36C23 37 19 41 19 47C19 51 21 54 24 54Z"
-                    fill="#64748b" />
+              <path d="M26 58 H74 C81 58 86 53 86 46 C86 39 81 34 74 34 C72 25 63 18 52 18 C40 18 31 26 30 37 C23 38 18 43 18 50 C18 55 21 58 26 58 Z"
+                    fill="#94A3B8" stroke="#E2E8F0" stroke-width="1.2" />
             </g>
-            <path class="wx-wind-line" d="M16 64H72C77 64 80 61 80 57C80 53 77 50 73 50" stroke="#38bdf8" stroke-width="3.5" stroke-linecap="round" />
-            <path class="wx-wind-line" d="M22 74H62C67 74 70 77 70 81C70 84 67 87 63 87" stroke="#93c5fd" stroke-width="3.2" stroke-linecap="round" />
+            <path class="wx-wind-line" d="M16 70 H82 C88 70 92 66 92 61 C92 56 88 52 83 52" stroke="#38BDF8" stroke-width="4" stroke-linecap="round" />
+            <path class="wx-wind-line" d="M24 82 H70 C76 82 80 86 80 91 C80 95 76 98 71 98" stroke="#93C5FD" stroke-width="3.5" stroke-linecap="round" />
           </svg>`;
 
       case "fog":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <g class="wx-cloud-body">
-              <path d="M24 54H68C74 54 78 50 78 44C78 38 74 34 68 34C66 26 59 20 50 20C40 20 32 27 31 36C25 37 20 41 20 47C20 51 22 54 24 54Z"
-                    fill="#64748b" />
+              <path d="M26 58 H76 C83 58 88 53 88 46 C88 39 83 34 76 34 C74 25 65 18 54 18 C42 18 33 26 32 37 C25 38 20 43 20 50 C20 55 23 58 26 58 Z"
+                    fill="#94A3B8" />
             </g>
-            <g class="wx-fog-bar" stroke="#94a3b8" stroke-width="3.5" stroke-linecap="round">
-              <line x1="20" y1="64" x2="76" y2="64" />
-              <line x1="26" y1="73" x2="70" y2="73" />
-              <line x1="18" y1="82" x2="64" y2="82" />
+            <g class="wx-fog-bar" stroke="#CBD5E1" stroke-width="4" stroke-linecap="round">
+              <line x1="20" y1="69" x2="88" y2="69" />
+              <line x1="28" y1="80" x2="80" y2="80" />
+              <line x1="18" y1="91" x2="72" y2="91" />
             </g>
           </svg>`;
 
       case "cloudy":
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <g class="wx-cloud-back">
-              <path d="M34 56H74C79 56 84 52 84 46C84 41 80 37 75 37C73 29 66 24 58 24C48 24 41 31 40 39C35 40 31 44 31 49C31 53 32 56 34 56Z"
+              <path d="M38 62 H84 C90 62 96 57 96 50 C96 44 91 39 85 39 C83 30 75 24 65 24 C53 24 45 32 44 42 C38 43 33 48 33 54 C33 59 35 62 38 62 Z"
                     fill="#475569" />
             </g>
             <g class="wx-cloud-body">
-              <path d="M22 68H66C73 68 78 63 78 56C78 50 73 45 67 45C65 36 57 30 47 30C36 30 28 38 27 48C21 49 16 54 16 60C16 65 19 68 22 68Z"
-                    fill="#94a3b8" />
+              <path d="M24 76 H74 C82 76 88 70 88 62 C88 55 82 49 75 49 C73 38 63 31 51 31 C38 31 29 40 27 52 C20 53 14 59 14 66 C14 72 18 76 24 76 Z"
+                    fill="#CBD5E1" stroke="#F8FAFC" stroke-width="1.2" />
             </g>
           </svg>`;
 
       case "partly-cloudy-day":
       default:
         return `
-          <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <g class="wx-sun-rays" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round" style="transform-origin: 34px 34px;">
-              <line x1="34" y1="10" x2="34" y2="16" />
-              <line x1="34" y1="52" x2="34" y2="58" />
-              <line x1="10" y1="34" x2="16" y2="34" />
-              <line x1="52" y1="34" x2="58" y2="34" />
-              <line x1="17" y1="17" x2="22" y2="22" />
-              <line x1="46" y1="46" x2="51" y2="51" />
-              <line x1="51" y1="17" x2="46" y2="22" />
-              <line x1="22" y1="46" x2="17" y2="51" />
-            </g>
-            <circle cx="34" cy="34" r="13" fill="#fbbf24" />
-            <g class="wx-cloud-body">
-              <path d="M28 70H70C77 70 82 65 82 58C82 52 77 47 71 47C69 38 61 32 51 32C40 32 32 40 31 50C25 51 20 56 20 62C20 67 24 70 28 70Z"
-                    fill="url(#partlyCloudGrad)" stroke="#cbd5e1" stroke-width="1.2" />
-            </g>
+          <svg viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <linearGradient id="partlyCloudGrad" x1="20" y1="32" x2="80" y2="70" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#e2e8f0" />
-                <stop offset="1" stop-color="#94a3b8" />
+              <linearGradient id="dayCloudGrad" x1="20" y1="38" x2="88" y2="84" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#F8FAFC" />
+                <stop offset="100%" stop-color="#CBD5E1" />
               </linearGradient>
             </defs>
+            <g class="wx-sun-rays" stroke="#FBBF24" stroke-width="3.8" stroke-linecap="round" style="transform-origin: 38px 36px;">
+              <line x1="38" y1="8" x2="38" y2="15" />
+              <line x1="38" y1="57" x2="38" y2="64" />
+              <line x1="10" y1="36" x2="17" y2="36" />
+              <line x1="59" y1="36" x2="66" y2="36" />
+              <line x1="18" y1="16" x2="23" y2="21" />
+              <line x1="53" y1="51" x2="58" y2="56" />
+              <line x1="58" y1="16" x2="53" y2="21" />
+              <line x1="23" y1="51" x2="18" y2="56" />
+            </g>
+            <circle cx="38" cy="36" r="15" fill="#FBBF24" stroke="#FEF08A" stroke-width="1.5" />
+            <g class="wx-cloud-body">
+              <path d="M28 82 H78 C86 82 92 76 92 68 C92 61 86 55 79 55 C77 44 67 37 55 37 C42 37 33 46 31 58 C24 59 18 65 18 72 C18 78 22 82 28 82 Z"
+                    fill="url(#dayCloudGrad)" stroke="#E2E8F0" stroke-width="1.4" />
+            </g>
           </svg>`;
     }
   }
@@ -327,6 +374,15 @@
     elDbSize.textContent = `${Number(data.database_size_mb || 0).toFixed(2)} MB`;
     elUptime.textContent = formatDuration(data.uptime_seconds);
 
+    if (elGitCommit) {
+      elGitCommit.textContent = data.git_commit ? `git:${data.git_commit}` : "git:local";
+    }
+    if (elRtl433Ver) {
+      elRtl433Ver.textContent = data.rtl433_version
+        ? `rtl_433:${data.rtl433_version}`
+        : "rtl_433:ready";
+    }
+
     if (data.sdr_last_error && sdrState !== "running") {
       elErrorBanner.textContent = `SDR DIAGNOSTIC: ${data.sdr_last_error}`;
       elErrorBanner.classList.remove("hidden");
@@ -343,6 +399,7 @@
     const cond = data.condition || {};
     const out = data.outdoor || {};
     const ind = data.indoor || {};
+    const baro = data.barometer || {};
 
     if (cond.code && cond.code !== currentIconCode) {
       currentIconCode = cond.code;
@@ -360,9 +417,9 @@
         : `(--.-&deg;C)`;
 
     if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
-      elOvOutSpread.innerHTML = `Outdoor ensemble mean across ${out.sensor_count} stations | Spread: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
+      elOvOutSpread.innerHTML = `Outdoor ensemble mean across ${out.sensor_count} trusted stations | Spread: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
     } else {
-      elOvOutSpread.textContent = `Outdoor ensemble across ${out.sensor_count ?? 0} active station(s)`;
+      elOvOutSpread.textContent = `Outdoor ensemble across ${out.sensor_count ?? 0} trusted station(s)`;
     }
 
     const badges = Array.isArray(cond.trend_badges) ? cond.trend_badges : [];
@@ -401,21 +458,61 @@
     elOvDelta1hTemp.textContent =
       out.temp_delta_1h_f !== null && out.temp_delta_1h_f !== undefined
         ? `${out.temp_delta_1h_f >= 0 ? "+" : ""}${Number(out.temp_delta_1h_f).toFixed(1)} F/hr`
-        : "Collecting...";
+        : "--";
     elOvDelta3hTemp.textContent =
       out.temp_delta_3h_f !== null && out.temp_delta_3h_f !== undefined
         ? `${out.temp_delta_3h_f >= 0 ? "+" : ""}${Number(out.temp_delta_3h_f).toFixed(1)} F/3h`
-        : "Collecting...";
-    elOvDelta1hRh.textContent =
-      out.rh_delta_1h !== null && out.rh_delta_1h !== undefined
-        ? `${out.rh_delta_1h >= 0 ? "+" : ""}${Number(out.rh_delta_1h).toFixed(0)} %/hr`
-        : "Collecting...";
+        : "--";
+    elOvDelta3hBaro.textContent =
+      baro.delta_3h_inhg !== null && baro.delta_3h_inhg !== undefined
+        ? `${baro.delta_3h_inhg >= 0 ? "+" : ""}${Number(baro.delta_3h_inhg).toFixed(2)} inHg`
+        : baro.trend_label || "--";
     elOvDewSpread.textContent =
       out.dew_spread_f !== null && out.dew_spread_f !== undefined
         ? `${Number(out.dew_spread_f).toFixed(1)} F`
         : "--";
 
-    // Outdoor KPI tiles
+    // Animated Wind Speed & Compass Rose Card
+    const windMph = out.wind_avg_mph !== null && out.wind_avg_mph !== undefined ? Number(out.wind_avg_mph) : 0;
+    const windCard = out.wind_cardinal || "--";
+    const windDeg = out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
+
+    elOvWindSpeed.textContent =
+      out.wind_avg_mph !== null && out.wind_avg_mph !== undefined
+        ? `${windMph.toFixed(1)} mph ${windCard !== "--" ? windCard : ""}`
+        : `0.0 mph`;
+    elOvWindGust.textContent =
+      out.wind_gust_mph !== null && out.wind_gust_mph !== undefined
+        ? `Peak Gust: ${Number(out.wind_gust_mph).toFixed(1)} mph (${Number(out.wind_gust_mps || 0).toFixed(1)} m/s)`
+        : `Peak Gust: 0.0 mph`;
+    elOvWindBearing.textContent =
+      out.wind_dir_deg !== null && out.wind_dir_deg !== undefined
+        ? `Bearing: ${windDeg.toFixed(0)} deg (${windCard})`
+        : `Bearing: -- deg`;
+
+    if (elCompassNeedle) {
+      elCompassNeedle.style.transform = `rotate(${windDeg}deg)`;
+    }
+    if (elCompassPulseRing) {
+      elCompassPulseRing.classList.toggle("compass-active-pulse", windMph > 0.5);
+    }
+
+    // Barometric Pressure Card (inHg & hPa)
+    if (baro.pressure_inhg !== null && baro.pressure_inhg !== undefined) {
+      const inhgStr = `${Number(baro.pressure_inhg).toFixed(2)} inHg`;
+      elOvBaroInhg.textContent = inhgStr;
+      elBaroHeader.textContent = inhgStr;
+      elOvBaroHpa.textContent = `${Number(baro.pressure_hpa).toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
+      elOvBaroSource.textContent =
+        baro.source === "rf_sensor"
+          ? "Source: Local 433 MHz Barometer"
+          : "Source: Regional Open-Meteo Barometer";
+    } else {
+      elOvBaroInhg.textContent = "--.-- inHg";
+      elOvBaroHpa.textContent = "Awaiting barometric sync...";
+    }
+
+    // Outdoor Humidity & Dew Point + Feels Like
     elOvOutRh.textContent =
       out.humidity !== null && out.humidity !== undefined
         ? `${Number(out.humidity).toFixed(0)}%`
@@ -424,41 +521,19 @@
       out.dew_point_f !== null && out.dew_point_f !== undefined
         ? `Dew Point: ${Number(out.dew_point_f).toFixed(1)}&deg;F (${Number(out.dew_point_c).toFixed(1)}&deg;C)`
         : `Dew Point: --`;
-
-    elOvFeelsF.innerHTML =
+    elOvFeelsInline.innerHTML =
       out.feels_like_f !== null && out.feels_like_f !== undefined
-        ? `${Number(out.feels_like_f).toFixed(1)}&deg;F`
-        : `--.-&deg;F`;
-    elOvFeelsC.innerHTML =
-      out.feels_like_c !== null && out.feels_like_c !== undefined
-        ? `Apparent Temp: ${Number(out.feels_like_c).toFixed(1)}&deg;C`
-        : `Apparent Temp: --`;
+        ? `Feels Like: ${Number(out.feels_like_f).toFixed(1)}&deg;F (${Number(out.feels_like_c).toFixed(1)}&deg;C)`
+        : `Feels Like: --`;
 
-    elOvWindSpeed.textContent =
-      out.wind_avg_mph !== null && out.wind_avg_mph !== undefined
-        ? `${Number(out.wind_avg_mph).toFixed(1)} mph ${out.wind_cardinal || ""}`
-        : `0.0 mph`;
-    const gustTxt =
-      out.wind_gust_mph !== null && out.wind_gust_mph !== undefined
-        ? `${Number(out.wind_gust_mph).toFixed(1)} mph`
-        : `--`;
-    const dirTxt =
-      out.wind_dir_deg !== null && out.wind_dir_deg !== undefined
-        ? `${Number(out.wind_dir_deg).toFixed(0)} deg (${out.wind_cardinal || ""})`
-        : `--`;
-    elOvWindSub.textContent = `Peak Gust: ${gustTxt} | Bearing: ${dirTxt}`;
-
+    // Rain & UV
     elOvRain24h.textContent = `${Number(out.rain_24h_in || 0).toFixed(2)} in`;
     elOvRainMm.textContent = `${Number(out.rain_24h_mm || 0).toFixed(1)} mm over last 24 hours`;
-
-    elOvUvLux.textContent =
-      out.uv_index !== null && out.uv_index !== undefined
-        ? `UV ${Number(out.uv_index).toFixed(1)}`
-        : `UV 0.0`;
-    elOvLuxSub.textContent =
-      out.lux !== null && out.lux !== undefined
-        ? `Illuminance: ${Number(out.lux).toLocaleString()} lux`
-        : `Illuminance: -- lux`;
+    const uvStr =
+      out.uv_index !== null && out.uv_index !== undefined ? `UV ${Number(out.uv_index).toFixed(1)}` : "UV 0.0";
+    const luxStr =
+      out.lux !== null && out.lux !== undefined ? `${Number(out.lux).toLocaleString()} lux` : "-- lux";
+    elOvUvInline.textContent = `Solar: ${uvStr} | ${luxStr}`;
   }
 
   // ==========================================================================
@@ -564,12 +639,16 @@
     const trustedBadge = sensor.is_trusted ? "" : `<span class="badge">UNTRUSTED</span>`;
     const hiddenCountBadge =
       hidden.size > 0 ? `<span class="badge">${hidden.size} HIDDEN</span>` : "";
+    const expungedBadge =
+      (sensor.expunged_count || 0) > 0
+        ? `<span class="badge badge-expunged" title="${escapeHtml(sensor.last_expunged_reason || "Outlier packets rejected")}">${sensor.expunged_count} EXPUNGED</span>`
+        : "";
 
-    const badgesHtml = `<span class="${locBadgeClass}">${escapeHtml(locType)}</span>${trustedBadge}${hiddenCountBadge}${battBadge}`;
+    const badgesHtml = `<span class="${locBadgeClass}">${escapeHtml(locType)}</span>${trustedBadge}${hiddenCountBadge}${expungedBadge}${battBadge}`;
     const slotBadges = cardEl.querySelector('[data-slot="badges"]');
     if (slotBadges.innerHTML !== badgesHtml) slotBadges.innerHTML = badgesHtml;
 
-    // Primary Temp & RH (respecting hidden_metrics)
+    // Primary Temp & RH
     const slotTemp = cardEl.querySelector('[data-slot="temp"]');
     let tempHtml = `<span class="text-muted">Temp Hidden</span>`;
     if (!hidden.has("temperature")) {
@@ -675,7 +754,6 @@
         : `Cycle: monitoring`;
     if (slotBattEst.textContent !== estText) slotBattEst.textContent = estText;
 
-    // Real-time relative seconds counter
     const slotLastSeen = cardEl.querySelector('[data-slot="last-seen"]');
     slotLastSeen.setAttribute("data-utc-ts", sensor.last_seen || "");
     slotLastSeen.textContent = `Last packet: ${formatRelativeSeconds(sensor.last_seen)}`;
@@ -684,7 +762,7 @@
   function patchSensorGridInPlace() {
     const showIgnored = elToggleIgnored.checked;
     const visibleSensors = sensorsCache.filter(
-      (s) => showIgnored || s.location_type !== "ignore"
+      (s) => showIgnored || (s.location_type !== "ignore" && s.is_trusted)
     );
 
     if (visibleSensors.length === 0) {
@@ -695,7 +773,6 @@
 
     const visibleKeys = new Set(visibleSensors.map((s) => s.sensor_key));
 
-    // Remove cards that are no longer visible
     Array.from(elSensorGrid.children).forEach((child) => {
       const key = child.getAttribute("data-sensor-key");
       if (!visibleKeys.has(key)) {
@@ -703,7 +780,6 @@
       }
     });
 
-    // Insert or update cards in deterministic order without recreating existing DOM nodes
     visibleSensors.forEach((sensor, idx) => {
       let cardEl = elSensorGrid.querySelector(
         `[data-sensor-key="${CSS.escape(sensor.sensor_key)}"]`
@@ -720,7 +796,6 @@
     });
   }
 
-  // Tick the "Last packet: Xs ago" counters every 1 second so the UI feels live
   setInterval(() => {
     document.querySelectorAll('[data-slot="last-seen"]').forEach((el) => {
       const ts = el.getAttribute("data-utc-ts");
@@ -810,10 +885,9 @@
     const seriesList = Array.isArray(data.series) ? data.series : [];
     const ensemble = data.ensemble || {};
 
-    elChartMetaTemp.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
+    elChartMetaTemp.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals (Trusted only)`;
     elChartMetaRh.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
 
-    // 1. Temperature datasets
     const tempDatasets = [];
     if (showEnsemble && Array.isArray(ensemble.temp_f) && ensemble.temp_f.some((v) => v !== null)) {
       tempDatasets.push({
@@ -832,7 +906,6 @@
       });
     }
 
-    // 2. Humidity datasets
     const rhDatasets = [];
     if (showEnsemble && Array.isArray(ensemble.humidity) && ensemble.humidity.some((v) => v !== null)) {
       rhDatasets.push({
@@ -851,7 +924,6 @@
       });
     }
 
-    // 3. Wind & 4. Rain datasets
     const windDatasets = [];
     const rainDatasets = [];
 
@@ -1059,7 +1131,7 @@
   }
 
   // ==========================================================================
-  // SENSOR CONFIGURATION MODAL (WITH GRANULAR METRIC CHECKBOXES)
+  // SENSOR CONFIGURATION MODAL & MAINTENANCE ACTIONS
   // ==========================================================================
   function openSensorModal(sensorKey) {
     const sensor = sensorsCache.find((s) => s.sensor_key === sensorKey);
@@ -1071,6 +1143,7 @@
     elModalLocation.value = sensor.location_type || "unassigned";
     elModalTrusted.checked = Boolean(sensor.is_trusted);
     elModalBattReset.checked = false;
+    elModalPurgeOutliers.checked = false;
 
     const hiddenSet = new Set(sensor.hidden_metrics || []);
     document.querySelectorAll('input[name="vis_metric"]').forEach((cb) => {
@@ -1104,6 +1177,7 @@
       is_trusted: elModalTrusted.checked,
       hidden_metrics: hiddenMetrics,
       mark_battery_replaced: elModalBattReset.checked,
+      purge_sensor_outliers: elModalPurgeOutliers.checked,
     };
 
     try {
@@ -1122,6 +1196,75 @@
       elModalFeedback.textContent = err.message || "Failed to save sensor configuration.";
       elModalFeedback.className = "form-feedback error";
       elModalFeedback.classList.remove("hidden");
+    }
+  }
+
+  async function handlePurgeOutliersClick() {
+    elBtnPurgeOutliers.disabled = true;
+    try {
+      const res = await fetch("/api/maintenance/purge-outliers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      showToast(
+        `Outlier Purge Complete: Expunged ${data.deleted_readings} skewed reading(s) and ${data.deleted_sensors} phantom sensor(s).`
+      );
+      await refreshAll(true);
+    } catch (err) {
+      console.error("Failed to purge outliers:", err);
+    } finally {
+      elBtnPurgeOutliers.disabled = false;
+    }
+  }
+
+  async function handleTriggerUpdateClick() {
+    if (!elBtnTriggerUpdate) return;
+    elBtnTriggerUpdate.disabled = true;
+    elBtnTriggerUpdate.textContent = "Checking...";
+    try {
+      const res = await fetch("/api/trigger-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const gitUpd = data.git && data.git.updated;
+      const rtlUpd = data.rtl433 && data.rtl433.updated;
+      const cur = data.current || {};
+      showToast(
+        `Update Check Complete: SkyScry v${cur.version || "--"} (git:${cur.git_commit || "local"})${gitUpd ? " [PULLED NEW COMMIT]" : " [Up to Date]"} | rtl_433: ${cur.rtl433_version || "ready"}${rtlUpd ? " [UPDATED]" : ""}`
+      );
+      await refreshAll(true);
+    } catch (err) {
+      console.error("Update check failed:", err);
+    } finally {
+      elBtnTriggerUpdate.disabled = false;
+      elBtnTriggerUpdate.textContent = "Check & Apply Updates";
+    }
+  }
+
+  async function handleSyncReferenceClick() {
+    elBtnSyncRef.disabled = true;
+    try {
+      const res = await fetch("/api/maintenance/sync-reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      showToast(
+        `Synced ${data.synced_records} regional records (${data.latitude}, ${data.longitude}) — Barometer: ${data.latest_pressure_inhg} inHg (${data.latest_pressure_hpa} hPa)`
+      );
+      await refreshAll(true);
+    } catch (err) {
+      console.error("Failed to sync regional barometer:", err);
+    } finally {
+      elBtnSyncRef.disabled = false;
     }
   }
 
@@ -1167,6 +1310,11 @@
 
   elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
   elBtnRefresh.addEventListener("click", () => refreshAll(true));
+  if (elBtnTriggerUpdate) {
+    elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
+  }
+  elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
+  elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
 
   elChartHours.addEventListener("change", fetchAndUpdateCharts);
   elChartLocation.addEventListener("change", fetchAndUpdateCharts);
@@ -1197,6 +1345,12 @@
   elBtnClearAlias.addEventListener("click", () => {
     elModalAlias.value = "";
     elModalAlias.focus();
+  });
+  elBtnMarkAppliance.addEventListener("click", () => {
+    elModalLocation.value = "ignore";
+    elModalTrusted.checked = false;
+    elModalPurgeOutliers.checked = true;
+    elModalForm.requestSubmit();
   });
   elModalBackdrop.addEventListener("click", (evt) => {
     if (evt.target === elModalBackdrop) closeSensorModal();

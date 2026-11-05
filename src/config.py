@@ -55,6 +55,17 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
+class LocationConfig:
+    """Station coordinates and Open-Meteo regional barometric/history backfill configuration."""
+
+    latitude: float = 38.7042
+    longitude: float = -91.4374
+    enable_regional_backfill: bool = True
+    backfill_hours: int = 48
+    sync_interval_minutes: int = 15
+
+
+@dataclass(frozen=True)
 class WebConfig:
     """Hosted WebUI and REST API server configuration."""
 
@@ -75,23 +86,17 @@ class LoggingConfig:
 class AppConfig:
     """Top-level application configuration container."""
 
+    auto_update: bool = True
     sdr: SDRConfig = field(default_factory=SDRConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    location: LocationConfig = field(default_factory=LocationConfig)
     web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
 def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str]:
-    """Dynamically resolve the rtl_433 executable across Windows, Linux, and macOS.
-
-    Resolution priority:
-      1. Explicit `configured_path` passed via CLI or `config.yaml`
-      2. `SKYSCRY_RTL433_BIN` or `RTL433_BIN` environment variable
-      3. System `PATH` lookup via `shutil.which()`
-      4. Local `./bin/` directory inside the repository
-      5. Repository root directory (`./`)
-    """
+    """Dynamically resolve the rtl_433 executable across Windows, Linux, and macOS."""
     env_override = os.environ.get("SKYSCRY_RTL433_BIN") or os.environ.get("RTL433_BIN")
     for raw_candidate in (configured_path, env_override):
         if not raw_candidate:
@@ -161,6 +166,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
     sdr_raw = raw_data.get("sdr") if isinstance(raw_data.get("sdr"), dict) else {}
     db_raw = raw_data.get("database") if isinstance(raw_data.get("database"), dict) else {}
     pipe_raw = raw_data.get("pipeline") if isinstance(raw_data.get("pipeline"), dict) else {}
+    loc_raw = raw_data.get("location") if isinstance(raw_data.get("location"), dict) else {}
     web_raw = raw_data.get("web") if isinstance(raw_data.get("web"), dict) else {}
     log_raw = raw_data.get("logging") if isinstance(raw_data.get("logging"), dict) else {}
 
@@ -185,6 +191,14 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         dedup_prune_interval_seconds=float(pipe_raw.get("dedup_prune_interval_seconds", 300.0)),
     )
 
+    loc_cfg = LocationConfig(
+        latitude=float(loc_raw.get("latitude", 38.7042)),
+        longitude=float(loc_raw.get("longitude", -91.4374)),
+        enable_regional_backfill=bool(loc_raw.get("enable_regional_backfill", True)),
+        backfill_hours=int(loc_raw.get("backfill_hours", 48)),
+        sync_interval_minutes=int(loc_raw.get("sync_interval_minutes", 15)),
+    )
+
     web_cfg = WebConfig(
         enabled=bool(web_raw.get("enabled", True)),
         host=str(web_raw.get("host", "0.0.0.0")),
@@ -197,9 +211,11 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
     )
 
     return AppConfig(
+        auto_update=bool(raw_data.get("auto_update", True)),
         sdr=sdr_cfg,
         database=db_cfg,
         pipeline=pipe_cfg,
+        location=loc_cfg,
         web=web_cfg,
         logging=log_cfg,
     )

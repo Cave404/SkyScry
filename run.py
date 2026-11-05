@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
-"""Main CLI and daemon entrypoint for SkyScry (v0.1.1).
+"""Main CLI and daemon entrypoint for SkyScry (v0.0.6).
 
-Runs the 433.92 MHz RTL-SDR ingestion pipeline in a background daemon thread alongside
-the hosted Flask/Werkzeug WebUI and REST API server on 0.0.0.0:8080.
+Executes the standard-library pre-flight bootstrapper (`src.updater.run_startup_bootstrap`)
+before importing third-party libraries so fresh installs and self-updates never crash.
 """
 
 from __future__ import annotations
 
+import sys
+
+# 1. Execute standard-library pre-flight bootstrapper BEFORE any third-party imports (Flask, PyYAML, etc.)
+from src.updater import run_startup_bootstrap
+
+if __name__ == "__main__":
+    run_startup_bootstrap(sys.argv[1:])
+
 import argparse
 import logging
+import os
 import signal
-import sys
 import threading
+import webbrowser
 from dataclasses import replace
 from types import FrameType
 from typing import Optional
@@ -21,6 +30,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from src import __version__
 from src.config import AppConfig, load_config
 from src.db import WeatherDatabase
+from src.ingest.reference_weather import ReferenceWeatherService
 from src.ingest.sdr_stream import SDRStream, SDRStreamError
 from src.models import NormalizedReading
 from src.pipeline.normalizer import BurstDeduplicator, PacketNormalizer
@@ -44,7 +54,6 @@ def setup_logging(level_name: str = "INFO") -> None:
     root.setLevel(level)
     root.addHandler(handler)
 
-    # Silence per-request Werkzeug access chatter unless DEBUG is active
     logging.getLogger("werkzeug").setLevel(logging.WARNING if level > logging.DEBUG else logging.INFO)
 
 
@@ -89,8 +98,8 @@ def format_reading_summary(
     if reading.humidity is not None:
         metrics.append(f"RH: {reading.humidity:.0f}%")
 
-    if reading.pressure_hpa is not None:
-        metrics.append(f"Press: {reading.pressure_hpa:.1f} hPa")
+    if reading.pressure_hpa is not None and reading.pressure_inhg is not None:
+        metrics.append(f"Baro: {reading.pressure_inhg:.2f} inHg ({reading.pressure_hpa:.1f} hPa)")
 
     if reading.wind_avg_mps is not None and reading.wind_avg_mph is not None:
         if units == "imperial":
@@ -210,6 +219,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Run the SDR ingestion daemon without starting the HTTP WebUI server.",
     )
     parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Automatically open http://localhost:<port> in the default browser on startup.",
+    )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Bypass startup GitHub self-update, pip upgrade, and rtl_433 release checks.",
+    )
+    parser.add_argument(
+        "--skip-bootstrap",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Stream and normalize SDR telemetry to console without writing to SQLite.",
@@ -231,7 +255,7 @@ def _run_sdr_ingest_loop(
     config: AppConfig,
     stop_event: threading.Event,
 ) -> None:
-    """Background worker loop that ingests, deduplicates, logs, and persists RTL-SDR bursts."""
+    """Background worker loop that ingests, deduplicates, filters outliers, and persists RTL-SDR bursts."""
     while not stop_event.is_set():
         try:
             for raw_line in stream.stream_lines():
@@ -242,7 +266,9 @@ def _run_sdr_ingest_loop(
                     continue
 
                 if db is not None:
-                    db.insert_reading(reading)
+                    row_id = db.insert_reading(reading)
+                    if row_id is None:
+                        continue
 
                 summary = format_reading_summary(
                     reading=reading,
@@ -264,7 +290,7 @@ def _run_sdr_ingest_loop(
             logger.error("SDR stream error: %s", exc)
             if not config.sdr.auto_reconnect:
                 break
-            stop_event.wait(timeout=max(1.0, config.sdr.reconnect_delay_seconds))
+            stop_event.wait(timeout=max(2.0, config.sdr.reconnect_delay_seconds))
         except Exception as exc:
             if stop_event.is_set():
                 break
@@ -272,8 +298,25 @@ def _run_sdr_ingest_loop(
             stop_event.wait(timeout=5.0)
 
 
+def _run_reference_weather_loop(
+    ref_service: ReferenceWeatherService,
+    config: AppConfig,
+    stop_event: threading.Event,
+) -> None:
+    """Periodically sync regional barometric pressure (`inHg`/`hPa`) and 48h backfill."""
+    if not config.location.enable_regional_backfill:
+        return
+    interval_sec = max(300.0, float(config.location.sync_interval_minutes) * 60.0)
+    while not stop_event.is_set():
+        try:
+            ref_service.sync_regional_weather(past_hours=config.location.backfill_hours)
+        except Exception as exc:
+            logger.debug("Regional barometric/weather sync skipped: %s", exc)
+        stop_event.wait(timeout=interval_sec)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    """Run the SkyScry ingestion daemon and WebUI server."""
+    """Run the SkyScry ingestion daemon, regional barometer sync, and WebUI server."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -331,6 +374,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         logger.info("SQLite WAL storage active at %s", config.database.path)
 
+    ref_service = ReferenceWeatherService(
+        db=db,
+        default_lat=config.location.latitude,
+        default_lon=config.location.longitude,
+    )
+
     stop_event = threading.Event()
     http_server: Optional[BaseWSGIServer] = None
 
@@ -348,6 +397,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _initiate_shutdown)
 
+    ref_thread = threading.Thread(
+        target=_run_reference_weather_loop,
+        args=(ref_service, config, stop_event),
+        name="skyscry-ref-weather",
+        daemon=True,
+    )
+    ref_thread.start()
+
     ingest_thread = threading.Thread(
         target=_run_sdr_ingest_loop,
         args=(stream, normalizer, None if args.dry_run else db, config, stop_event),
@@ -359,7 +416,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     exit_code = 0
     try:
         if config.web.enabled:
-            flask_app = create_app(db=db, sdr_stream=stream)
+            flask_app = create_app(db=db, sdr_stream=stream, ref_service=ref_service)
             http_server = make_server(
                 config.web.host,
                 config.web.port,
@@ -371,6 +428,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config.web.host,
                 config.web.port,
             )
+
+            # Open default browser once HTTP server is ready (prevent duplicate tabs on self-update re-exec)
+            if args.open_browser and os.environ.get("SKYSCRY_BROWSER_OPENED") != "1":
+                os.environ["SKYSCRY_BROWSER_OPENED"] = "1"
+                browser_url = f"http://localhost:{config.web.port}"
+                timer = threading.Timer(1.5, webbrowser.open, args=(browser_url,))
+                timer.daemon = True
+                timer.start()
+
             http_server.serve_forever()
         else:
             logger.info("WebUI disabled (--no-web); running headless SDR ingestion loop.")

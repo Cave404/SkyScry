@@ -148,6 +148,13 @@ class NormalizedReading:
         return round((self.temp_c * 9.0 / 5.0) + 32.0, 2)
 
     @property
+    def pressure_inhg(self) -> Optional[float]:
+        """Barometric pressure in inches of mercury (1 hPa = 0.029529983071445 inHg)."""
+        if self.pressure_hpa is None:
+            return None
+        return round(self.pressure_hpa * 0.029529983071445, 2)
+
+    @property
     def dew_point_c(self) -> Optional[float]:
         """Dew point in degrees Celsius."""
         return compute_dew_point_c(self.temp_c, self.humidity)

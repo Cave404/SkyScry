@@ -12,8 +12,13 @@
     <div class="brand">
       <div class="brand-mark">SS</div>
       <div>
-        <div class="brand-title">SkyScry <span class="version-badge">v{{ version }}</span></div>
-        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry &amp; Local Weather Synthesis</div>
+        <div class="brand-title">
+          SkyScry
+          <span class="version-badge">v{{ version }}</span>
+          <span id="stat-git-commit" class="version-badge" title="Current Git Commit Hash">git:--</span>
+          <span id="stat-rtl433-ver" class="version-badge" title="rtl_433 Binary Release Version">rtl_433:--</span>
+        </div>
+        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry, Barometer &amp; Local Weather Synthesis</div>
       </div>
     </div>
 
@@ -25,6 +30,10 @@
       <div class="status-metric">
         <span class="metric-label">ACTIVE SENSORS</span>
         <span id="stat-sensor-count" class="metric-value">--</span>
+      </div>
+      <div class="status-metric">
+        <span class="metric-label">BAROMETER</span>
+        <span id="stat-baro-header" class="metric-value">--.-- inHg</span>
       </div>
       <div class="status-metric">
         <span class="metric-label">PACKETS LOGGED</span>
@@ -49,6 +58,7 @@
   </header>
 
   <div id="sdr-error-banner" class="alert-banner hidden"></div>
+  <div id="maintenance-toast" class="toast-banner hidden"></div>
 
   <main class="container">
     <nav class="nav-bar" aria-label="Main Views">
@@ -60,7 +70,16 @@
       </div>
 
       <div class="toolbar-controls">
-        <button id="btn-refresh-now" class="btn btn-secondary" type="button">Sync Now</button>
+        <button id="btn-trigger-update" class="btn btn-secondary" type="button" title="Check GitHub for new SkyScry commits, pip upgrades, and rtl_433 releases">
+          Check &amp; Apply Updates
+        </button>
+        <button id="btn-sync-reference" class="btn btn-secondary" type="button" title="Fetch 48h regional barometric pressure (inHg/hPa) &amp; weather backfill">
+          Sync Barometer &amp; History
+        </button>
+        <button id="btn-purge-outliers" class="btn btn-secondary" type="button" title="Expunge corrupted RF bit-flip spikes and appliance probes from SQLite">
+          Purge Skewed Outliers
+        </button>
+        <button id="btn-refresh-now" class="btn btn-primary" type="button">Sync Now</button>
       </div>
     </nav>
 
@@ -69,7 +88,7 @@
     <!-- ================================================================== -->
     <section id="view-overview" class="view-panel active">
       <div class="overview-top-grid">
-        <!-- Hero Weather Condition & Animated SVG Card -->
+        <!-- Hero Weather Condition & High-Clarity Animated SVG Card -->
         <div class="hero-weather-card card">
           <div class="hero-main">
             <div id="hero-weather-icon" class="weather-icon-stage" aria-hidden="true"></div>
@@ -86,16 +105,16 @@
 
           <div class="hero-nowcast-box">
             <div class="nowcast-header">
-              <span class="nowcast-title">LOCAL MICROCLIMATE NOWCAST &amp; TRENDS</span>
+              <span class="nowcast-title">24H BAROMETRIC FORECAST &amp; MICROCLIMATE NOWCAST</span>
               <div id="ov-trend-badges" class="trend-badge-row"></div>
             </div>
             <p id="ov-nowcast-text" class="nowcast-text">
-              Analyzing 1-hour and 3-hour telemetry deltas across trusted outdoor sensors...
+              Analyzing 1-hour and 3-hour telemetry deltas and barometric tendency across trusted outdoor sensors...
             </p>
           </div>
         </div>
 
-        <!-- Compact Indoor Summary & Quick Station Health -->
+        <!-- Compact Indoor Summary & Atmospheric Deltas -->
         <div class="overview-side-stack">
           <div class="indoor-summary-card card">
             <div class="card-header">
@@ -119,7 +138,7 @@
           <div class="quick-deltas-card card">
             <div class="card-header">
               <h3>Atmospheric Deltas</h3>
-              <span class="text-muted">SQLite History</span>
+              <span class="text-muted">1h / 3h History</span>
             </div>
             <div class="delta-grid">
               <div class="delta-item">
@@ -131,8 +150,8 @@
                 <span id="ov-delta-3h-temp" class="delta-val">--</span>
               </div>
               <div class="delta-item">
-                <span class="metric-label">1H RH DELTA</span>
-                <span id="ov-delta-1h-rh" class="delta-val">--</span>
+                <span class="metric-label">3H BARO TREND</span>
+                <span id="ov-delta-3h-baro" class="delta-val">--</span>
               </div>
               <div class="delta-item">
                 <span class="metric-label">DEW SPREAD</span>
@@ -143,36 +162,88 @@
         </div>
       </div>
 
-      <!-- Synthesized Outdoor Ensemble Metric Tiles -->
+      <!-- Synthesized Outdoor Ensemble Metric Tiles (Including Animated Wind Compass & Barometer inHg) -->
       <div class="ensemble-kpi-grid">
+        <!-- Animated Wind Speed & Compass Rose Card -->
+        <div class="kpi-tile kpi-wind-card card">
+          <div class="wind-card-layout">
+            <div class="wind-metrics-col">
+              <span class="metric-label">WIND SPEED &amp; COMPASS</span>
+              <div id="ov-wind-speed" class="kpi-primary">-- mph</div>
+              <div id="ov-wind-gust" class="kpi-sub">Peak Gust: -- mph</div>
+              <div id="ov-wind-bearing" class="kpi-sub">Bearing: -- deg (--)</div>
+            </div>
+
+            <div class="compass-dial-wrap" aria-label="Animated Wind Direction Compass">
+              <svg class="compass-svg" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+                <!-- Outer Dial Ring & Pulse -->
+                <circle id="compass-pulse-ring" cx="60" cy="60" r="54" fill="none" stroke="rgba(56, 189, 248, 0.22)" stroke-width="2" />
+                <circle cx="60" cy="60" r="50" fill="#0b1322" stroke="#283a5a" stroke-width="2" />
+                <circle cx="60" cy="60" r="36" fill="none" stroke="rgba(148, 163, 184, 0.14)" stroke-width="1" stroke-dasharray="2 3" />
+
+                <!-- 30-Degree Tick Marks -->
+                <g stroke="#475569" stroke-width="1.4" stroke-linecap="round">
+                  <line x1="60" y1="10" x2="60" y2="15" />
+                  <line x1="85" y1="16.7" x2="82.5" y2="21" />
+                  <line x1="103.3" y1="35" x2="99" y2="37.5" />
+                  <line x1="110" y1="60" x2="105" y2="60" />
+                  <line x1="103.3" y1="85" x2="99" y2="82.5" />
+                  <line x1="85" y1="103.3" x2="82.5" y2="99" />
+                  <line x1="60" y1="110" x2="60" y2="105" />
+                  <line x1="35" y1="103.3" x2="37.5" y2="99" />
+                  <line x1="16.7" y1="85" x2="21" y2="82.5" />
+                  <line x1="10" y1="60" x2="15" y2="60" />
+                  <line x1="16.7" y1="35" x2="21" y2="37.5" />
+                  <line x1="35" y1="16.7" x2="37.5" y2="21" />
+                </g>
+
+                <!-- Cardinal & Intercardinal Labels -->
+                <text x="60" y="24" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="800" font-family="monospace">N</text>
+                <text x="99" y="63.5" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-weight="700" font-family="monospace">E</text>
+                <text x="60" y="103" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-weight="700" font-family="monospace">S</text>
+                <text x="21" y="63.5" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-weight="700" font-family="monospace">W</text>
+                <text x="86" y="35" text-anchor="middle" fill="#64748b" font-size="7.5" font-family="monospace">NE</text>
+                <text x="86" y="90" text-anchor="middle" fill="#64748b" font-size="7.5" font-family="monospace">SE</text>
+                <text x="34" y="90" text-anchor="middle" fill="#64748b" font-size="7.5" font-family="monospace">SW</text>
+                <text x="34" y="35" text-anchor="middle" fill="#64748b" font-size="7.5" font-family="monospace">NW</text>
+
+                <!-- Rotating Directional Wind Needle Group -->
+                <g id="compass-needle-group" class="compass-needle" style="transform: rotate(0deg);">
+                  <!-- Tail Feather -->
+                  <line x1="60" y1="60" x2="60" y2="88" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" />
+                  <polygon points="56,88 64,88 60,80" fill="#64748b" />
+                  <!-- Pointer Arrowhead (Points to Wind Direction Bearing) -->
+                  <line x1="60" y1="60" x2="60" y2="26" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                  <polygon points="60,16 54,30 60,27 66,30" fill="#38bdf8" />
+                </g>
+
+                <!-- Center Hub -->
+                <circle cx="60" cy="60" r="5" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Barometric Pressure (inHg & hPa) Card -->
         <div class="kpi-tile card">
-          <span class="metric-label">OUTDOOR HUMIDITY</span>
+          <span class="metric-label">BAROMETRIC PRESSURE</span>
+          <div id="ov-baro-inhg" class="kpi-primary">--.-- inHg</div>
+          <div id="ov-baro-hpa" class="kpi-sub">----.- hPa | 3h: --</div>
+          <div id="ov-baro-source" class="kpi-sub text-muted">Source: Regional Reference</div>
+        </div>
+
+        <div class="kpi-tile card">
+          <span class="metric-label">OUTDOOR HUMIDITY &amp; DEW PT</span>
           <div id="ov-out-rh" class="kpi-primary">--%</div>
           <div id="ov-out-dp" class="kpi-sub">Dew Point: --.-&deg;F (--.-&deg;C)</div>
-        </div>
-
-        <div class="kpi-tile card">
-          <span class="metric-label">FEELS LIKE (APPARENT)</span>
-          <div id="ov-feels-f" class="kpi-primary">--.-&deg;F</div>
-          <div id="ov-feels-c" class="kpi-sub">Heat Index / Wind Chill: --.-&deg;C</div>
-        </div>
-
-        <div class="kpi-tile card">
-          <span class="metric-label">WIND SPEED &amp; COMPASS</span>
-          <div id="ov-wind-speed" class="kpi-primary">-- mph</div>
-          <div id="ov-wind-sub" class="kpi-sub">Gust: -- mph | Dir: --</div>
+          <div id="ov-feels-inline" class="kpi-sub">Feels Like: --.-&deg;F</div>
         </div>
 
         <div class="kpi-tile card">
           <span class="metric-label">24H RAIN ACCUMULATION</span>
           <div id="ov-rain-24h" class="kpi-primary">0.00 in</div>
           <div id="ov-rain-mm" class="kpi-sub">0.0 mm over last 24 hours</div>
-        </div>
-
-        <div class="kpi-tile card">
-          <span class="metric-label">SOLAR / UV &amp; LIGHT</span>
-          <div id="ov-uv-lux" class="kpi-primary">UV --</div>
-          <div id="ov-lux-sub" class="kpi-sub">Illuminance: -- lux</div>
+          <div id="ov-uv-inline" class="kpi-sub">UV / Light: --</div>
         </div>
       </div>
     </section>
@@ -196,9 +267,9 @@
         <div class="control-group">
           <label for="chart-location-select">Location Filter</label>
           <select id="chart-location-select">
-            <option value="outdoor" selected>Outdoor &amp; Unassigned</option>
-            <option value="indoor">Indoor Only</option>
-            <option value="all">All Active Sensors</option>
+            <option value="outdoor" selected>Outdoor &amp; Unassigned (Trusted Only)</option>
+            <option value="indoor">Indoor Only (Trusted Only)</option>
+            <option value="all">All Trusted Sensors</option>
           </select>
         </div>
 
@@ -225,7 +296,7 @@
         <div class="chart-card card">
           <div class="card-header">
             <h3>1. Temperature Cross-Analysis (&deg;F)</h3>
-            <span id="chart-meta-temp" class="text-muted">Time-bucketed mean</span>
+            <span id="chart-meta-temp" class="text-muted">Outliers &amp; appliances automatically excluded</span>
           </div>
           <div class="chart-wrapper">
             <canvas id="canvas-chart-temp"></canvas>
@@ -272,12 +343,12 @@
         <div>
           <h3>Registered 433.92 MHz Sensor Fleet</h3>
           <p class="text-muted">
-            Cards are locked in deterministic alphabetical order and update in place without DOM reflow. Configure aliases, location types, battery replacements, and per-sensor visible metrics.
+            Cards are locked in deterministic alphabetical order and update in place. Fridge/meat probes and bit-flip outliers are automatically expunged.
           </p>
         </div>
         <label class="checkbox-label">
           <input type="checkbox" id="toggle-show-ignored" />
-          <span>Show Ignored Sensors</span>
+          <span>Show Ignored / Appliance Sensors</span>
         </label>
       </div>
 
@@ -394,7 +465,7 @@
             <option value="unassigned">Unassigned (Included in Outdoor fallback)</option>
             <option value="outdoor">Outdoor</option>
             <option value="indoor">Indoor</option>
-            <option value="ignore">Ignore (Hide entire sensor)</option>
+            <option value="ignore">Ignore / Appliance Probe (Hide &amp; Exclude)</option>
           </select>
         </div>
 
@@ -428,7 +499,7 @@
         <div class="form-group">
           <label class="checkbox-label">
             <input type="checkbox" id="modal-trusted-checkbox" />
-            <span>Trusted Station (Include visible metrics in local weather synthesis)</span>
+            <span>Trusted Station (Include visible metrics in local weather synthesis &amp; charts)</span>
           </label>
         </div>
 
@@ -439,11 +510,21 @@
           </label>
         </div>
 
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-purge-outliers-checkbox" />
+            <span>Purge Historical Outliers for This Sensor on Save</span>
+          </label>
+        </div>
+
         <div id="modal-feedback" class="form-feedback hidden"></div>
 
         <div class="modal-footer">
-          <button id="btn-clear-alias" class="btn btn-secondary" type="button">Reset Alias</button>
+          <button id="btn-mark-appliance" class="btn btn-secondary" type="button" title="Classify as non-weather appliance/ignore and purge its readings">
+            Mark Appliance / Ignore
+          </button>
           <div class="modal-footer-right">
+            <button id="btn-clear-alias" class="btn btn-secondary" type="button">Reset Alias</button>
             <button id="btn-cancel-modal" class="btn btn-secondary" type="button">Cancel</button>
             <button id="btn-save-modal" class="btn btn-primary" type="submit">Save Changes</button>
           </div>

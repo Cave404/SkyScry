@@ -1,5 +1,5 @@
 # ============================================================================
-# SkyScry (v0.0.4) — Configuration Template
+# SkyScry (v0.0.6) — Configuration Template
 # ============================================================================
 # Copy this file to `config/config.yaml` to customize your local deployment:
 #   cp config/config.example.yaml config/config.yaml
@@ -9,6 +9,10 @@
 # Sensor aliases and location types are managed dynamically via the WebUI
 # and persisted directly in SQLite (`sensors` table).
 # ============================================================================
+
+# Automatically check GitHub for SkyScry updates, verify pip dependencies,
+# and verify rtl_433 binaries on startup (can be bypassed with --no-update).
+auto_update: true
 
 sdr:
   # Explicit path to the rtl_433 binary, or null/empty to auto-resolve via:
@@ -26,7 +30,7 @@ sdr:
   # Optional extra CLI arguments passed directly to rtl_433 (e.g., ["-g", "40"])
   extra_args: []
 
-  # Automatically restart rtl_433 with backoff if the USB stream drops
+  # Automatically restart rtl_433 with progressive USB recovery backoff if the stream drops
   auto_reconnect: true
   reconnect_delay_seconds: 5.0
 
@@ -42,6 +46,15 @@ pipeline:
 
   # Interval (in seconds) between stale deduplication key pruning passes
   dedup_prune_interval_seconds: 300.0
+
+location:
+  # Coordinates used for Open-Meteo regional barometric pressure (inHg/hPa)
+  # and 48-hour historical weather backfill (editable in the WebUI).
+  latitude: 38.7042
+  longitude: -91.4374
+  enable_regional_backfill: true
+  backfill_hours: 48
+  sync_interval_minutes: 15
 
 web:
   # Enable the built-in WebUI and REST API server

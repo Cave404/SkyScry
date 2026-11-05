@@ -193,6 +193,15 @@ code {
   font-size: 12px;
 }
 
+.toast-banner {
+  background-color: var(--status-ok-bg);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+  padding: 9px 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* Main Container & Navigation */
 .container {
   max-width: 1480px;
@@ -242,8 +251,9 @@ code {
 
 .toolbar-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
 }
 
 .view-panel {
@@ -319,7 +329,7 @@ code {
 }
 
 /* ==========================================================================
-   VIEW 1: MAIN OVERVIEW DASHBOARD & ANIMATED SVG WEATHER ICONS
+   VIEW 1: MAIN OVERVIEW DASHBOARD & HIGH-CLARITY ANIMATED WEATHER ICONS
    ========================================================================== */
 .overview-top-grid {
   display: grid;
@@ -351,23 +361,24 @@ code {
 }
 
 .weather-icon-stage {
-  width: 126px;
-  height: 126px;
+  width: 136px;
+  height: 136px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.16) 0%, rgba(15, 23, 42, 0) 72%);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, rgba(15, 23, 42, 0.02) 72%);
   border-radius: 50%;
+  border: 1px solid rgba(96, 165, 250, 0.16);
 }
 
 .weather-icon-stage svg {
-  width: 112px;
-  height: 112px;
+  width: 122px;
+  height: 122px;
   overflow: visible;
 }
 
-/* Keyframe Animations for Weather SVGs */
+/* Keyframe Animations for High-Visibility Weather SVGs */
 @keyframes wx-spin-slow {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -379,29 +390,28 @@ code {
 }
 
 @keyframes wx-rain-fall {
-  0% { transform: translateY(-4px); opacity: 0.2; }
+  0% { transform: translate(2px, -4px); opacity: 0.2; }
   50% { opacity: 1; }
-  100% { transform: translateY(10px); opacity: 0; }
+  100% { transform: translate(-3px, 11px); opacity: 0; }
 }
 
 @keyframes wx-wind-dash {
-  0% { stroke-dashoffset: 36; opacity: 0.4; }
+  0% { stroke-dashoffset: 36; opacity: 0.45; }
   50% { opacity: 1; }
-  100% { stroke-dashoffset: 0; opacity: 0.4; }
+  100% { stroke-dashoffset: 0; opacity: 0.45; }
 }
 
-@keyframes wx-star-twinkle {
-  0%, 100% { opacity: 0.35; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1.08); }
+@keyframes wx-star-fade {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 
 @keyframes wx-fog-sway {
-  0%, 100% { transform: translateX(-4px); opacity: 0.55; }
-  50% { transform: translateX(4px); opacity: 0.95; }
+  0%, 100% { transform: translateX(-4px); opacity: 0.6; }
+  50% { transform: translateX(4px); opacity: 1; }
 }
 
 .wx-sun-rays {
-  transform-origin: 48px 48px;
   animation: wx-spin-slow 24s linear infinite;
 }
 
@@ -414,15 +424,15 @@ code {
 }
 
 .wx-drop-1 {
-  animation: wx-rain-fall 1.25s linear infinite;
+  animation: wx-rain-fall 1.2s linear infinite;
 }
 
 .wx-drop-2 {
-  animation: wx-rain-fall 1.25s linear infinite 0.4s;
+  animation: wx-rain-fall 1.2s linear infinite 0.4s;
 }
 
 .wx-drop-3 {
-  animation: wx-rain-fall 1.25s linear infinite 0.8s;
+  animation: wx-rain-fall 1.2s linear infinite 0.8s;
 }
 
 .wx-wind-line {
@@ -430,9 +440,12 @@ code {
   animation: wx-wind-dash 2.2s linear infinite;
 }
 
-.wx-star {
-  transform-origin: center;
-  animation: wx-star-twinkle 3.2s ease-in-out infinite;
+.wx-diamond-star-1 {
+  animation: wx-star-fade 3.2s ease-in-out infinite;
+}
+
+.wx-diamond-star-2 {
+  animation: wx-star-fade 3.2s ease-in-out infinite 1.4s;
 }
 
 .wx-fog-bar {
@@ -593,20 +606,27 @@ code {
 
 .delta-val {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .ensemble-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: 1.35fr repeat(3, 1fr);
   gap: 16px;
+}
+
+@media (max-width: 1180px) {
+  .ensemble-kpi-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
 }
 
 .kpi-tile {
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: 6px;
 }
 
@@ -621,6 +641,50 @@ code {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* Animated SVG Wind Compass Rose Card */
+.wind-card-layout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  height: 100%;
+}
+
+.wind-metrics-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.compass-dial-wrap {
+  width: 112px;
+  height: 112px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compass-svg {
+  width: 112px;
+  height: 112px;
+  overflow: visible;
+}
+
+.compass-needle {
+  transform-origin: 60px 60px;
+  transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes compass-ring-pulse {
+  0%, 100% { r: 52px; opacity: 0.25; }
+  50% { r: 56px; opacity: 0.65; }
+}
+
+.compass-active-pulse {
+  animation: compass-ring-pulse 2.4s ease-in-out infinite;
 }
 
 /* ==========================================================================
@@ -772,6 +836,12 @@ input[type="text"]:focus {
   border-color: rgba(156, 163, 175, 0.3);
 }
 
+.badge-expunged {
+  color: var(--status-warn);
+  background-color: var(--status-warn-bg);
+  border-color: rgba(245, 158, 11, 0.38);
+}
+
 .badge-batt-ok {
   color: var(--status-ok);
   background-color: var(--status-ok-bg);
@@ -839,7 +909,6 @@ input[type="text"]:focus {
   color: var(--text-primary);
 }
 
-/* Signal Quality & Battery Lifecycle Box on Sensor Card */
 .rf-battery-strip {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
@@ -971,7 +1040,7 @@ input[type="text"]:focus {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   width: 100%;
-  max-width: 520px;
+  max-width: 540px;
   padding: 20px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.55);
 }

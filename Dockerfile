@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="SkyScry" \
       org.opencontainers.image.description="Open-source 433.92 MHz microclimate telemetry and weather ingestion daemon with WebUI" \
-      org.opencontainers.image.version="0.0.4" \
+      org.opencontainers.image.version="0.0.6" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

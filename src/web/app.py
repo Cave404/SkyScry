@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.4)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.5)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ from flask import Flask, Response, jsonify, render_template, request
 
 from src import __version__
 from src.db import VALID_HIDDEN_METRICS, VALID_LOCATION_TYPES, WeatherDatabase, format_utc_z
+from src.ingest.reference_weather import ReferenceWeatherService
 from src.ingest.sdr_stream import SDRStream
+from src.updater import get_full_update_status, trigger_manual_update
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     db: WeatherDatabase,
     sdr_stream: Optional[SDRStream] = None,
+    ref_service: Optional[ReferenceWeatherService] = None,
     status_provider: Optional[Callable[[], dict[str, Any]]] = None,
 ) -> Flask:
     """Create and configure the SkyScry Flask web application and REST API."""
@@ -31,6 +34,7 @@ def create_app(
     )
     app.config["JSON_SORT_KEYS"] = False
 
+    reference_svc = ref_service or ReferenceWeatherService(db=db)
     start_monotonic = time.monotonic()
     started_at_iso = format_utc_z(datetime.now(timezone.utc))
 
@@ -44,6 +48,8 @@ def create_app(
         """Return daemon uptime, SDR stream status, database size, and packet totals."""
         uptime_seconds = round(time.monotonic() - start_monotonic, 1)
         db_stats = db.get_db_stats()
+        coords = db.get_location_coordinates()
+        update_info = get_full_update_status()
 
         sdr_status = "disconnected"
         last_error: Optional[str] = None
@@ -58,11 +64,14 @@ def create_app(
 
         payload: dict[str, Any] = {
             "version": __version__,
+            "git_commit": update_info.get("git_commit"),
+            "rtl433_version": update_info.get("rtl433_version"),
             "started_at": started_at_iso,
             "uptime_seconds": uptime_seconds,
             "sdr_status": extra_status.get("sdr_status", sdr_status),
             "sdr_frequency": frequency,
             "sdr_last_error": extra_status.get("sdr_last_error", last_error),
+            "coordinates": coords,
             "database_path": db_stats["database_path"],
             "database_size_mb": db_stats["database_size_mb"],
             "database_size_bytes": db_stats["database_size_bytes"],
@@ -74,9 +83,20 @@ def create_app(
         }
         return jsonify(payload)
 
+    @app.route("/api/update-status", methods=["GET"])
+    def api_update_status() -> Response:
+        """Return current version, Git commit hash, and `rtl_433` binary release version."""
+        return jsonify(get_full_update_status())
+
+    @app.route("/api/trigger-update", methods=["POST"])
+    def api_trigger_update() -> Response:
+        """Check GitHub for new SkyScry commits, upgrade pip dependencies, and check `rtl_433` releases."""
+        result = trigger_manual_update()
+        return jsonify(result)
+
     @app.route("/api/overview", methods=["GET"])
     def api_overview() -> Response:
-        """Return synthesized outdoor/indoor ensemble weather, animated condition state, and local nowcast."""
+        """Return synthesized outdoor/indoor ensemble weather, barometer (`inHg`), and local nowcast."""
         overview = db.get_weather_overview()
         return jsonify(overview)
 
@@ -112,7 +132,7 @@ def create_app(
 
     @app.route("/api/sensors/<path:sensor_key>", methods=["PATCH"])
     def api_update_sensor(sensor_key: str) -> tuple[Response, int] | Response:
-        """Update user metadata (`alias`, `location_type`, `is_trusted`, `hidden_metrics`, `mark_battery_replaced`)."""
+        """Update user metadata (`alias`, `location_type`, `is_trusted`, `hidden_metrics`, `mark_battery_replaced`, `purge_sensor_outliers`)."""
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             return jsonify({"error": "Request body must be a valid JSON object."}), 400
@@ -170,6 +190,7 @@ def create_app(
             hidden_arg = [str(m).strip().lower() for m in body["hidden_metrics"]]
 
         mark_battery_replaced = bool(body.get("mark_battery_replaced", False))
+        purge_sensor_outliers = bool(body.get("purge_sensor_outliers", False))
 
         try:
             updated = db.update_sensor_metadata(
@@ -179,6 +200,7 @@ def create_app(
                 is_trusted=trusted_arg,
                 hidden_metrics=hidden_arg,
                 mark_battery_replaced=mark_battery_replaced,
+                purge_sensor_outliers=purge_sensor_outliers,
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -187,15 +209,50 @@ def create_app(
             return jsonify({"error": f"Sensor '{sensor_key}' not found."}), 404
 
         logger.info(
-            "Updated sensor metadata for %s: alias=%r, location=%s, trusted=%s, hidden=%s, batt_reset=%s",
+            "Updated sensor metadata for %s: alias=%r, location=%s, trusted=%s, hidden=%s, batt_reset=%s, purge=%s",
             sensor_key,
             updated["alias"],
             updated["location_type"],
             updated["is_trusted"],
             updated["hidden_metrics"],
             mark_battery_replaced,
+            purge_sensor_outliers,
         )
         return jsonify({"sensor": updated})
+
+    @app.route("/api/maintenance/purge-outliers", methods=["POST"])
+    def api_purge_outliers() -> Response:
+        """Purge skewed/corrupted historical readings and appliance probes from SQLite."""
+        body = request.get_json(silent=True) or {}
+        sensor_key = body.get("sensor_key") if isinstance(body, dict) else None
+        result = db.expunge_skewed_history(
+            target_sensor_key=str(sensor_key).strip() if sensor_key else None
+        )
+        return jsonify({"status": "ok", **result})
+
+    @app.route("/api/maintenance/sync-reference", methods=["POST"])
+    def api_sync_reference() -> tuple[Response, int] | Response:
+        """Sync past 48 hours of regional barometric pressure (`inHg`/`hPa`) & weather history via Open-Meteo."""
+        body = request.get_json(silent=True) or {}
+        lat: Optional[float] = None
+        lon: Optional[float] = None
+        if isinstance(body, dict) and "latitude" in body and "longitude" in body:
+            try:
+                lat = float(body["latitude"])
+                lon = float(body["longitude"])
+            except (ValueError, TypeError):
+                return jsonify({"error": "latitude and longitude must be valid numbers."}), 400
+
+        try:
+            sync_result = reference_svc.sync_regional_weather(
+                latitude=lat,
+                longitude=lon,
+                past_hours=48,
+            )
+            return jsonify({"status": "ok", **sync_result})
+        except Exception as exc:
+            logger.warning("Open-Meteo regional sync failed: %s", exc)
+            return jsonify({"error": f"Failed to sync regional weather: {exc}"}), 502
 
     @app.route("/api/readings", methods=["GET"])
     def api_readings() -> tuple[Response, int] | Response:
@@ -228,6 +285,8 @@ def create_app(
                     "temp_c",
                     "dew_point_f",
                     "humidity",
+                    "pressure_inhg",
+                    "pressure_hpa",
                     "wind_avg_mph",
                     "wind_gust_mph",
                     "wind_cardinal",
@@ -252,6 +311,8 @@ def create_app(
                         r.get("temp_c"),
                         r.get("dew_point_f"),
                         r.get("humidity"),
+                        r.get("pressure_inhg"),
+                        r.get("pressure_hpa"),
                         r.get("wind_avg_mph"),
                         r.get("wind_gust_mph"),
                         r.get("wind_cardinal"),

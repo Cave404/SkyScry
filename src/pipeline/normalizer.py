@@ -1,4 +1,4 @@
-"""Raw rtl_433 JSON parsing, SI unit normalization, and sliding-window burst deduplication."""
+"""Raw rtl_433 JSON parsing, SI unit normalization, appliance classification, and burst deduplication."""
 
 from __future__ import annotations
 
@@ -49,6 +49,59 @@ WEATHER_TELEMETRY_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Known kitchen, fridge/freezer, meat-probe, and pool/liquid probe protocols that broadcast on 433.92 MHz.
+# These are automatically classified as `location_type='ignore'` and `is_trusted=0` upon discovery.
+APPLIANCE_PROBE_PREFIXES: tuple[str, ...] = (
+    "acurite-986",
+    "acurite-00275rm",
+    "acurite-515",
+    "maverick-",
+    "thermopro-",
+    "thermopro_",
+    "inkbird-",
+    "inkbird_",
+    "govee-",
+    "oregon-sl109h",
+)
+
+# Hard physical meteorological bounds for ambient surface weather stations
+MIN_PLAUSIBLE_TEMP_F = -25.0
+MAX_PLAUSIBLE_TEMP_F = 130.0
+MIN_PLAUSIBLE_HUMIDITY = 1.0
+MAX_PLAUSIBLE_HUMIDITY = 100.0
+MAX_PLAUSIBLE_WIND_MPH = 130.0
+
+
+def is_appliance_model(model: str) -> bool:
+    """Return True if the sensor model belongs to a fridge/freezer, meat, or liquid probe."""
+    lower = (model or "").strip().lower()
+    return any(lower.startswith(prefix) for prefix in APPLIANCE_PROBE_PREFIXES)
+
+
+def check_physical_bounds(reading: NormalizedReading) -> Optional[str]:
+    """Return a rejection reason string if any metric falls outside physical meteorological bounds."""
+    if reading.temp_f is not None:
+        if reading.temp_f < MIN_PLAUSIBLE_TEMP_F or reading.temp_f > MAX_PLAUSIBLE_TEMP_F:
+            return (
+                f"temperature {reading.temp_f:.1f}F ({reading.temp_c:.1f}C) outside physical "
+                f"ambient bounds [{MIN_PLAUSIBLE_TEMP_F:.0f}F, {MAX_PLAUSIBLE_TEMP_F:.0f}F]"
+            )
+
+    if reading.humidity is not None:
+        if reading.humidity < MIN_PLAUSIBLE_HUMIDITY or reading.humidity > MAX_PLAUSIBLE_HUMIDITY:
+            return (
+                f"humidity {reading.humidity:.1f}% outside physical bounds "
+                f"[{MIN_PLAUSIBLE_HUMIDITY:.0f}%, {MAX_PLAUSIBLE_HUMIDITY:.0f}%]"
+            )
+
+    if reading.wind_avg_mph is not None and reading.wind_avg_mph > MAX_PLAUSIBLE_WIND_MPH:
+        return f"wind_avg {reading.wind_avg_mph:.1f} mph exceeds physical limit ({MAX_PLAUSIBLE_WIND_MPH:.0f} mph)"
+
+    if reading.wind_gust_mph is not None and reading.wind_gust_mph > MAX_PLAUSIBLE_WIND_MPH:
+        return f"wind_gust {reading.wind_gust_mph:.1f} mph exceeds physical limit ({MAX_PLAUSIBLE_WIND_MPH:.0f} mph)"
+
+    return None
+
 
 def _to_float(value: Any) -> Optional[float]:
     """Safely convert a raw JSON field to float, returning None on invalid or missing values."""
@@ -61,12 +114,7 @@ def _to_float(value: Any) -> Optional[float]:
 
 
 class BurstDeduplicator:
-    """Suppresses redundant 433.92 MHz RF burst frames within a sliding time window.
-
-    433 MHz transmitters typically broadcast 3 identical frames per transmission burst
-    within ~100-300ms. Keying on `(model, sensor_id, msg_type)` filters duplicates while
-    allowing distinct message subtypes from multi-frame stations through immediately.
-    """
+    """Suppresses redundant 433.92 MHz RF burst frames within a sliding time window."""
 
     def __init__(
         self,
@@ -153,13 +201,7 @@ class PacketNormalizer:
 
     @staticmethod
     def _parse_timestamp(raw_time: Any) -> datetime:
-        """Parse rtl_433 timestamp string into a strict timezone-aware UTC datetime.
-
-        We always compare against `datetime.now(timezone.utc)` so that if `rtl_433`
-        was invoked without `-M time:utc` (emitting naive local wall-clock time),
-        or if clock skew exists, ingestion timestamps never drift by the host's
-        UTC offset (e.g., 6 hours in CST).
-        """
+        """Parse rtl_433 timestamp string into a strict timezone-aware UTC datetime."""
         now_utc = datetime.now(timezone.utc)
         if isinstance(raw_time, str) and raw_time.strip():
             cleaned = raw_time.strip()
@@ -170,12 +212,10 @@ class PacketNormalizer:
                 if dt.tzinfo is not None:
                     dt_utc = dt.astimezone(timezone.utc)
                 else:
-                    # Naive string: check whether treating it as UTC matches real-time UTC
                     candidate_utc = dt.replace(tzinfo=timezone.utc)
                     if abs((now_utc - candidate_utc).total_seconds()) <= 120.0:
                         dt_utc = candidate_utc
                     else:
-                        # Naive local timestamp from rtl_433; convert local -> UTC
                         dt_utc = dt.astimezone().astimezone(timezone.utc)
 
                 if abs((now_utc - dt_utc).total_seconds()) <= 300.0:
@@ -329,7 +369,11 @@ class PacketNormalizer:
             return None
 
         channel_raw = payload.get("channel")
-        channel = str(channel_raw).strip() if channel_raw is not None and str(channel_raw).strip() != "" else None
+        channel = (
+            str(channel_raw).strip()
+            if channel_raw is not None and str(channel_raw).strip() != ""
+            else None
+        )
 
         wind_dir = _to_float(payload.get("wind_dir_deg"))
         if wind_dir is not None:
@@ -362,4 +406,3 @@ class PacketNormalizer:
             noise=round(noise_val, 2) if noise_val is not None else None,
             raw_json=canonical_json,
         )
-
