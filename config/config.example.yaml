@@ -1,5 +1,5 @@
 # ============================================================================
-# SkyScry (v0.0.6) — Configuration Template
+# SkyScry (v0.0.7) — Configuration Template
 # ============================================================================
 # Copy this file to `config/config.yaml` to customize your local deployment:
 #   cp config/config.example.yaml config/config.yaml
@@ -11,7 +11,8 @@
 # ============================================================================
 
 # Automatically check GitHub for SkyScry updates, verify pip dependencies,
-# and verify rtl_433 binaries on startup (can be bypassed with --no-update).
+# and verify rtl_433 binaries on startup (can be bypassed with --no-update
+# or AUTO_UPDATE_ON_START=false).
 auto_update: true
 
 sdr:
@@ -49,7 +50,8 @@ pipeline:
 
 location:
   # Coordinates used for Open-Meteo regional barometric pressure (inHg/hPa)
-  # and 48-hour historical weather backfill (editable in the WebUI).
+  # and 48-hour historical weather backfill (can also be overridden via
+  # LATITUDE and LONGITUDE environment variables).
   latitude: 38.7042
   longitude: -91.4374
   enable_regional_backfill: true
@@ -62,6 +64,11 @@ web:
   # Bind address and port for the HTTP server
   host: "0.0.0.0"
   port: 8080
+  # Optional Admin PIN for public Cloudflare Tunnel deployments (can also be set
+  # via ADMIN_PIN and READ_ONLY_PUBLIC environment variables). Leave null/empty
+  # for unrestricted local LAN access.
+  admin_pin: null
+  read_only_public: false
 
 logging:
   # Console log level: DEBUG, INFO, WARNING, ERROR

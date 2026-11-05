@@ -16,6 +16,57 @@
   let sensorsCache = [];
   let currentIconCode = "";
   let logsLoadedOnce = false;
+  let authRequired = false;
+  let readOnlyPublic = false;
+
+  function getStoredAdminPin() {
+    try {
+      return sessionStorage.getItem("skyscry_admin_pin") || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function setStoredAdminPin(pin) {
+    try {
+      if (pin) {
+        sessionStorage.setItem("skyscry_admin_pin", pin);
+      } else {
+        sessionStorage.removeItem("skyscry_admin_pin");
+      }
+    } catch (_) {}
+  }
+
+  async function authorizedWriteFetch(url, options) {
+    const opts = Object.assign({}, options);
+    opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+
+    let pin = getStoredAdminPin();
+    if (authRequired && !pin) {
+      const entered = window.prompt("Admin PIN required to modify SkyScry settings:");
+      if (entered === null) {
+        throw new Error("Action canceled (Admin PIN required).");
+      }
+      pin = entered.trim();
+      setStoredAdminPin(pin);
+    }
+    if (pin) {
+      opts.headers["X-Admin-Pin"] = pin;
+    }
+
+    let res = await fetch(url, opts);
+    if (res.status === 401) {
+      setStoredAdminPin("");
+      const retryPin = window.prompt("Invalid or missing Admin PIN. Please enter the Admin PIN:");
+      if (retryPin === null) {
+        throw new Error("Unauthorized: Valid Admin PIN required.");
+      }
+      setStoredAdminPin(retryPin.trim());
+      opts.headers["X-Admin-Pin"] = retryPin.trim();
+      res = await fetch(url, opts);
+    }
+    return res;
+  }
 
   const charts = {
     temp: null,
@@ -373,6 +424,8 @@
     elReadingCount.textContent = Number(data.total_readings || 0).toLocaleString();
     elDbSize.textContent = `${Number(data.database_size_mb || 0).toFixed(2)} MB`;
     elUptime.textContent = formatDuration(data.uptime_seconds);
+    authRequired = Boolean(data.auth_required);
+    readOnlyPublic = Boolean(data.read_only_public);
 
     if (elGitCommit) {
       elGitCommit.textContent = data.git_commit ? `git:${data.git_commit}` : "git:local";
@@ -1181,9 +1234,8 @@
     };
 
     try {
-      const res = await fetch(`/api/sensors/${encodeURIComponent(sensorKey)}`, {
+      const res = await authorizedWriteFetch(`/api/sensors/${encodeURIComponent(sensorKey)}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -1202,9 +1254,8 @@
   async function handlePurgeOutliersClick() {
     elBtnPurgeOutliers.disabled = true;
     try {
-      const res = await fetch("/api/maintenance/purge-outliers", {
+      const res = await authorizedWriteFetch("/api/maintenance/purge-outliers", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -1214,6 +1265,7 @@
       );
       await refreshAll(true);
     } catch (err) {
+      showToast(err.message || "Failed to purge outliers.");
       console.error("Failed to purge outliers:", err);
     } finally {
       elBtnPurgeOutliers.disabled = false;
@@ -1225,9 +1277,8 @@
     elBtnTriggerUpdate.disabled = true;
     elBtnTriggerUpdate.textContent = "Checking...";
     try {
-      const res = await fetch("/api/trigger-update", {
+      const res = await authorizedWriteFetch("/api/trigger-update", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -1240,6 +1291,7 @@
       );
       await refreshAll(true);
     } catch (err) {
+      showToast(err.message || "Update check failed.");
       console.error("Update check failed:", err);
     } finally {
       elBtnTriggerUpdate.disabled = false;
@@ -1250,9 +1302,8 @@
   async function handleSyncReferenceClick() {
     elBtnSyncRef.disabled = true;
     try {
-      const res = await fetch("/api/maintenance/sync-reference", {
+      const res = await authorizedWriteFetch("/api/maintenance/sync-reference", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -1262,6 +1313,7 @@
       );
       await refreshAll(true);
     } catch (err) {
+      showToast(err.message || "Failed to sync regional barometer.");
       console.error("Failed to sync regional barometer:", err);
     } finally {
       elBtnSyncRef.disabled = false;

@@ -416,7 +416,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     exit_code = 0
     try:
         if config.web.enabled:
-            flask_app = create_app(db=db, sdr_stream=stream, ref_service=ref_service)
+            flask_app = create_app(
+                db=db,
+                sdr_stream=stream,
+                ref_service=ref_service,
+                admin_pin=config.web.admin_pin,
+                read_only_public=config.web.read_only_public,
+            )
             http_server = make_server(
                 config.web.host,
                 config.web.port,

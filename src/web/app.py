@@ -1,15 +1,18 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.5)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.7)."""
 
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from flask import Flask, Response, jsonify, render_template, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src import __version__
 from src.db import VALID_HIDDEN_METRICS, VALID_LOCATION_TYPES, WeatherDatabase, format_utc_z
@@ -20,11 +23,35 @@ from src.updater import get_full_update_status, trigger_manual_update
 logger = logging.getLogger(__name__)
 
 
+def _resolve_security_settings(
+    admin_pin: Optional[str],
+    read_only_public: Optional[bool],
+) -> tuple[Optional[str], bool]:
+    """Resolve effective ADMIN_PIN and READ_ONLY_PUBLIC from arguments or environment."""
+    eff_pin = admin_pin
+    if eff_pin is None:
+        env_pin = os.environ.get("ADMIN_PIN")
+        if env_pin and env_pin.strip():
+            eff_pin = env_pin.strip()
+    elif eff_pin.strip() == "":
+        eff_pin = None
+
+    if read_only_public is not None:
+        eff_ro = bool(read_only_public)
+    else:
+        env_ro = os.environ.get("READ_ONLY_PUBLIC", "").strip().lower()
+        eff_ro = env_ro in ("1", "true", "yes", "on")
+
+    return eff_pin, eff_ro
+
+
 def create_app(
     db: WeatherDatabase,
     sdr_stream: Optional[SDRStream] = None,
     ref_service: Optional[ReferenceWeatherService] = None,
     status_provider: Optional[Callable[[], dict[str, Any]]] = None,
+    admin_pin: Optional[str] = None,
+    read_only_public: Optional[bool] = None,
 ) -> Flask:
     """Create and configure the SkyScry Flask web application and REST API."""
     app = Flask(
@@ -34,9 +61,49 @@ def create_app(
     )
     app.config["JSON_SORT_KEYS"] = False
 
+    # Wrap WSGI app with ProxyFix so Cloudflare Tunnel (cloudflared) and reverse
+    # proxies pass accurate client IPs (X-Forwarded-For), HTTPS scheme, and host.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # type: ignore[method-assign]
+
     reference_svc = ref_service or ReferenceWeatherService(db=db)
     start_monotonic = time.monotonic()
     started_at_iso = format_utc_z(datetime.now(timezone.utc))
+
+    def _require_write_auth(body: Optional[dict[str, Any]] = None) -> Optional[tuple[Response, int]]:
+        """Verify ADMIN_PIN or READ_ONLY_PUBLIC policy before allowing write/maintenance actions."""
+        eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
+
+        if eff_pin:
+            candidate = (
+                request.headers.get("X-Admin-Pin")
+                or (str(body.get("admin_pin")) if isinstance(body, dict) and body.get("admin_pin") is not None else None)
+                or request.args.get("admin_pin")
+                or ""
+            ).strip()
+            if not candidate or not hmac.compare_digest(candidate, eff_pin):
+                return (
+                    jsonify(
+                        {
+                            "error": "Admin PIN required to perform this action.",
+                            "auth_required": True,
+                        }
+                    ),
+                    401,
+                )
+            return None
+
+        if eff_ro:
+            return (
+                jsonify(
+                    {
+                        "error": "Public Read-Only mode is active (READ_ONLY_PUBLIC=true). Write actions are disabled.",
+                        "read_only": True,
+                    }
+                ),
+                403,
+            )
+
+        return None
 
     @app.route("/", methods=["GET"])
     def index() -> str:
@@ -45,11 +112,12 @@ def create_app(
 
     @app.route("/api/status", methods=["GET"])
     def api_status() -> Response:
-        """Return daemon uptime, SDR stream status, database size, and packet totals."""
+        """Return daemon uptime, SDR stream status, database size, security state, and packet totals."""
         uptime_seconds = round(time.monotonic() - start_monotonic, 1)
         db_stats = db.get_db_stats()
         coords = db.get_location_coordinates()
         update_info = get_full_update_status()
+        eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
 
         sdr_status = "disconnected"
         last_error: Optional[str] = None
@@ -72,6 +140,8 @@ def create_app(
             "sdr_frequency": frequency,
             "sdr_last_error": extra_status.get("sdr_last_error", last_error),
             "coordinates": coords,
+            "auth_required": bool(eff_pin),
+            "read_only_public": bool(eff_ro and not eff_pin),
             "database_path": db_stats["database_path"],
             "database_size_mb": db_stats["database_size_mb"],
             "database_size_bytes": db_stats["database_size_bytes"],
@@ -89,8 +159,12 @@ def create_app(
         return jsonify(get_full_update_status())
 
     @app.route("/api/trigger-update", methods=["POST"])
-    def api_trigger_update() -> Response:
+    def api_trigger_update() -> tuple[Response, int] | Response:
         """Check GitHub for new SkyScry commits, upgrade pip dependencies, and check `rtl_433` releases."""
+        body = request.get_json(silent=True) or {}
+        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
+        if auth_err is not None:
+            return auth_err
         result = trigger_manual_update()
         return jsonify(result)
 
@@ -136,6 +210,10 @@ def create_app(
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             return jsonify({"error": "Request body must be a valid JSON object."}), 400
+
+        auth_err = _require_write_auth(body)
+        if auth_err is not None:
+            return auth_err
 
         alias_arg: Optional[str] = None
         if "alias" in body:
@@ -221,9 +299,12 @@ def create_app(
         return jsonify({"sensor": updated})
 
     @app.route("/api/maintenance/purge-outliers", methods=["POST"])
-    def api_purge_outliers() -> Response:
+    def api_purge_outliers() -> tuple[Response, int] | Response:
         """Purge skewed/corrupted historical readings and appliance probes from SQLite."""
         body = request.get_json(silent=True) or {}
+        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
+        if auth_err is not None:
+            return auth_err
         sensor_key = body.get("sensor_key") if isinstance(body, dict) else None
         result = db.expunge_skewed_history(
             target_sensor_key=str(sensor_key).strip() if sensor_key else None
@@ -234,6 +315,9 @@ def create_app(
     def api_sync_reference() -> tuple[Response, int] | Response:
         """Sync past 48 hours of regional barometric pressure (`inHg`/`hPa`) & weather history via Open-Meteo."""
         body = request.get_json(silent=True) or {}
+        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
+        if auth_err is not None:
+            return auth_err
         lat: Optional[float] = None
         lon: Optional[float] = None
         if isinstance(body, dict) and "latitude" in body and "longitude" in body:

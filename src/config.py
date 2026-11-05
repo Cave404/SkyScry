@@ -27,6 +27,12 @@ RTL433_CANDIDATES: tuple[str, ...] = (
 )
 
 
+def _parse_bool_env(val: Optional[str], default: bool) -> bool:
+    if val is None or val.strip() == "":
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class SDRConfig:
     """RTL-SDR receiver and rtl_433 subprocess configuration."""
@@ -67,11 +73,13 @@ class LocationConfig:
 
 @dataclass(frozen=True)
 class WebConfig:
-    """Hosted WebUI and REST API server configuration."""
+    """Hosted WebUI, reverse-proxy, and optional public read-only/PIN security configuration."""
 
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8080
+    admin_pin: Optional[str] = None
+    read_only_public: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,7 +141,7 @@ def resolve_rtl433_binary(configured_path: Optional[str] = None) -> Optional[str
 
 
 def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
-    """Load configuration from YAML with safe fallbacks to built-in defaults."""
+    """Load configuration from YAML and environment variables with safe fallbacks."""
     target_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     raw_data: dict[str, Any] = {}
 
@@ -175,15 +183,15 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
 
     sdr_cfg = SDRConfig(
         binary_path=str(sdr_raw["binary_path"]) if sdr_raw.get("binary_path") else None,
-        frequency=str(sdr_raw.get("frequency", "433.92M")),
-        device_index=int(sdr_raw.get("device_index", 0)),
+        frequency=str(os.environ.get("SKYSCRY_FREQUENCY") or sdr_raw.get("frequency", "433.92M")),
+        device_index=int(os.environ.get("SKYSCRY_DEVICE_INDEX") or sdr_raw.get("device_index", 0)),
         extra_args=extra_args,
         auto_reconnect=bool(sdr_raw.get("auto_reconnect", True)),
         reconnect_delay_seconds=float(sdr_raw.get("reconnect_delay_seconds", 5.0)),
     )
 
     db_cfg = DatabaseConfig(
-        path=str(db_raw.get("path", "data/skyscry.db")),
+        path=str(os.environ.get("SKYSCRY_DB_PATH") or db_raw.get("path", "data/skyscry.db")),
     )
 
     pipe_cfg = PipelineConfig(
@@ -191,18 +199,43 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         dedup_prune_interval_seconds=float(pipe_raw.get("dedup_prune_interval_seconds", 300.0)),
     )
 
+    lat_val = float(loc_raw.get("latitude", 38.7042))
+    lon_val = float(loc_raw.get("longitude", -91.4374))
+    env_lat = os.environ.get("LATITUDE") or os.environ.get("SKYSCRY_LATITUDE")
+    env_lon = os.environ.get("LONGITUDE") or os.environ.get("SKYSCRY_LONGITUDE")
+    if env_lat:
+        try:
+            lat_val = float(env_lat)
+        except ValueError:
+            pass
+    if env_lon:
+        try:
+            lon_val = float(env_lon)
+        except ValueError:
+            pass
+
     loc_cfg = LocationConfig(
-        latitude=float(loc_raw.get("latitude", 38.7042)),
-        longitude=float(loc_raw.get("longitude", -91.4374)),
+        latitude=lat_val,
+        longitude=lon_val,
         enable_regional_backfill=bool(loc_raw.get("enable_regional_backfill", True)),
         backfill_hours=int(loc_raw.get("backfill_hours", 48)),
         sync_interval_minutes=int(loc_raw.get("sync_interval_minutes", 15)),
     )
 
+    raw_pin = os.environ.get("ADMIN_PIN")
+    if raw_pin is None and web_raw.get("admin_pin") is not None:
+        raw_pin = str(web_raw.get("admin_pin"))
+    admin_pin = raw_pin.strip() if raw_pin and raw_pin.strip() else None
+
+    read_only_default = bool(web_raw.get("read_only_public", False))
+    read_only_public = _parse_bool_env(os.environ.get("READ_ONLY_PUBLIC"), read_only_default)
+
     web_cfg = WebConfig(
         enabled=bool(web_raw.get("enabled", True)),
         host=str(web_raw.get("host", "0.0.0.0")),
         port=int(web_raw.get("port", 8080)),
+        admin_pin=admin_pin,
+        read_only_public=read_only_public,
     )
 
     log_cfg = LoggingConfig(
@@ -210,8 +243,11 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         console_units=str(log_raw.get("console_units", "both")).lower(),
     )
 
+    auto_update_default = bool(raw_data.get("auto_update", True))
+    auto_update = _parse_bool_env(os.environ.get("AUTO_UPDATE_ON_START"), auto_update_default)
+
     return AppConfig(
-        auto_update=bool(raw_data.get("auto_update", True)),
+        auto_update=auto_update,
         sdr=sdr_cfg,
         database=db_cfg,
         pipeline=pipe_cfg,
