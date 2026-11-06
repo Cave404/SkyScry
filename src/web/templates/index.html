@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SkyScry v{{ version }} | 433.92 MHz Microclimate Telemetry Console</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ version }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ asset_version or version }}" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
@@ -16,9 +16,11 @@
       <div>
         <div class="brand-title">
           <span id="header-station-title">SkyScry</span>
-          <span class="version-badge" id="stat-app-version">v{{ version }}</span>
-          <span id="stat-git-commit" class="version-badge" title="Current Git Commit Hash">git:--</span>
-          <span id="stat-rtl433-ver" class="version-badge" title="rtl_433 Binary Release Version">rtl_433:--</span>
+          <div class="brand-badges">
+            <span class="version-badge" id="stat-app-version">v{{ version }}</span>
+            <span id="stat-git-commit" class="version-badge" title="Current Git Commit Hash">git:--</span>
+            <span id="stat-rtl433-ver" class="version-badge" title="rtl_433 Binary Release Version">rtl_433:--</span>
+          </div>
         </div>
         <div class="brand-subtitle">433.92 MHz Microclimate Telemetry, NWS Corroboration, Live Doppler Radar &amp; Climatology</div>
       </div>
@@ -238,7 +240,7 @@
             <div class="card-header mini-radar-header">
               <div>
                 <h3>Live Precipitation Radar</h3>
-                <span id="mini-radar-timestamp" class="text-muted">NEXRAD / RainViewer Live Loop</span>
+                <span id="mini-radar-timestamp" class="text-muted">NOAA NEXRAD Live Radar</span>
               </div>
               <button id="btn-expand-radar" class="btn btn-secondary btn-sm" type="button">Full Screen</button>
             </div>
@@ -800,7 +802,7 @@
     <!-- ================================================================== -->
     <section id="view-radar" class="view-panel">
       <div class="radar-view-grid">
-        <!-- Full-Width Interactive Animated NEXRAD / RainViewer Doppler Radar Card -->
+        <!-- Full-Width Interactive Live Doppler Radar & NWS Corroboration Card -->
         <div class="radar-main-card card">
           <div class="card-header radar-toolbar">
             <div>
@@ -808,14 +810,18 @@
               <span id="radar-station-meta" class="text-muted">Centered on Station Coordinates</span>
             </div>
             <div class="radar-layer-controls">
-              <button id="btn-radar-layer-nexrad" class="btn btn-primary btn-sm" type="button">Radar (dBZ)</button>
+              <button id="btn-radar-layer-noaa" class="btn btn-primary btn-sm" type="button">NOAA Base Reflectivity</button>
+              <button id="btn-radar-layer-nexrad" class="btn btn-secondary btn-sm" type="button">RainViewer dBZ</button>
               <button id="btn-radar-layer-sat" class="btn btn-secondary btn-sm" type="button">Infrared Satellite</button>
-              <button id="btn-radar-layer-noaa" class="btn btn-secondary btn-sm" type="button">NOAA Base Reflectivity</button>
+              <button id="btn-toggle-windy" class="btn btn-secondary btn-sm" type="button" title="Switch between Leaflet NOAA map and interactive Windy radar">Switch to Windy Live Radar</button>
               <button id="btn-refresh-nws" class="btn btn-secondary btn-sm" type="button">Refresh NWS</button>
             </div>
           </div>
 
           <div id="full-radar-map" class="full-radar-map" aria-label="Full interactive weather radar map"></div>
+          <div id="windy-radar-container" class="full-radar-map hidden" aria-label="Windy live Doppler radar embed">
+            <iframe id="windy-radar-iframe" title="Windy Live Radar" style="width: 100%; height: 100%; border: 0; border-radius: 8px; min-height: 480px;" loading="lazy"></iframe>
+          </div>
 
           <!-- Timeline Play/Pause Scrubber & dBZ Reflectivity Legend -->
           <div class="radar-scrubber-bar">
@@ -1200,6 +1206,6 @@
     </div>
   </div>
 
-  <script src="{{ url_for('static', filename='js/app.js') }}?v={{ version }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_version or version }}"></script>
 </body>
 </html>

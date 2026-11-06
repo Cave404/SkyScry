@@ -1,11 +1,11 @@
 /**
- * SkyScry v0.0.12 — 6-View Frontend Controller
+ * SkyScry v0.0.13 — 6-View Frontend Controller
  * - View 1: Overview Dashboard with AcuRite & Weather-Display (grahamsbeach.htm) SVG Gauges,
  *           Enlarged Split Hero Card, Dual-Trace 24h Area Sparklines, Diurnal Nowcast & Mini Live Radar
  * - View 2: Multi-Section Historical Charts + Climatology & Seasonal Insights Engine
  * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching, & Metric Masking
  * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export (bounded <= 2000)
- * - View 5: Live Animated NEXRAD / RainViewer Weather Radar & Official NWS 7-Day Forecast
+ * - View 5: Live NOAA / NEXRAD / Windy Doppler Weather Radar & Official NWS 7-Day Forecast
  * - View 6: Hardened Admin Settings (First-Run Password Setup, Auto-Lock, NWS & Units Config)
  */
 
@@ -51,7 +51,7 @@
     rain: null,
   };
 
-  // Leaflet Radar Maps State
+  // Leaflet Radar Maps & Windy State
   let miniRadarMap = null;
   let miniStationMarker = null;
   let miniRadarTileLayer = null;
@@ -62,7 +62,8 @@
   let rainViewerData = null;
   let radarFrames = [];
   let currentFrameIdx = 0;
-  let radarLayerMode = "radar"; // "radar" | "satellite" | "nexrad"
+  let radarLayerMode = "noaa"; // "noaa" | "radar" | "satellite"
+  let windyRadarActive = false;
   let radarTimer = null;
   let radarPlaying = true;
 
@@ -245,9 +246,14 @@
 
   // View 5: Radar & NWS DOM
   const elRadarStationSubtitle = document.getElementById("radar-station-subtitle");
-  const elBtnLayerRadar = document.getElementById("btn-layer-radar");
-  const elBtnLayerSatellite = document.getElementById("btn-layer-satellite");
-  const elBtnLayerNexrad = document.getElementById("btn-layer-nexrad");
+  const elBtnLayerRadar = document.getElementById("btn-radar-layer-nexrad") || document.getElementById("btn-layer-radar");
+  const elBtnLayerSatellite = document.getElementById("btn-radar-layer-sat") || document.getElementById("btn-layer-satellite");
+  const elBtnLayerNoaa = document.getElementById("btn-radar-layer-noaa") || document.getElementById("btn-layer-nexrad");
+  const elBtnToggleWindy = document.getElementById("btn-toggle-windy");
+  const elWindyRadarContainer = document.getElementById("windy-radar-container");
+  const elWindyRadarIframe = document.getElementById("windy-radar-iframe");
+  const elFullRadarMap = document.getElementById("full-radar-map");
+  const elRadarScrubberBar = document.querySelector(".radar-scrubber-bar");
   const elBtnRadarPlay = document.getElementById("btn-radar-play");
   const elRadarFrameSlider = document.getElementById("radar-frame-slider");
   const elRadarFrameTime = document.getElementById("radar-frame-time");
@@ -412,6 +418,18 @@
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  function formatShortTime(isoStr) {
+    if (!isoStr) return "--";
+    const str = String(isoStr).trim();
+    if (!str || str === "--") return "--";
+    if (/^\d{1,2}:\d{2}(\s*(AM|PM|am|pm))?$/i.test(str)) {
+      return str;
+    }
+    const dt = parseUtcDate(str);
+    if (!dt) return str;
+    return dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
 
   function formatDuration(seconds) {
@@ -683,13 +701,24 @@
     }
   }
 
+  function extractNumericSeries(points) {
+    if (!Array.isArray(points)) return [];
+    return points
+      .map((p) => {
+        if (p === null || p === undefined) return NaN;
+        if (typeof p === "number") return p;
+        if (typeof p === "object") {
+          const val = p.v ?? p.value ?? p.y ?? p.temp_f ?? p.temp_c;
+          return val !== null && val !== undefined ? Number(val) : NaN;
+        }
+        return Number(p);
+      })
+      .filter((v) => !isNaN(v));
+  }
+
   function renderSvgSparkline(svgEl, points, strokeColor, fillId) {
     if (!svgEl) return;
-    if (!Array.isArray(points) || points.length < 2) {
-      svgEl.innerHTML = "";
-      return;
-    }
-    const vals = points.map((p) => Number(p.v)).filter((v) => !isNaN(v));
+    const vals = extractNumericSeries(points);
     if (vals.length < 2) {
       svgEl.innerHTML = "";
       return;
@@ -724,23 +753,23 @@
 
   function renderDualSvgSparkline(svgEl, tempPoints, dewPoints) {
     if (!svgEl) return;
-    const tVals = Array.isArray(tempPoints)
-      ? tempPoints.map((p) => Number(p.v)).filter((v) => !isNaN(v))
-      : [];
-    const dVals = Array.isArray(dewPoints)
-      ? dewPoints.map((p) => Number(p.v)).filter((v) => !isNaN(v))
-      : [];
+    const parentBox = svgEl.closest(".hero-sparkline-panel");
+    const tVals = extractNumericSeries(tempPoints);
+    const dVals = extractNumericSeries(dewPoints);
     if (tVals.length < 2 && dVals.length < 2) {
       svgEl.innerHTML = "";
+      if (parentBox) parentBox.style.display = "none";
       return;
     }
+    if (parentBox) parentBox.style.display = "";
+
     const allVals = tVals.concat(dVals);
     const minV = Math.min(...allVals);
     const maxV = Math.max(...allVals);
     const span = Math.max(1.0, maxV - minV);
     const w = 420;
     const h = 85;
-    const padY = 8;
+    const padY = 12;
 
     let dewMarkup = "";
     if (dVals.length >= 2) {
@@ -753,7 +782,7 @@
       const area = `0,${h} ${polyline} ${w},${h}`;
       dewMarkup = `
         <polygon points="${area}" fill="url(#heroDualDewGrad)" />
-        <polyline points="${polyline}" fill="none" stroke="#10b981" stroke-width="1.8" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="${polyline}" fill="none" stroke="#10b981" stroke-width="2.0" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
       `;
     }
 
@@ -768,23 +797,27 @@
       const area = `0,${h} ${polyline} ${w},${h}`;
       tempMarkup = `
         <polygon points="${area}" fill="url(#heroDualTempGrad)" />
-        <polyline points="${polyline}" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="${polyline}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
       `;
     }
 
     svgEl.innerHTML = `
       <defs>
         <linearGradient id="heroDualTempGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35" />
-          <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0" />
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.38" />
+          <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02" />
         </linearGradient>
         <linearGradient id="heroDualDewGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#10b981" stop-opacity="0.22" />
+          <stop offset="0%" stop-color="#10b981" stop-opacity="0.25" />
           <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
         </linearGradient>
       </defs>
+      <line x1="0" y1="${padY}" x2="${w}" y2="${padY}" stroke="#334155" stroke-width="0.75" stroke-dasharray="2 4" />
+      <line x1="0" y1="${h - padY}" x2="${w}" y2="${h - padY}" stroke="#334155" stroke-width="0.75" stroke-dasharray="2 4" />
       ${dewMarkup}
       ${tempMarkup}
+      <text x="6" y="${padY + 9}" fill="#94a3b8" font-size="9" font-family="monospace">High: ${maxV.toFixed(1)}°F</text>
+      <text x="6" y="${h - 3}" fill="#64748b" font-size="9" font-family="monospace">Low: ${minV.toFixed(1)}°F</text>
     `;
   }
 
@@ -1092,13 +1125,13 @@
     if (elOvOutLowPill) {
       elOvOutLowPill.innerHTML =
         lowExt !== null
-          ? `Low: ${lowExt.toFixed(1)}&deg;F (${escapeHtml(lowTimeStr)})`
+          ? `Low: ${lowExt.toFixed(1)}&deg;F (${escapeHtml(formatShortTime(lowTimeStr))})`
           : `Low: --.-&deg;F (--)`;
     }
     if (elOvOutHighPill) {
       elOvOutHighPill.innerHTML =
         highExt !== null
-          ? `High: ${highExt.toFixed(1)}&deg;F (${escapeHtml(highTimeStr)})`
+          ? `High: ${highExt.toFixed(1)}&deg;F (${escapeHtml(formatShortTime(highTimeStr))})`
           : `High: --.-&deg;F (--)`;
     }
 
@@ -1151,7 +1184,7 @@
     }
     if (elOvHeroRangeSub) {
       if (highExt !== null && lowExt !== null) {
-        elOvHeroRangeSub.textContent = `L: ${lowExt.toFixed(1)}° | H: ${highExt.toFixed(1)}°`;
+        elOvHeroRangeSub.textContent = `L: ${lowExt.toFixed(1)}° (${formatShortTime(lowTimeStr)}) | H: ${highExt.toFixed(1)}° (${formatShortTime(highTimeStr)})`;
       } else if (out.temp_f !== null && out.temp_f !== undefined) {
         const t = Number(out.temp_f);
         elOvHeroRangeSub.textContent = `L: ${(t - 8.2).toFixed(1)}° | H: ${(t + 4.8).toFixed(1)}°`;
@@ -1175,10 +1208,15 @@
     // 24h Dual Sparkline (Temp + Dew Point) on Hero Card
     renderDualSvgSparkline(
       elOvHeroSparklineSvg,
-      out.sparkline_24h,
+      out.sparkline_24h_f || out.sparkline_24h,
       out.sparkline_dew_24h_f || out.sparkline_dew_24h
     );
-    renderSvgSparkline(elOvOutSparkline, out.sparkline_24h, "#38bdf8", "heroSparkGrad");
+    renderSvgSparkline(
+      elOvOutSparkline,
+      out.sparkline_24h_f || out.sparkline_24h,
+      "#38bdf8",
+      "heroSparkGrad"
+    );
 
     if (elOvOutSpread) {
       if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
@@ -1664,7 +1702,7 @@
     const osmUrl = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
     const layer = L.tileLayer(osmUrl, {
       maxZoom: 18,
-      className: "basemap-layer",
+      className: "dark-osm-tiles basemap-layer",
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
     });
     layer.on("tileerror", function (err) {
@@ -1721,13 +1759,20 @@
       elRadarStationSubtitle.textContent = `Centered on ${userSettings.station_name} (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
     }
 
+    // Default / primary layer is official NOAA WMS
+    if (radarLayerMode === "noaa") {
+      applyNexradTileFallback();
+    }
+
     // Fetch RainViewer timeline JSON if not loaded recently
     try {
       const rvRes = await fetch("https://api.rainviewer.com/public/weather-maps.json");
       if (rvRes.ok) {
         rainViewerData = await rvRes.json();
         updateRadarFrameList();
-        showRadarFrame(radarFrames.length - 1);
+        if (radarLayerMode !== "noaa") {
+          showRadarFrame(radarFrames.length - 1);
+        }
       }
     } catch (err) {
       // Fallback to NOAA IEM NEXRAD tile layer if RainViewer is unreachable
@@ -1784,7 +1829,7 @@
   }
 
   function showRadarFrame(idx) {
-    if (radarLayerMode === "nexrad") {
+    if (radarLayerMode === "noaa") {
       applyNexradTileFallback();
       return;
     }
@@ -1846,7 +1891,7 @@
     stopRadarLoop();
     if (!radarPlaying) return;
     radarTimer = setInterval(() => {
-      if (activeTab !== "radar" || radarFrames.length === 0 || radarLayerMode === "nexrad") return;
+      if (activeTab !== "radar" || radarFrames.length === 0 || radarLayerMode === "noaa") return;
       const nextIdx = (currentFrameIdx + 1) % radarFrames.length;
       showRadarFrame(nextIdx);
     }, 950);
@@ -3003,7 +3048,7 @@
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
         if (data.restarting) {
-          const newVer = data.new_version || (data.current && data.current.version) || "0.0.12";
+          const newVer = data.new_version || (data.current && data.current.version) || "0.0.13";
           showToast(`Restarting SkyScry daemon with new update (v${newVer})... Reconnecting in 5s.`);
           elBtnTriggerUpdate.textContent = "Restarting...";
           setTimeout(() => {
@@ -3093,7 +3138,9 @@
     } else if (activeTab === "radar") {
       initAndRefreshRadarMaps().then(() => {
         if (fullRadarMap) fullRadarMap.invalidateSize();
-        startRadarLoop();
+        if (!windyRadarActive && radarLayerMode !== "noaa") {
+          startRadarLoop();
+        }
       });
       fetchNwsSummary(false).catch((err) => console.error("NWS load error:", err));
     } else if (activeTab === "settings") {
@@ -3217,22 +3264,83 @@
     });
 
     // View 5 Radar Layer & Timeline controls
+    function toggleWindyEmbed(enable) {
+      if (typeof enable !== "boolean") {
+        enable = !windyRadarActive;
+      }
+      windyRadarActive = enable;
+      if (windyRadarActive) {
+        stopRadarLoop();
+        radarPlaying = false;
+        if (elBtnRadarPlay) elBtnRadarPlay.textContent = "▶ Play Loop";
+        if (elFullRadarMap) elFullRadarMap.classList.add("hidden");
+        if (elRadarScrubberBar) elRadarScrubberBar.classList.add("hidden");
+        if (elWindyRadarContainer) elWindyRadarContainer.classList.remove("hidden");
+
+        const lat = Number(userSettings.latitude || 38.627);
+        const lon = Number(userSettings.longitude || -90.1994);
+        const zoom = Math.max(5, Math.min(11, Number(userSettings.radar_zoom || 7)));
+        const windyUrl = `https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=in&metricTemp=%C2%B0F&metricWind=mph&zoom=${zoom}&overlay=radar&product=radar&level=surface&lat=${lat}&lon=${lon}`;
+        if (elWindyRadarIframe && (!elWindyRadarIframe.src || elWindyRadarIframe.src === "about:blank" || !elWindyRadarIframe.src.includes("windy.com"))) {
+          elWindyRadarIframe.src = windyUrl;
+        }
+        if (elBtnToggleWindy) {
+          elBtnToggleWindy.textContent = "Switch to NOAA WMS Radar";
+          elBtnToggleWindy.classList.add("btn-primary");
+          elBtnToggleWindy.classList.remove("btn-secondary");
+        }
+      } else {
+        if (elWindyRadarContainer) elWindyRadarContainer.classList.add("hidden");
+        if (elFullRadarMap) elFullRadarMap.classList.remove("hidden");
+        if (elRadarScrubberBar) elRadarScrubberBar.classList.remove("hidden");
+        if (elBtnToggleWindy) {
+          elBtnToggleWindy.textContent = "Switch to Windy Live Radar";
+          elBtnToggleWindy.classList.remove("btn-primary");
+          elBtnToggleWindy.classList.add("btn-secondary");
+        }
+        if (fullRadarMap) {
+          setTimeout(() => {
+            fullRadarMap.invalidateSize();
+          }, 50);
+        }
+      }
+    }
+
     const setLayerBtnActive = (mode) => {
+      if (windyRadarActive) {
+        toggleWindyEmbed(false);
+      }
       radarLayerMode = mode;
-      if (elBtnLayerRadar) elBtnLayerRadar.classList.toggle("active", mode === "radar");
-      if (elBtnLayerSatellite) elBtnLayerSatellite.classList.toggle("active", mode === "satellite");
-      if (elBtnLayerNexrad) elBtnLayerNexrad.classList.toggle("active", mode === "nexrad");
-      updateRadarFrameList();
-      showRadarFrame(radarFrames.length - 1);
+      if (elBtnLayerNoaa) {
+        elBtnLayerNoaa.classList.toggle("btn-primary", mode === "noaa");
+        elBtnLayerNoaa.classList.toggle("btn-secondary", mode !== "noaa");
+      }
+      if (elBtnLayerRadar) {
+        elBtnLayerRadar.classList.toggle("btn-primary", mode === "radar");
+        elBtnLayerRadar.classList.toggle("btn-secondary", mode !== "radar");
+      }
+      if (elBtnLayerSatellite) {
+        elBtnLayerSatellite.classList.toggle("btn-primary", mode === "satellite");
+        elBtnLayerSatellite.classList.toggle("btn-secondary", mode !== "satellite");
+      }
+      if (mode === "noaa") {
+        applyNexradTileFallback();
+      } else {
+        updateRadarFrameList();
+        showRadarFrame(radarFrames.length - 1);
+      }
     };
+    if (elBtnLayerNoaa) {
+      elBtnLayerNoaa.addEventListener("click", () => setLayerBtnActive("noaa"));
+    }
     if (elBtnLayerRadar) {
       elBtnLayerRadar.addEventListener("click", () => setLayerBtnActive("radar"));
     }
     if (elBtnLayerSatellite) {
       elBtnLayerSatellite.addEventListener("click", () => setLayerBtnActive("satellite"));
     }
-    if (elBtnLayerNexrad) {
-      elBtnLayerNexrad.addEventListener("click", () => setLayerBtnActive("nexrad"));
+    if (elBtnToggleWindy) {
+      elBtnToggleWindy.addEventListener("click", () => toggleWindyEmbed());
     }
     if (elBtnRadarPlay) {
       elBtnRadarPlay.addEventListener("click", () => {

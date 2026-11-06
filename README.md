@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.12-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.13-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,9 +10,17 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.12`)
+## Key Features (`v0.0.13`)
 
-- **Enlarged Split Hero Condition Card & Dual-Trace 24h Area Sparklines (`v0.0.12`):**
+- **High-Definition Live Doppler Radar, NOAA WMS & 1-Click Windy Embed (`v0.0.13`):**
+  - **Zero Watermarks & Zero API Keys:** Swapped Carto/RainViewer watermarked basemaps for standard OpenStreetMap tiles styled dynamically into dark mode (`.dark-osm-tiles`), with automatic tile-error fallback to Esri World Dark Gray.
+  - **Official NOAA WMS Integration:** High-resolution CONUS Base Reflectivity (`conus_bref_qcd`) directly from NOAA OpenGeo NCEP servers.
+  - **1-Click Windy Live Doppler Radar Embed:** One-click toggle between Leaflet NOAA WMS and dark-mode interactive Windy Doppler radar centered on station coordinates.
+- **Mobile Responsive Layout & Dynamic Cache-Busting (`v0.0.13`):**
+  - Automatic `asset_version` query parameter injection and HTTP `Cache-Control: no-store` headers to eliminate mobile/Cloudflare caching issues.
+  - Full mobile screen scaling (`<= 640px` & `<= 520px`) with zero horizontal overflow, wrapped header badges, fluid hero typography, 2-column quick grid, and vertically stacked gauge cards.
+  - Localized 12-hour timestamps (`7:53 PM`) for daily high/low temperature pills and robust dual-trace 24-hour area sparklines.
+- **Enlarged Split Hero Condition Card & Dual-Trace 24h Area Sparklines:**
   - Full-width split hero view featuring enlarged 115px weather SVGs, 4.2rem primary temperature typography, high/low extreme pills, and trend arrows.
   - 4-Box Hyperlocal Quick Grid (Feels Like, Dew Point Spread, Today's Range, Ensemble Spread) and dual-trace 24h temperature + dew point area trend chart.
 - **AcuRite & Weather-Display (`grahamsbeach.htm`) Interactive SVG Gauges (`v0.0.12`):**
@@ -84,7 +92,7 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.12")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.13")
 │   ├── security.py                 # Encrypted password hashing, brute-force limiter, & session auto-lock
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
@@ -159,7 +167,7 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.12`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.13`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
 | `GET/POST` | `/api/auth/*` | First-run admin password setup (`/api/auth/setup`), session unlock (`/api/auth/unlock`), manual lock (`/api/auth/lock`), and password rotation (`/api/auth/change-password`). |
 | `GET/POST` | `/api/settings` | Reads or updates persistent instance settings in SQLite (`system_settings` table). |
 | `GET` | `/api/nws` | Returns official US National Weather Service (`api.weather.gov`) observations, active alerts, 7-day gridpoint forecast, and hyperlocal corroboration deltas. |

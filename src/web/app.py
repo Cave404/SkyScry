@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.12)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.13)."""
 
 from __future__ import annotations
 
@@ -123,8 +123,18 @@ def create_app(
 
     @app.route("/", methods=["GET"])
     def index() -> str:
-        """Render the 6-view SkyScry v0.0.12 WebUI application."""
-        return render_template("index.html", version=__version__)
+        """Render the 6-view SkyScry v0.0.13 WebUI application."""
+        asset_version = f"{__version__}_{int(time.time())}"
+        return render_template("index.html", version=__version__, asset_version=asset_version)
+
+    @app.after_request
+    def add_cache_busting_headers(response: Response) -> Response:
+        """Force cache-busting so mobile browsers and Cloudflare Tunnel always load the newest JS and CSS."""
+        if request.path == "/" or request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     # ==========================================================================
     # AUTHENTICATION & HARDENED SECURITY ENDPOINTS
