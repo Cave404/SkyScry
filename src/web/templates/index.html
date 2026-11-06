@@ -10,113 +10,176 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-mark">SS</div>
-      <div>
-        <div class="brand-title">
-          <span id="header-station-title">SkyScry</span>
-          <div class="brand-badges">
-            <span class="version-badge" id="stat-app-version">v{{ version }}</span>
-            <span id="stat-git-commit" class="version-badge" title="Current Git Commit Hash">git:--</span>
-            <span id="stat-rtl433-ver" class="version-badge" title="rtl_433 Binary Release Version">rtl_433:--</span>
-          </div>
-        </div>
-        <div class="brand-subtitle">433.92 MHz Microclimate Telemetry, NWS Corroboration, Live Doppler Radar &amp; Climatology</div>
+  <header class="topbar sticky-app-bar">
+    <div class="topbar-left">
+      <button id="btn-nav-drawer-toggle" class="hamburger-btn" type="button" aria-label="Open Navigation Drawer" title="Navigation &amp; System Menu">
+        <span class="hamburger-icon">&#9776;</span>
+      </button>
+      <div class="brand">
+        <div class="brand-mark">SS</div>
+        <span id="header-station-title" class="brand-title">SkyScry</span>
       </div>
+      <span id="top-bar-active-view" class="topbar-view-pill">Overview</span>
     </div>
 
-    <div class="status-strip">
-      <div class="status-metric">
-        <span class="metric-label">SECURITY</span>
-        <div class="auth-pill-group">
-          <button id="btn-auth-pill" class="status-pill status-locked" type="button" title="Click to Unlock or Lock Admin Controls">
-            LOCKED (READ-ONLY)
-          </button>
-          <button id="btn-lock-now" class="btn-lock-quick hidden" type="button" title="Immediately lock Admin session">
-            Lock Now
-          </button>
-        </div>
+    <!-- Desktop inline tab navigation bar (visible on large screens, hidden on mobile) -->
+    <nav class="desktop-top-nav" aria-label="Desktop Views">
+      <button class="tab-btn active" data-tab="overview" type="button">1. Overview</button>
+      <button class="tab-btn" data-tab="charts" type="button">2. Charts</button>
+      <button class="tab-btn" data-tab="sensors" type="button">3. Sensors</button>
+      <button class="tab-btn" data-tab="logs" type="button">4. Logs</button>
+      <button class="tab-btn" data-tab="radar" type="button">5. Radar</button>
+      <button class="tab-btn" data-tab="settings" type="button">6. Settings &#128274;</button>
+    </nav>
+
+    <div class="topbar-right">
+      <div class="topbar-pill sdr-pill" title="SDR Ingestion &amp; Active Sensor Ratio">
+        <span id="stat-sync-indicator" class="sync-dot"></span>
+        <span id="stat-sensor-count">--</span>
       </div>
-      <div class="status-metric">
-        <span class="metric-label">SDR STREAM</span>
-        <span id="stat-sdr-status" class="status-pill status-unknown">CHECKING</span>
+      <div class="topbar-pill baro-pill" title="Barometric Sea-Level Pressure">
+        <span id="stat-baro-header">--.--"</span>
       </div>
-      <div class="status-metric">
-        <span class="metric-label">ACTIVE SENSORS</span>
-        <span id="stat-sensor-count" class="metric-value">--</span>
+      <div class="auth-pill-group">
+        <button id="btn-auth-pill" class="topbar-icon-btn status-locked" type="button" title="Click to Unlock or Lock Admin Controls">
+          <span class="lock-icon">&#128274;</span>
+          <span class="lock-label">LOCKED</span>
+        </button>
+        <button id="btn-lock-now" class="btn-lock-quick hidden" type="button" title="Immediately lock Admin session">Lock</button>
       </div>
-      <div class="status-metric">
-        <span class="metric-label">BAROMETER</span>
-        <span id="stat-baro-header" class="metric-value">--.-- inHg</span>
-      </div>
-      <div class="status-metric">
-        <span class="metric-label">PACKETS LOGGED</span>
-        <span id="stat-reading-count" class="metric-value">--</span>
-      </div>
-      <div class="status-metric">
-        <span class="metric-label">DB SIZE (WAL)</span>
-        <span id="stat-db-size" class="metric-value">-- MB</span>
-      </div>
-      <div class="status-metric">
-        <span class="metric-label">UPTIME</span>
-        <span id="stat-uptime" class="metric-value">--</span>
-      </div>
-      <div class="status-metric">
-        <span class="metric-label">SYNC</span>
-        <div class="sync-row">
-          <span id="stat-sync-indicator" class="sync-dot"></span>
-          <span id="stat-last-sync" class="metric-sub">--:--:--</span>
-        </div>
-      </div>
+      <button id="btn-refresh-now" class="btn btn-primary btn-sm topbar-sync-btn" type="button" title="Sync All Telemetry">
+        <span class="sync-arrow">&#8635;</span>
+        <span class="sync-btn-label">Sync</span>
+      </button>
     </div>
   </header>
 
-  <div id="nws-alert-banner" class="nws-alert-banner hidden" role="alert"></div>
-  <div id="sdr-error-banner" class="alert-banner hidden"></div>
-  <div id="maintenance-toast" class="toast-banner hidden"></div>
+  <!-- Slide-Out Navigation & System Drawer (Hamburger Menu) -->
+  <div id="nav-drawer-backdrop" class="nav-drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="nav-drawer" class="nav-drawer" aria-label="Navigation &amp; System Menu" aria-hidden="true">
+    <div class="drawer-header">
+      <div class="drawer-brand">
+        <div class="brand-mark">SS</div>
+        <div>
+          <div class="drawer-title">SkyScry Console</div>
+          <div class="drawer-subtitle">Telemetry &amp; Microclimate Control</div>
+        </div>
+      </div>
+      <button id="btn-nav-drawer-close" class="drawer-close-btn" type="button" aria-label="Close Navigation Drawer">&times;</button>
+    </div>
 
-  <main class="container">
-    <nav class="nav-bar" aria-label="Main Views">
-      <div class="tabs" role="tablist">
-        <button class="tab-btn active" data-tab="overview" role="tab">1. Overview Dashboard</button>
-        <button class="tab-btn" data-tab="charts" role="tab">2. Historical Charts &amp; Climatology</button>
-        <button class="tab-btn" data-tab="sensors" role="tab">3. Sensors Manager</button>
-        <button class="tab-btn" data-tab="logs" role="tab">4. SQLite Log Explorer</button>
-        <button class="tab-btn" data-tab="radar" role="tab">5. Radar &amp; NWS Forecast</button>
-        <button class="tab-btn" data-tab="settings" role="tab">6. Settings &#128274;</button>
+    <div class="drawer-body">
+      <!-- Section A: Navigation Views -->
+      <div class="drawer-section">
+        <div class="drawer-section-title">NAVIGATION VIEWS</div>
+        <div class="drawer-nav-list" role="tablist">
+          <button class="drawer-nav-item active" data-tab="overview" type="button">
+            <span class="drawer-nav-num">1</span>
+            <span class="drawer-nav-label">Overview Dashboard</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="charts" type="button">
+            <span class="drawer-nav-num">2</span>
+            <span class="drawer-nav-label">Historical Charts &amp; Climatology</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="sensors" type="button">
+            <span class="drawer-nav-num">3</span>
+            <span class="drawer-nav-label">Sensors Manager</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="logs" type="button">
+            <span class="drawer-nav-num">4</span>
+            <span class="drawer-nav-label">SQLite Log Explorer</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="radar" type="button">
+            <span class="drawer-nav-num">5</span>
+            <span class="drawer-nav-label">Radar &amp; NWS Forecast</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="settings" type="button">
+            <span class="drawer-nav-num">6</span>
+            <span class="drawer-nav-label">Settings &#128274;</span>
+          </button>
+        </div>
       </div>
 
-      <div class="toolbar-controls">
-        <button id="btn-trigger-update" class="btn btn-secondary" type="button" title="Check GitHub for new SkyScry commits, pip upgrades, and rtl_433 releases">
-          Check &amp; Apply Updates
-        </button>
-        <button id="btn-sync-reference" class="btn btn-secondary" type="button" title="Fetch 48h regional barometric pressure (inHg/hPa) &amp; weather backfill">
-          Sync Barometer &amp; History
-        </button>
-        <button id="btn-purge-outliers" class="btn btn-secondary" type="button" title="Expunge corrupted RF bit-flip spikes and appliance probes from SQLite">
-          Purge Skewed Outliers
-        </button>
-        <button id="btn-refresh-now" class="btn btn-primary" type="button">Sync Now</button>
+      <!-- Section B: System Maintenance Actions -->
+      <div class="drawer-section">
+        <div class="drawer-section-title">SYSTEM MAINTENANCE</div>
+        <div class="drawer-action-list">
+          <button id="btn-trigger-update" class="drawer-action-btn" type="button" title="Check GitHub for updates &amp; upgrades">
+            <span class="action-icon">&#128640;</span>
+            <span class="action-text">Check &amp; Apply Updates</span>
+          </button>
+          <button id="btn-sync-reference" class="drawer-action-btn" type="button" title="Fetch 48h regional barometric pressure &amp; weather backfill">
+            <span class="action-icon">&#128260;</span>
+            <span class="action-text">Sync Barometer &amp; History</span>
+          </button>
+          <button id="btn-purge-outliers" class="drawer-action-btn" type="button" title="Expunge corrupted RF bit-flip spikes and appliance probes">
+            <span class="action-icon">&#129529;</span>
+            <span class="action-text">Purge Skewed Outliers</span>
+          </button>
+          <button id="btn-drawer-auth" class="drawer-action-btn" type="button" title="Lock or Unlock Admin session">
+            <span class="action-icon" id="drawer-auth-icon">&#128274;</span>
+            <span class="action-text" id="drawer-auth-text">Lock / Unlock Admin</span>
+          </button>
+        </div>
       </div>
-    </nav>
+
+      <!-- Section C: System Telemetry & Version Footer -->
+      <div class="drawer-section drawer-footer-section">
+        <div class="drawer-section-title">SYSTEM TELEMETRY</div>
+        <div class="drawer-telemetry-grid">
+          <div class="telem-row">
+            <span class="telem-label">Version</span>
+            <span class="telem-val" id="stat-app-version">v{{ version }}</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Git Commit</span>
+            <span class="telem-val mono" id="stat-git-commit">git:--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">rtl_433 Build</span>
+            <span class="telem-val mono" id="stat-rtl433-ver">rtl_433:--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">SDR Ingestion</span>
+            <span class="telem-val" id="stat-sdr-status">READY</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Packets Logged</span>
+            <span class="telem-val mono" id="stat-reading-count">--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">DB Size (WAL)</span>
+            <span class="telem-val mono" id="stat-db-size">-- MB</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Daemon Uptime</span>
+            <span class="telem-val" id="stat-uptime">--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Last Sync</span>
+            <span class="telem-val mono" id="stat-last-sync">--:--:--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
 
     <!-- ================================================================== -->
     <!-- VIEW 1: MAIN OVERVIEW DASHBOARD (ACURITE & WEATHER-DISPLAY GAUGES) -->
     <!-- ================================================================== -->
     <section id="view-overview" class="view-panel active">
-      <!-- Hyperlocal NWS Corroboration Strip -->
-      <div class="nws-corroboration-strip card">
+      <!-- Compact 1-Line Hyperlocal NWS Corroboration Strip -->
+      <div class="nws-corroboration-strip card compact-strip">
         <div class="nws-strip-left">
-          <span class="nws-badge-tag">NWS BASELINE CORROBORATION</span>
+          <span class="nws-badge-tag">NWS BASELINE</span>
           <span id="ov-nws-summary-badge" class="nws-strip-text">
-            Local Sensors: --.-&deg;F | NWS Official: Syncing... | Microclimate Delta: --
+            NWS: Syncing... | &Delta; --
           </span>
         </div>
         <div class="nws-strip-right">
           <span id="ov-nws-office-pill" class="trend-pill neutral">WFO: --</span>
-          <button id="btn-open-radar-tab" class="btn btn-secondary btn-sm" type="button">
-            Open Full Radar &amp; 7-Day NWS &rarr;
+          <button id="btn-open-radar-tab" class="btn btn-secondary btn-sm compact-radar-btn" type="button">
+            Radar &amp; 7-Day &rarr;
           </button>
         </div>
       </div>
@@ -157,30 +220,31 @@
                 <div class="quick-stat-box">
                   <span class="quick-label">FEELS LIKE</span>
                   <div id="ov-hero-feels" class="quick-val">--.-&deg;F</div>
-                  <span id="ov-hero-feels-sub" class="quick-sub">Apparent Temp</span>
+                  <span id="ov-hero-feels-sub" class="quick-sub">Apparent</span>
                 </div>
                 <div class="quick-stat-box">
-                  <span class="quick-label">DEW POINT &amp; SPREAD</span>
+                  <span class="quick-label">DEW POINT</span>
                   <div id="ov-hero-dew" class="quick-val">--.-&deg;F</div>
-                  <span id="ov-hero-dew-spread" class="quick-sub">Spread: --.-&deg;F</span>
+                  <span id="ov-hero-dew-spread" class="quick-sub">Spread: --</span>
                 </div>
                 <div class="quick-stat-box">
                   <span class="quick-label">TODAY'S RANGE</span>
                   <div id="ov-hero-range" class="quick-val">&Delta; --.-&deg;F</div>
-                  <span id="ov-hero-range-sub" class="quick-sub">L: --&deg; | H: --&deg;</span>
+                  <span id="ov-hero-range-sub" class="quick-sub">L: -- | H: --</span>
                 </div>
                 <div class="quick-stat-box">
-                  <span class="quick-label">ENSEMBLE SPREAD</span>
+                  <span class="quick-label">ENSEMBLE</span>
                   <div id="ov-hero-spread-val" class="quick-val">--.-&deg;F</div>
-                  <span id="ov-hero-spread-count" class="quick-sub">-- station(s)</span>
+                  <span id="ov-hero-spread-count" class="quick-sub">-- stations</span>
                 </div>
               </div>
 
               <!-- 24-Hour Temperature & Dew Point Trend Sparkline SVG Panel -->
               <div class="hero-sparkline-panel">
                 <div class="sparkline-header-row">
-                  <span class="sparkline-title">24-HOUR TEMPERATURE &amp; DEW POINT TRAJECTORY</span>
+                  <span class="sparkline-title">24-HOUR TRAJECTORY</span>
                   <div class="sparkline-legend">
+                    <span id="sparkline-range-pill" class="sparkline-range-pill">H: --.-&deg; | L: --.-&deg;</span>
                     <span class="legend-dot temp-dot"></span><span>Temp</span>
                     <span class="legend-dot dew-dot"></span><span>Dew Pt</span>
                   </div>
@@ -249,12 +313,12 @@
         </div>
       </div>
 
-      <!-- AcuRite & Weather-Display Inspired Hardware SVG Gauges Grid (Roomy 2x2 Layout) -->
+      <!-- AcuRite & Weather-Display Inspired Hardware SVG Gauges Grid (Side-by-Side 2x2 Layout) -->
       <div class="ensemble-kpi-grid">
         <!-- 1. AcuRite Radial Wind Gauge with Gust Ring & 15m Directional Sector -->
         <div class="kpi-tile kpi-wind-card card">
           <div class="gauge-card-header">
-            <span class="metric-label">ACURITE RADIAL WIND &amp; GUST DIAL</span>
+            <span class="metric-label">RADIAL WIND &amp; GUST DIAL</span>
             <span id="ov-wind-bearing" class="metric-sub">Bearing: -- deg</span>
           </div>
 
@@ -274,7 +338,7 @@
                 <!-- 15-Minute Wind Direction Variance Sector Wedge -->
                 <path id="wind-variance-wedge" d="" fill="rgba(56, 189, 248, 0.18)" stroke="rgba(56, 189, 248, 0.35)" stroke-width="1" />
 
-                <!-- 16-Point Compass Labels (N, E, S, W in crisp 13px bold) -->
+                <!-- 16-Point Compass Labels -->
                 <g font-family="monospace" font-weight="700" text-anchor="middle">
                   <text x="90" y="24" fill="#38bdf8" font-size="13" font-weight="800">N</text>
                   <text x="117" y="29" fill="#64748b" font-size="8">NNE</text>
@@ -303,29 +367,32 @@
                   <line x1="90" y1="27" x2="90" y2="44" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" />
                 </g>
 
-                <!-- Center Digital Console Readout (1.6rem bold) -->
+                <!-- Center Digital Console Readout -->
                 <text id="wind-dial-cardinal" x="90" y="73" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="13" font-weight="800">--</text>
                 <text id="ov-wind-speed" x="90" y="98" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="24" font-weight="800">0.0</text>
                 <text id="wind-dial-unit" x="90" y="112" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9.5" font-weight="700">MPH</text>
               </svg>
             </div>
 
-            <!-- High-Contrast Wind Stat Blocks Beside Dial -->
-            <div class="wind-stats-flank">
+            <!-- Compact 2x2 Stat Grid Beside Dial -->
+            <div class="gauge-stat-grid wind-stat-grid">
               <div class="stat-callout-box">
-                <span class="stat-callout-label">SUSTAINED SPEED</span>
+                <span class="stat-callout-label">SUSTAINED</span>
                 <div id="ov-wind-speed-flank" class="stat-callout-val">0.0 mph</div>
-                <span id="ov-wind-bearing-flank" class="stat-callout-sub">Bearing: --° (--)</span>
+                <span id="ov-wind-bearing-flank" class="stat-callout-sub">--° (--)</span>
               </div>
               <div class="stat-callout-box">
-                <span class="stat-callout-label">PEAK GUST (TODAY)</span>
+                <span class="stat-callout-label">PEAK GUST</span>
                 <div id="ov-wind-gust" class="stat-callout-val">0.0 mph</div>
-                <span id="ov-wind-gust-time" class="stat-callout-sub">Max daily burst</span>
+                <span id="ov-wind-gust-time" class="stat-callout-sub">--</span>
               </div>
               <div class="stat-callout-box">
-                <span class="stat-callout-label">10-MINUTE AVERAGE</span>
+                <span class="stat-callout-label">10M AVERAGE</span>
                 <div id="ov-wind-avg-10m" class="stat-callout-val">0.0 mph</div>
-                <span class="stat-callout-sub">Rolling anemometer</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">BEARING</span>
+                <div id="ov-wind-bearing-val" class="stat-callout-val">--°</div>
               </div>
             </div>
           </div>
@@ -339,21 +406,7 @@
           </div>
 
           <div class="baro-tower-layout">
-            <div class="baro-readout-col">
-              <div class="metric-label">SEA-LEVEL PRESSURE</div>
-              <div id="ov-baro-inhg" class="kpi-primary baro-primary-val">--.-- inHg</div>
-              <div class="stat-pill-stack">
-                <div id="ov-baro-hpa" class="stat-pill-row">----.- hPa | Steady</div>
-                <div id="ov-baro-extremes" class="stat-pill-row">Today L: --.-- | H: --.--</div>
-                <div class="stat-pill-dual">
-                  <span id="ov-delta-1h-temp" class="stat-pill-mini">1h &Delta;T: --</span>
-                  <span id="ov-delta-3h-baro" class="stat-pill-mini">3h &Delta;P: --</span>
-                </div>
-              </div>
-              <div id="ov-baro-source" class="kpi-sub text-muted">Source: Regional Reference</div>
-            </div>
-
-            <!-- Animated Vertical Mercury / Scale Column SVG (165px tall x 75px wide) -->
+            <!-- Animated Vertical Mercury Column SVG (145px tall x 65px wide) -->
             <div class="baro-tower-svg-wrap" aria-label="Barometric Pressure Mercury Tower">
               <svg viewBox="0 0 85 170" class="baro-tower-svg" xmlns="http://www.w3.org/2000/svg">
                 <defs>
@@ -363,7 +416,6 @@
                     <stop offset="100%" stop-color="#f59e0b" />
                   </linearGradient>
                 </defs>
-                <!-- Weather Tendency Zone Icons -->
                 <text x="12" y="26" font-size="11" fill="#fbbf24" font-family="monospace" font-weight="800">SUN</text>
                 <text x="12" y="88" font-size="10" fill="#94a3b8" font-family="monospace" font-weight="700">CLD</text>
                 <text x="12" y="150" font-size="10" fill="#38bdf8" font-family="monospace" font-weight="700">RN</text>
@@ -388,10 +440,36 @@
                 </g>
               </svg>
             </div>
+
+            <!-- Compact Readout + 2x2 Stat Grid -->
+            <div class="baro-readout-col">
+              <div class="baro-main-block">
+                <span class="metric-label">SEA-LEVEL PRESSURE</span>
+                <div id="ov-baro-inhg" class="kpi-primary baro-primary-val">--.-- inHg</div>
+              </div>
+              <div class="gauge-stat-grid baro-stat-grid">
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">METRIC</span>
+                  <div id="ov-baro-hpa" class="stat-callout-val">----.- hPa</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">3H DELTA</span>
+                  <div id="ov-delta-3h-baro" class="stat-callout-val">--</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">TODAY L / H</span>
+                  <div id="ov-baro-extremes" class="stat-callout-val">-- / --</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">1H &Delta;T</span>
+                  <div id="ov-delta-1h-temp" class="stat-callout-val">--</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- 3. Animated Graduated Rain Cylinder + AcuRite "Rain Records" Table -->
+        <!-- 3. Animated Graduated Rain Cylinder + Compact Records Grid -->
         <div class="kpi-tile card">
           <div class="gauge-card-header">
             <span class="metric-label">GRADUATED RAIN GAUGE &amp; RECORDS</span>
@@ -399,7 +477,7 @@
           </div>
 
           <div class="rain-gauge-layout">
-            <!-- SVG Vertical Graduated Rain Cylinder (165px tall x 70px wide) -->
+            <!-- SVG Vertical Graduated Rain Cylinder (145px tall x 60px wide) -->
             <div class="rain-cylinder-wrap" aria-label="Animated Graduated Rain Cylinder">
               <svg viewBox="0 0 76 170" class="rain-cylinder-svg" xmlns="http://www.w3.org/2000/svg">
                 <defs>
@@ -409,7 +487,6 @@
                     <stop offset="100%" stop-color="#0369a1" />
                   </linearGradient>
                 </defs>
-                <!-- Funnel Top & Graduated Cylinder Tube -->
                 <polygon points="12,12 46,12 41,20 17,20" fill="#0f172a" stroke="#334155" stroke-width="1.4" />
                 <rect x="17" y="20" width="24" height="136" rx="4" fill="#090d16" stroke="#334155" stroke-width="1.5" />
 
@@ -432,32 +509,32 @@
               </svg>
             </div>
 
+            <!-- Compact Rain Readout + 2x2 Records Grid -->
             <div class="rain-records-col">
-              <div class="metric-label">TODAY'S RAINFALL</div>
-              <div id="ov-rain-24h" class="kpi-primary rain-primary-val">0.00 in</div>
-              <div id="ov-rain-mm" class="kpi-sub">24h: 0.00 in (0.0 mm)</div>
+              <div class="rain-main-block">
+                <span class="metric-label">TODAY'S RAINFALL</span>
+                <div id="ov-rain-24h" class="kpi-primary rain-primary-val">0.00 in</div>
+                <div id="ov-rain-mm" class="metric-sub">0.0 mm</div>
+              </div>
 
-              <!-- AcuRite Rain Records Breakdown Table (1.0rem font size with clean dividers) -->
-              <table class="acurite-rain-table">
-                <tbody>
-                  <tr>
-                    <td>Rate</td>
-                    <td id="rain-rec-rate" class="mono text-right">0.00 in/hr</td>
-                  </tr>
-                  <tr>
-                    <td>Week (7d)</td>
-                    <td id="rain-rec-week" class="mono text-right">0.00 in</td>
-                  </tr>
-                  <tr>
-                    <td>Month</td>
-                    <td id="rain-rec-month" class="mono text-right">0.00 in</td>
-                  </tr>
-                  <tr>
-                    <td>Year (YTD)</td>
-                    <td id="rain-rec-year" class="mono text-right">0.00 in</td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="gauge-stat-grid rain-stat-grid">
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">RATE</span>
+                  <div id="rain-rec-rate" class="stat-callout-val">0.00 in/hr</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">WEEK (7D)</span>
+                  <div id="rain-rec-week" class="stat-callout-val">0.00 in</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">MONTH</span>
+                  <div id="rain-rec-month" class="stat-callout-val">0.00 in</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">YEAR (YTD)</span>
+                  <div id="rain-rec-year" class="stat-callout-val">0.00 in</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -469,12 +546,11 @@
             <span id="ov-rh-comfort-badge" class="badge">OPTIMAL</span>
           </div>
 
-          <!-- Semi-Circular Radial Humidity Comfort Gauge (165px wide) -->
-          <div class="humidity-solar-stack">
-            <div class="semi-gauge-row">
+          <div class="humidity-solar-layout">
+            <div class="semi-gauge-col">
               <div class="semi-gauge-wrap">
                 <svg viewBox="0 0 165 95" class="semi-gauge-svg" xmlns="http://www.w3.org/2000/svg">
-                  <!-- Background Arc (Dry <30%, Optimal 30-60%, Humid >60%) -->
+                  <!-- Background Arc -->
                   <path d="M 18 80 A 64 64 0 0 1 147 80" fill="none" stroke="#1e293b" stroke-width="12" stroke-linecap="round" />
                   <path id="rh-gauge-arc" d="M 18 80 A 64 64 0 0 1 147 80" fill="none" stroke="#10b981" stroke-width="12" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="100" style="transition: stroke-dashoffset 0.7s ease, stroke 0.4s ease;" />
                   <text id="ov-out-rh" x="82.5" y="70" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="28" font-weight="800">--%</text>
@@ -484,35 +560,35 @@
                 </svg>
               </div>
 
-              <!-- Large 1.05rem Readable Stat Blocks -->
-              <div class="rh-details-col">
-                <div class="rh-stat-item">
-                  <span class="rh-stat-lbl">DEW POINT</span>
-                  <div id="ov-out-dp" class="rh-stat-val">--.-&deg;F</div>
+              <!-- Solar / UV Small Bar -->
+              <div class="solar-arc-box">
+                <div class="solar-arc-header">
+                  <span class="metric-label">SOLAR &amp; UV</span>
+                  <span id="ov-uv-inline" class="mono metric-sub">UV 0.0</span>
                 </div>
-                <div class="rh-stat-item">
-                  <span class="rh-stat-lbl">FEELS LIKE</span>
-                  <div id="ov-feels-inline" class="rh-stat-val">--.-&deg;F</div>
-                </div>
-                <div class="rh-stat-item">
-                  <span class="rh-stat-lbl">DEW SPREAD</span>
-                  <div id="ov-dew-spread" class="rh-stat-val">--.-&deg;F</div>
-                </div>
-                <div class="rh-stat-item">
-                  <span class="rh-stat-lbl">3H &Delta;T</span>
-                  <div id="ov-delta-3h-temp" class="rh-stat-val">--.-&deg;F</div>
+                <div class="uv-bar-track">
+                  <div id="uv-bar-fill" class="uv-bar-fill" style="width: 0%;"></div>
                 </div>
               </div>
             </div>
 
-            <!-- Solar / UV Arc Gauge -->
-            <div class="solar-arc-box">
-              <div class="solar-arc-header">
-                <span class="metric-label">SOLAR &amp; UV INDEX INTENSITY</span>
-                <span id="ov-uv-inline" class="mono metric-sub">UV 0.0 | -- lux</span>
+            <!-- Compact 2x2 Grid Beside Gauge -->
+            <div class="gauge-stat-grid rh-stat-grid">
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">DEW POINT</span>
+                <div id="ov-out-dp" class="stat-callout-val">--.-&deg;F</div>
               </div>
-              <div class="uv-bar-track">
-                <div id="uv-bar-fill" class="uv-bar-fill" style="width: 0%;"></div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">FEELS LIKE</span>
+                <div id="ov-feels-inline" class="stat-callout-val">--.-&deg;F</div>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">DEW SPREAD</span>
+                <div id="ov-dew-spread" class="stat-callout-val">--.-&deg;F</div>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">3H &Delta;T</span>
+                <div id="ov-delta-3h-temp" class="stat-callout-val">--.-&deg;F</div>
               </div>
             </div>
           </div>

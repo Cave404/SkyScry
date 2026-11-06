@@ -1,11 +1,12 @@
 /**
- * SkyScry v0.0.13 — 6-View Frontend Controller
- * - View 1: Overview Dashboard with AcuRite & Weather-Display (grahamsbeach.htm) SVG Gauges,
- *           Enlarged Split Hero Card, Dual-Trace 24h Area Sparklines, Diurnal Nowcast & Mini Live Radar
- * - View 2: Multi-Section Historical Charts + Climatology & Seasonal Insights Engine
- * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching, & Metric Masking
+ * SkyScry v0.0.14 — 6-View Frontend Controller
+ * - Sticky Glassmorphic Top Bar (56px) & Slide-Out Hamburger Navigation Drawer (300px)
+ * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
+ *           Enlarged Split Hero Card, Clean Dual-Trace 24h Area Sparklines & Diurnal Nowcast
+ * - View 2: Multi-Section Historical Charts with Clutter-Free Lines, Bounded Y-Axes & Climatology Engine
+ * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching & Metric Masking
  * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export (bounded <= 2000)
- * - View 5: Live NOAA / NEXRAD / Windy Doppler Weather Radar & Official NWS 7-Day Forecast
+ * - View 5: Live NOAA WMS / RainViewer / 1-Click Windy Doppler Radar & Official NWS 7-Day Forecast
  * - View 6: Hardened Admin Settings (First-Run Password Setup, Auto-Lock, NWS & Units Config)
  */
 
@@ -66,6 +67,18 @@
   let windyRadarActive = false;
   let radarTimer = null;
   let radarPlaying = true;
+
+  // Sticky Top Bar & Slide-Out Drawer DOM
+  const elBtnNavDrawerToggle = document.getElementById("btn-nav-drawer-toggle");
+  const elBtnNavDrawerClose = document.getElementById("btn-nav-drawer-close");
+  const elNavDrawer = document.getElementById("nav-drawer");
+  const elNavDrawerBackdrop = document.getElementById("nav-drawer-backdrop");
+  const elTopBarActiveView = document.getElementById("top-bar-active-view");
+  const elBtnDrawerAuth = document.getElementById("btn-drawer-auth");
+  const elDrawerAuthText = document.getElementById("drawer-auth-text");
+  const elDrawerAuthIcon = document.getElementById("drawer-auth-icon");
+  const elSparklineRangePill = document.getElementById("sparkline-range-pill");
+  const elOvWindBearingVal = document.getElementById("ov-wind-bearing-val");
 
   // Header & Banners DOM
   const elGitCommit = document.getElementById("stat-git-commit");
@@ -473,20 +486,30 @@
   // SECURITY, FIRST-RUN PASSWORD SETUP & SESSION LOCK/UNLOCK FLOW
   // ==========================================================================
   function updateAuthHeaderUi() {
-    if (!elBtnAuthPill) return;
-    if (authState.unlocked) {
-      elBtnAuthPill.textContent = "UNLOCKED (ADMIN)";
-      elBtnAuthPill.className = "status-pill status-unlocked";
-      if (elBtnLockNow) elBtnLockNow.classList.remove("hidden");
-      if (elSettingsLockStateBadge) {
+    if (elBtnAuthPill) {
+      if (authState.unlocked) {
+        elBtnAuthPill.innerHTML = '<span class="lock-icon">🔓</span> <span class="lock-label">UNLOCKED</span>';
+        elBtnAuthPill.className = "topbar-icon-btn status-unlocked";
+      } else {
+        elBtnAuthPill.innerHTML = '<span class="lock-icon">🔒</span> <span class="lock-label">LOCKED</span>';
+        elBtnAuthPill.className = "topbar-icon-btn status-locked";
+      }
+    }
+    if (elBtnLockNow) {
+      if (authState.unlocked) elBtnLockNow.classList.remove("hidden");
+      else elBtnLockNow.classList.add("hidden");
+    }
+    if (elDrawerAuthText) {
+      elDrawerAuthText.textContent = authState.unlocked ? "Lock Admin Session" : "Unlock Admin Controls";
+    }
+    if (elDrawerAuthIcon) {
+      elDrawerAuthIcon.textContent = authState.unlocked ? "🔓" : "🔒";
+    }
+    if (elSettingsLockStateBadge) {
+      if (authState.unlocked) {
         elSettingsLockStateBadge.textContent = `Session Unlocked (Auto-Lock: ${authState.timeout_minutes}m)`;
         elSettingsLockStateBadge.className = "badge badge-batt-ok";
-      }
-    } else {
-      elBtnAuthPill.textContent = "LOCKED (READ-ONLY)";
-      elBtnAuthPill.className = "status-pill status-locked";
-      if (elBtnLockNow) elBtnLockNow.classList.add("hidden");
-      if (elSettingsLockStateBadge) {
+      } else {
         elSettingsLockStateBadge.textContent = "Locked (Read-Only)";
         elSettingsLockStateBadge.className = "badge badge-expunged";
       }
@@ -816,9 +839,11 @@
       <line x1="0" y1="${h - padY}" x2="${w}" y2="${h - padY}" stroke="#334155" stroke-width="0.75" stroke-dasharray="2 4" />
       ${dewMarkup}
       ${tempMarkup}
-      <text x="6" y="${padY + 9}" fill="#94a3b8" font-size="9" font-family="monospace">High: ${maxV.toFixed(1)}°F</text>
-      <text x="6" y="${h - 3}" fill="#64748b" font-size="9" font-family="monospace">Low: ${minV.toFixed(1)}°F</text>
     `;
+
+    if (elSparklineRangePill) {
+      elSparklineRangePill.textContent = `H: ${maxV.toFixed(1)}° | L: ${minV.toFixed(1)}°`;
+    }
   }
 
   function describeSvgSector(cx, cy, r, startDeg, endDeg) {
@@ -1150,10 +1175,10 @@
         const diff = feelsF - Number(out.temp_f);
         elOvHeroFeelsSub.textContent =
           Math.abs(diff) < 0.3
-            ? "Matches ambient"
-            : `${diff > 0 ? "+" : ""}${diff.toFixed(1)}° apparent delta`;
+            ? "Apparent"
+            : `${diff > 0 ? "+" : ""}${diff.toFixed(1)}° delta`;
       } else {
-        elOvHeroFeelsSub.textContent = "Apparent Temp";
+        elOvHeroFeelsSub.textContent = "Apparent";
       }
     }
 
@@ -1237,7 +1262,12 @@
     }
 
     if (elOvNowcastText) {
-      elOvNowcastText.textContent = cond.nowcast_summary || "";
+      let nowcastStr = String(cond.nowcast_summary || "").trim();
+      if (nowcastStr.length > 110) {
+        const firstSentence = nowcastStr.split(/(?<=[.!?])\s+/)[0];
+        nowcastStr = firstSentence && firstSentence.length <= 110 ? firstSentence : (nowcastStr.slice(0, 107) + "...");
+      }
+      elOvNowcastText.textContent = nowcastStr;
     }
     if (elOvNowcastConfidence && nowcast.confidence_pct) {
       elOvNowcastConfidence.textContent = `Confidence: ${nowcast.confidence_pct}%`;
@@ -1385,14 +1415,17 @@
     }
     if (elOvWindGustTime) {
       elOvWindGustTime.textContent = out.wind_peak_today_time
-        ? `Recorded at ${escapeHtml(out.wind_peak_today_time)}`
-        : "Max daily burst";
+        ? `at ${formatShortTime(out.wind_peak_today_time)}`
+        : "--";
     }
     if (elOvWindAvg10m) {
       elOvWindAvg10m.textContent = formatWindSpeed(wind10mAvg);
     }
     if (elOvWindBearing) {
       elOvWindBearing.textContent = `Bearing: ${windDeg.toFixed(0)}° (${windCard})`;
+    }
+    if (elOvWindBearingVal) {
+      elOvWindBearingVal.textContent = `${windDeg.toFixed(0)}° (${windCard})`;
     }
     if (elWindDialCardinal) elWindDialCardinal.textContent = windCard;
     if (elWindDialSpeed) elWindDialSpeed.textContent = `${windMph.toFixed(1)} mph`;
@@ -1421,7 +1454,7 @@
           : `${pInhg.toFixed(2)} inHg`;
 
       if (elOvBaroInhg) elOvBaroInhg.textContent = primaryBaroStr;
-      if (elBaroHeader) elBaroHeader.textContent = primaryBaroStr;
+      if (elBaroHeader) elBaroHeader.textContent = `${pInhg.toFixed(2)}"`;
       applyTrendArrowBadge(elOvBaroTrendArrow, baro.trend_arrow);
       applyTrendArrowBadge(elOvBaroTrendPill, baro.trend_arrow);
       if (elOvBaroTrendPill) {
@@ -1429,21 +1462,18 @@
       }
 
       if (elOvBaroHpa) {
-        elOvBaroHpa.textContent = `${pHpa.toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
+        elOvBaroHpa.textContent = `${pHpa.toFixed(1)} hPa`;
       }
       const bExt = baro.extremes || {};
       if (elOvBaroExtremes) {
         if (bExt.low !== null && bExt.high !== null && bExt.low !== undefined) {
-          elOvBaroExtremes.textContent = `Today L: ${Number(bExt.low).toFixed(2)} | H: ${Number(bExt.high).toFixed(2)} inHg`;
+          elOvBaroExtremes.textContent = `${Number(bExt.low).toFixed(2)} / ${Number(bExt.high).toFixed(2)}`;
         } else {
-          elOvBaroExtremes.textContent = `Today L: ${(pInhg - 0.12).toFixed(2)} | H: ${(pInhg + 0.14).toFixed(2)} inHg`;
+          elOvBaroExtremes.textContent = `${(pInhg - 0.12).toFixed(2)} / ${(pInhg + 0.14).toFixed(2)}`;
         }
       }
       if (elOvBaroSource) {
-        elOvBaroSource.textContent =
-          baro.source === "rf_sensor"
-            ? "Source: Local 433 MHz Barometer"
-            : "Source: Regional Reference Barometer";
+        elOvBaroSource.textContent = "";
       }
 
       // Scale 29.20 -> 30.50 inHg into SVG y=[150..18], height=[0..132]
@@ -1594,7 +1624,7 @@
         deltas.temp_delta_f !== undefined && deltas.temp_delta_f !== null
           ? `${deltas.temp_delta_f >= 0 ? "+" : ""}${Number(deltas.temp_delta_f).toFixed(1)}°F`
           : "--";
-      elOvNwsSummaryBadge.textContent = `Local Ensemble: ${localT} | NWS Official (${st.station_id || "Station"}): ${nwsT} | Microclimate Delta: ${dTemp} (${obs.text_description || obs.condition || "Synced"})`;
+      elOvNwsSummaryBadge.textContent = `NWS (${st.station_id || "Station"}): ${nwsT} | Δ ${dTemp} (${obs.text_description || obs.condition || "Synced"})`;
     }
 
     // View 5 Corroboration Table
@@ -2459,6 +2489,25 @@
     const canvas = document.getElementById(canvasId);
     if (!canvas || typeof Chart === "undefined") return null;
 
+    const isMobile = window.innerWidth < 640;
+
+    const yScales = {
+      title: {
+        display: true,
+        text: yUnitLabel,
+        color: "#94a3b8",
+        font: { size: 11 },
+      },
+      ticks: { color: "#94a3b8" },
+      grid: { color: "rgba(36, 50, 75, 0.45)" },
+    };
+
+    if (key === "rain") {
+      yScales.min = 0;
+      yScales.suggestedMax = 0.25;
+      yScales.beginAtZero = true;
+    }
+
     charts[key] = new Chart(canvas.getContext("2d"), {
       type: "line",
       data: { labels: [], datasets: [] },
@@ -2472,24 +2521,25 @@
         },
         plugins: {
           legend: {
-            labels: { color: "#cbd5e1", font: { size: 12 }, boxWidth: 18 },
+            labels: {
+              color: "#cbd5e1",
+              font: { size: 11 },
+              boxWidth: 10,
+              boxHeight: 10,
+              padding: 8,
+            },
           },
         },
         scales: {
           x: {
-            ticks: { color: "#64748b", maxTicksLimit: 10 },
-            grid: { color: "rgba(36, 50, 75, 0.45)" },
-          },
-          y: {
-            title: {
-              display: true,
-              text: yUnitLabel,
-              color: "#94a3b8",
-              font: { size: 11 },
+            ticks: {
+              color: "#64748b",
+              maxTicksLimit: isMobile ? 6 : 12,
+              maxRotation: 0,
             },
-            ticks: { color: "#94a3b8" },
             grid: { color: "rgba(36, 50, 75, 0.45)" },
           },
+          y: yScales,
         },
       },
     });
@@ -2641,6 +2691,11 @@
       elChartMetaRh.textContent = `${data.bucket_minutes}m buckets | ${labels.length} intervals`;
     }
 
+    const isMobileScreen = window.innerWidth < 768;
+    const defaultPointRadius = isMobileScreen ? 0 : 1;
+    const defaultPointHoverRadius = 5;
+    const defaultPointHitRadius = 16;
+
     const tempDatasets = [];
     if (showEnsemble && Array.isArray(ensemble.temp_f) && ensemble.temp_f.some((v) => v !== null)) {
       tempDatasets.push({
@@ -2648,10 +2703,11 @@
         data: ensemble.temp_f,
         borderColor: "#ffffff",
         backgroundColor: "rgba(255, 255, 255, 0.1)",
-        borderWidth: 2.8,
+        borderWidth: 2.2,
         borderDash: [6, 4],
         pointRadius: 0,
-        pointHoverRadius: 5,
+        pointHoverRadius: defaultPointHoverRadius,
+        pointHitRadius: defaultPointHitRadius,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -2667,7 +2723,8 @@
         borderWidth: 2.0,
         borderDash: [3, 3],
         pointRadius: 0,
-        pointHoverRadius: 4,
+        pointHoverRadius: defaultPointHoverRadius,
+        pointHitRadius: defaultPointHitRadius,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -2686,10 +2743,11 @@
         data: ensemble.humidity,
         borderColor: "#ffffff",
         backgroundColor: "rgba(255, 255, 255, 0.1)",
-        borderWidth: 2.8,
+        borderWidth: 2.2,
         borderDash: [6, 4],
         pointRadius: 0,
-        pointHoverRadius: 5,
+        pointHoverRadius: defaultPointHoverRadius,
+        pointHitRadius: defaultPointHitRadius,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -2705,7 +2763,8 @@
         borderWidth: 2.0,
         borderDash: [3, 3],
         pointRadius: 0,
-        pointHoverRadius: 4,
+        pointHoverRadius: defaultPointHoverRadius,
+        pointHitRadius: defaultPointHitRadius,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -2726,7 +2785,8 @@
         borderWidth: 1.8,
         borderDash: [3, 3],
         pointRadius: 0,
-        pointHoverRadius: 4,
+        pointHoverRadius: defaultPointHoverRadius,
+        pointHitRadius: defaultPointHitRadius,
         spanGaps: true,
         cubicInterpolationMode: "monotone",
         tension: 0.35,
@@ -2742,9 +2802,10 @@
           data: s.temp_f,
           borderColor: color,
           backgroundColor: color,
-          borderWidth: 2,
-          pointRadius: 2,
-          pointHoverRadius: 5,
+          borderWidth: 2.2,
+          pointRadius: defaultPointRadius,
+          pointHoverRadius: defaultPointHoverRadius,
+          pointHitRadius: defaultPointHitRadius,
           spanGaps: true,
           cubicInterpolationMode: "monotone",
           tension: 0.35,
@@ -2757,9 +2818,10 @@
           data: s.humidity,
           borderColor: color,
           backgroundColor: color,
-          borderWidth: 2,
-          pointRadius: 2,
-          pointHoverRadius: 5,
+          borderWidth: 2.2,
+          pointRadius: defaultPointRadius,
+          pointHoverRadius: defaultPointHoverRadius,
+          pointHitRadius: defaultPointHitRadius,
           spanGaps: true,
           cubicInterpolationMode: "monotone",
           tension: 0.35,
@@ -2772,9 +2834,10 @@
           data: s.wind_avg_mph,
           borderColor: color,
           backgroundColor: color,
-          borderWidth: 2,
-          pointRadius: 2,
-          pointHoverRadius: 5,
+          borderWidth: 2.2,
+          pointRadius: defaultPointRadius,
+          pointHoverRadius: defaultPointHoverRadius,
+          pointHitRadius: defaultPointHitRadius,
           spanGaps: true,
           cubicInterpolationMode: "monotone",
           tension: 0.35,
@@ -2787,8 +2850,9 @@
             backgroundColor: "#f59e0b",
             borderWidth: 1.8,
             borderDash: [4, 4],
-            pointRadius: 2,
-            pointHoverRadius: 5,
+            pointRadius: defaultPointRadius,
+            pointHoverRadius: defaultPointHoverRadius,
+            pointHitRadius: defaultPointHitRadius,
             spanGaps: true,
             cubicInterpolationMode: "monotone",
             tension: 0.35,
@@ -2803,8 +2867,9 @@
           backgroundColor: "rgba(56, 189, 248, 0.16)",
           fill: true,
           borderWidth: 2.2,
-          pointRadius: 2,
-          pointHoverRadius: 5,
+          pointRadius: defaultPointRadius,
+          pointHoverRadius: defaultPointHoverRadius,
+          pointHitRadius: defaultPointHitRadius,
           spanGaps: true,
           cubicInterpolationMode: "monotone",
           tension: 0.25,
@@ -2835,6 +2900,11 @@
 
     const cRain = getOrCreateChart("rain", "canvas-chart-rain", "Accumulated Rain (in)");
     if (cRain) {
+      if (cRain.options && cRain.options.scales && cRain.options.scales.y) {
+        cRain.options.scales.y.min = 0;
+        cRain.options.scales.y.suggestedMax = 0.25;
+        cRain.options.scales.y.beginAtZero = true;
+      }
       cRain.data.labels = labels;
       cRain.data.datasets = rainDatasets;
       cRain.update("none");
@@ -3048,7 +3118,7 @@
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
         if (data.restarting) {
-          const newVer = data.new_version || (data.current && data.current.version) || "0.0.13";
+          const newVer = data.new_version || (data.current && data.current.version) || "0.0.14";
           showToast(`Restarting SkyScry daemon with new update (v${newVer})... Reconnecting in 5s.`);
           elBtnTriggerUpdate.textContent = "Restarting...";
           setTimeout(() => {
@@ -3112,6 +3182,37 @@
   // ==========================================================================
   // NAVIGATION & POLLING ORCHESTRATION
   // ==========================================================================
+  const TAB_TITLES = {
+    overview: "Overview",
+    charts: "Charts & Climate",
+    sensors: "Sensors",
+    logs: "SQLite Logs",
+    radar: "Radar & NWS",
+    settings: "Settings",
+  };
+
+  function openNavDrawer() {
+    if (elNavDrawer) elNavDrawer.classList.add("open");
+    if (elNavDrawerBackdrop) elNavDrawerBackdrop.classList.add("open");
+    if (elBtnNavDrawerToggle) elBtnNavDrawerToggle.setAttribute("aria-expanded", "true");
+    document.body.style.overflow = "hidden";
+  }
+
+  function closeNavDrawer() {
+    if (elNavDrawer) elNavDrawer.classList.remove("open");
+    if (elNavDrawerBackdrop) elNavDrawerBackdrop.classList.remove("open");
+    if (elBtnNavDrawerToggle) elBtnNavDrawerToggle.setAttribute("aria-expanded", "false");
+    document.body.style.overflow = "";
+  }
+
+  function toggleNavDrawer() {
+    if (elNavDrawer && elNavDrawer.classList.contains("open")) {
+      closeNavDrawer();
+    } else {
+      openNavDrawer();
+    }
+  }
+
   function switchTab(tabName) {
     if (tabName === "settings" && !authState.unlocked) {
       requireUnlockedOrPrompt(() => switchTab("settings"));
@@ -3121,9 +3222,15 @@
     document.querySelectorAll(".tab-btn").forEach((b) => {
       b.classList.toggle("active", b.getAttribute("data-tab") === tabName);
     });
+    document.querySelectorAll(".drawer-nav-item").forEach((b) => {
+      b.classList.toggle("active", b.getAttribute("data-tab") === tabName);
+    });
     document.querySelectorAll(".view-panel").forEach((p) => {
       p.classList.toggle("active", p.id === `view-${tabName}`);
     });
+    if (elTopBarActiveView) {
+      elTopBarActiveView.textContent = TAB_TITLES[tabName] || "Overview";
+    }
     activeTab = tabName;
 
     if (activeTab === "overview") {
@@ -3183,6 +3290,49 @@
   }
 
   function initEventListenersAndStart() {
+    // Top Bar & Slide-Out Navigation Drawer
+    if (elBtnNavDrawerToggle) {
+      elBtnNavDrawerToggle.addEventListener("click", toggleNavDrawer);
+    }
+    if (elBtnNavDrawerClose) {
+      elBtnNavDrawerClose.addEventListener("click", closeNavDrawer);
+    }
+    if (elNavDrawerBackdrop) {
+      elNavDrawerBackdrop.addEventListener("click", closeNavDrawer);
+    }
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape" && elNavDrawer && elNavDrawer.classList.contains("open")) {
+        closeNavDrawer();
+      }
+    });
+
+    document.querySelectorAll(".drawer-nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = btn.getAttribute("data-tab") || "overview";
+        switchTab(target);
+        closeNavDrawer();
+      });
+    });
+
+    if (elBtnDrawerAuth) {
+      elBtnDrawerAuth.addEventListener("click", () => {
+        closeNavDrawer();
+        if (authState.unlocked) {
+          switchTab("settings");
+        } else {
+          requireUnlockedOrPrompt(() => {});
+        }
+      });
+    }
+
+    [elBtnTriggerUpdate, elBtnPurgeOutliers, elBtnSyncRef].forEach((btn) => {
+      if (btn) {
+        btn.addEventListener("click", () => {
+          closeNavDrawer();
+        });
+      }
+    });
+
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const target = btn.getAttribute("data-tab") || "overview";

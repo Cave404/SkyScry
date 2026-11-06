@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.13-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.14-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,8 +10,18 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.13`)
+## Key Features (`v0.0.14`)
 
+- **Ultra-Compact Sticky Glassmorphic Top Bar & Slide-Out Hamburger Drawer (`v0.0.14`):**
+  - **56px Sticky Top Bar:** Glassmorphic bar (`backdrop-filter: blur(12px)`) pinned during scrolling with station brand, live active view badge, compact live SDR status (`● 6/7`), live barometer (`30.02"`), Admin lock icon button (`🔒`/`🔓`), and 1-tap `↻ Sync` button.
+  - **Slide-Out Hamburger Drawer (300px):** Smooth slide-over drawer neatly dividing the interface into **Section A (6 Navigation Views)**, **Section B (System Maintenance Actions)**, and **Section C (System Telemetry & Daemon Status)**.
+- **Crisp Clutter-Free Mobile Charts & Non-Negative Rainfall Axis (`v0.0.14`):**
+  - **Zero Point Clutter:** Eliminated caterpillar overlapping dots (`pointRadius: 0` on mobile, `1` on desktop) with responsive hover snaps (`pointHoverRadius: 5`, `pointHitRadius: 16`), silky cubic curves, and dedicated `260px` mobile wrapper height.
+  - **Flat X-Axis Timestamps & Non-Negative Rain:** Clamped X-axis ticks to 6 on mobile with `maxRotation: 0` (no diagonal overlap), and strictly enforced non-negative rainfall (`min: 0`, `suggestedMax: 0.25 in`).
+- **High-Density Side-by-Side SVG Gauges & 2x2 Stat Grids (`v0.0.14`):**
+  - Side-by-side grid layouts across all 4 primary gauge cards (`Wind`, `Barometer`, `Rain`, `Humidity & UV`) pairing the visual SVG gauge on the left with a compact 2x2 stat matrix on the right on both mobile and desktop.
+  - Eliminated redundant filler subtitles and trimmed nowcast text to 1 concise sentence.
+  - Moved High/Low extremes to the sparkline header bar, leaving the 24-hour SVG trajectory canvas completely uncluttered.
 - **High-Definition Live Doppler Radar, NOAA WMS & 1-Click Windy Embed (`v0.0.13`):**
   - **Zero Watermarks & Zero API Keys:** Swapped Carto/RainViewer watermarked basemaps for standard OpenStreetMap tiles styled dynamically into dark mode (`.dark-osm-tiles`), with automatic tile-error fallback to Esri World Dark Gray.
   - **Official NOAA WMS Integration:** High-resolution CONUS Base Reflectivity (`conus_bref_qcd`) directly from NOAA OpenGeo NCEP servers.
@@ -92,7 +102,7 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.13")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.14")
 │   ├── security.py                 # Encrypted password hashing, brute-force limiter, & session auto-lock
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
@@ -167,7 +177,7 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.13`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.14`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
 | `GET/POST` | `/api/auth/*` | First-run admin password setup (`/api/auth/setup`), session unlock (`/api/auth/unlock`), manual lock (`/api/auth/lock`), and password rotation (`/api/auth/change-password`). |
 | `GET/POST` | `/api/settings` | Reads or updates persistent instance settings in SQLite (`system_settings` table). |
 | `GET` | `/api/nws` | Returns official US National Weather Service (`api.weather.gov`) observations, active alerts, 7-day gridpoint forecast, and hyperlocal corroboration deltas. |

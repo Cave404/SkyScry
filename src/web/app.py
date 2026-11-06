@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.13)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.14)."""
 
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def create_app(
 
     @app.route("/", methods=["GET"])
     def index() -> str:
-        """Render the 6-view SkyScry v0.0.13 WebUI application."""
+        """Render the 6-view SkyScry v0.0.14 WebUI application."""
         asset_version = f"{__version__}_{int(time.time())}"
         return render_template("index.html", version=__version__, asset_version=asset_version)
 
