@@ -1,6 +1,6 @@
-# TrueNAS SCALE & Cloudflare Tunnel Deployment Guide (`v0.0.10`)
+# TrueNAS SCALE & Cloudflare Tunnel Deployment Guide (`v0.0.11`)
 
-This guide walks through deploying **SkyScry (`v0.0.10`)** on **TrueNAS SCALE** (Electric Eel `24.10+` or Dragonfish) as a self-updating Docker Compose application with direct **NooElec / RTL2832U RTL-SDR USB passthrough**, automated **Watchtower** GHCR updates, and zero-port HTTPS access via **Cloudflare Tunnel (`cloudflared`)**.
+This guide walks through deploying **SkyScry (`v0.0.11`)** on **TrueNAS SCALE** (Electric Eel `24.10+` or Dragonfish) as a self-updating Docker Compose application with direct **NooElec / RTL2832U RTL-SDR USB passthrough**, automated **Watchtower** GHCR updates, and zero-port HTTPS access via **Cloudflare Tunnel (`cloudflared`)**.
 
 ---
 
@@ -127,7 +127,7 @@ Because `skyscry` and `cloudflared` share the internal `skyscry_net` Docker brid
 
 ## 5. How Automated Updates Work on TrueNAS
 
-SkyScry (`v0.0.10`) provides two layers of zero-touch updates on TrueNAS SCALE:
+SkyScry (`v0.0.11`) provides two layers of zero-touch updates on TrueNAS SCALE:
 1. **GitHub Actions + Watchtower:** Every commit pushed to `main` on GitHub triggers [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml) to build and push a fresh `ghcr.io/cave404/skyscry:latest` image. The bundled `watchtower` service checks GHCR hourly (`--interval 3600`) and automatically replaces the container whenever a new image is published.
 2. **Container Restart Pull (`AUTO_UPDATE_ON_START=true`):** Simply clicking **Restart** on the `skyscry` app in TrueNAS triggers [`docker/entrypoint.sh`](../docker/entrypoint.sh) to pull the latest `origin/main` commits and verify `requirements.txt` before starting `run.py`.
 

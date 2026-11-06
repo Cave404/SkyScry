@@ -1,5 +1,5 @@
 ' ============================================================================
-' SkyScry v0.0.10 - Silent Background Launcher (No Console Window)
+' SkyScry v0.0.11 - Silent Background Launcher (No Console Window)
 ' ============================================================================
 ' Double-click this file to start the SkyScry daemon silently in the
 ' background and automatically open the WebUI in your default browser.

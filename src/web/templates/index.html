@@ -16,7 +16,7 @@
       <div>
         <div class="brand-title">
           <span id="header-station-title">SkyScry</span>
-          <span class="version-badge">v{{ version }}</span>
+          <span class="version-badge" id="stat-app-version">v{{ version }}</span>
           <span id="stat-git-commit" class="version-badge" title="Current Git Commit Hash">git:--</span>
           <span id="stat-rtl433-ver" class="version-badge" title="rtl_433 Binary Release Version">rtl_433:--</span>
         </div>
@@ -799,7 +799,7 @@
           <p class="text-muted" style="margin-bottom: 14px;">
             Stored exclusively in <code>data/skyscry.db</code> (gitignored). Powers your NWS WFO lookup, live NEXRAD radar crosshair, and Open-Meteo barometric backfill.
           </p>
-          <form id="form-settings-location">
+          <form id="form-settings-location" onsubmit="return false;">
             <div class="form-group">
               <label for="set-station-name">Station Display Name</label>
               <input type="text" id="set-station-name" maxlength="80" placeholder="SkyScry 433.92 MHz Telemetry Console" />
@@ -824,7 +824,7 @@
                 <input type="number" min="3" max="14" id="set-radar-zoom" value="7" />
               </div>
             </div>
-            <button type="submit" class="btn btn-primary">Save Location &amp; Sync NWS</button>
+            <button id="btn-save-location" type="button" class="btn btn-primary">Save Location &amp; Sync NWS</button>
           </form>
         </div>
 
@@ -846,22 +846,22 @@
 
           <hr class="settings-divider" />
           <h4 style="margin-bottom: 10px;">Change Admin Security Password</h4>
-          <form id="form-change-password">
+          <form id="form-change-password" onsubmit="return false;">
             <div class="form-group">
               <label for="cp-current-pw">Current Admin Password</label>
-              <input type="password" id="cp-current-pw" autocomplete="current-password" required />
+              <input type="password" id="cp-current-pw" autocomplete="current-password" />
             </div>
             <div class="form-row-2">
               <div class="form-group">
                 <label for="cp-new-pw">New Password (min 6 chars)</label>
-                <input type="password" id="cp-new-pw" autocomplete="new-password" minlength="6" required />
+                <input type="password" id="cp-new-pw" autocomplete="new-password" minlength="6" />
               </div>
               <div class="form-group">
                 <label for="cp-confirm-pw">Confirm New Password</label>
-                <input type="password" id="cp-confirm-pw" autocomplete="new-password" minlength="6" required />
+                <input type="password" id="cp-confirm-pw" autocomplete="new-password" minlength="6" />
               </div>
             </div>
-            <button type="submit" class="btn btn-primary">Update Admin Password</button>
+            <button id="btn-save-password" type="button" class="btn btn-primary">Update Admin Password</button>
           </form>
         </div>
 
@@ -871,7 +871,7 @@
             <h3>3. Ingestion &amp; Data Hygiene</h3>
             <span class="badge">SQLite WAL</span>
           </div>
-          <form id="form-settings-hygiene">
+          <form id="form-settings-hygiene" onsubmit="return false;">
             <div class="form-row-2">
               <div class="form-group">
                 <label for="set-outlier-thresh">Outlier Consensus Threshold (&plusmn;&deg;F)</label>
@@ -895,7 +895,7 @@
               </label>
             </div>
             <div class="settings-btn-row">
-              <button type="submit" class="btn btn-primary">Save Ingestion Rules</button>
+              <button id="btn-save-hygiene" type="button" class="btn btn-primary">Save Ingestion Rules</button>
               <button id="btn-vacuum-db" type="button" class="btn btn-secondary">Vacuum &amp; Optimize SQLite DB</button>
             </div>
           </form>
@@ -907,7 +907,7 @@
             <h3>4. Display &amp; Units</h3>
             <span class="badge">Console Defaults</span>
           </div>
-          <form id="form-settings-units">
+          <form id="form-settings-units" onsubmit="return false;">
             <div class="form-row-2">
               <div class="form-group">
                 <label for="set-temp-unit">Temperature Unit</label>
@@ -941,7 +941,7 @@
                 </select>
               </div>
             </div>
-            <button type="submit" class="btn btn-primary">Save Display Units</button>
+            <button id="btn-save-units" type="button" class="btn btn-primary">Save Display Units</button>
           </form>
         </div>
       </div>
@@ -962,19 +962,19 @@
       <p class="text-muted" style="margin-bottom: 14px;">
         Protect your SkyScry station against unauthorized modifications over Cloudflare Tunnel. Your password is encrypted using <code>scrypt</code> / <code>PBKDF2-HMAC-SHA256</code> inside <code>data/skyscry.db</code> (never stored in Git). Once created, this prompt will never appear again.
       </p>
-      <form id="form-setup-password">
+      <form id="form-setup-password" onsubmit="return false;">
         <div class="form-group">
           <label for="setup-pw-input">Create Admin Password (min 6 characters)</label>
-          <input type="password" id="setup-pw-input" minlength="6" autocomplete="new-password" required />
+          <input type="password" id="setup-pw-input" minlength="6" autocomplete="new-password" />
         </div>
         <div class="form-group">
           <label for="setup-pw-confirm">Confirm Admin Password</label>
-          <input type="password" id="setup-pw-confirm" minlength="6" autocomplete="new-password" required />
+          <input type="password" id="setup-pw-confirm" minlength="6" autocomplete="new-password" />
         </div>
         <div id="setup-pw-feedback" class="form-feedback hidden"></div>
         <div class="modal-footer">
           <span class="text-muted">Public visitors retain read-only dashboard access.</span>
-          <button type="submit" class="btn btn-primary">Encrypt &amp; Save Password</button>
+          <button id="btn-submit-setup-pw" type="button" class="btn btn-primary">Encrypt &amp; Save Password</button>
         </div>
       </form>
     </div>
@@ -992,17 +992,17 @@
         </div>
         <button id="btn-close-unlock-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
       </div>
-      <form id="form-unlock-admin">
+      <form id="form-unlock-admin" onsubmit="return false;">
         <div class="form-group">
           <label for="unlock-pw-input">Admin Security Password</label>
-          <input type="password" id="unlock-pw-input" autocomplete="current-password" required />
+          <input type="password" id="unlock-pw-input" autocomplete="current-password" />
         </div>
         <div id="unlock-modal-feedback" class="form-feedback hidden"></div>
         <div class="modal-footer">
           <span class="text-muted">Auto-locks after inactivity</span>
           <div class="modal-footer-right">
             <button id="btn-cancel-unlock-modal" class="btn btn-secondary" type="button">Cancel</button>
-            <button type="submit" class="btn btn-primary">Unlock Session</button>
+            <button id="btn-submit-unlock-pw" type="button" class="btn btn-primary">Unlock Session</button>
           </div>
         </div>
       </form>
@@ -1022,7 +1022,7 @@
         <button id="btn-close-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
       </div>
 
-      <form id="sensor-config-form">
+      <form id="sensor-config-form" onsubmit="return false;">
         <input type="hidden" id="modal-sensor-key" />
 
         <div class="form-group">
@@ -1102,7 +1102,7 @@
           <div class="modal-footer-right">
             <button id="btn-clear-alias" class="btn btn-secondary" type="button">Reset Alias</button>
             <button id="btn-cancel-modal" class="btn btn-secondary" type="button">Cancel</button>
-            <button id="btn-save-modal" class="btn btn-primary" type="submit">Save Changes</button>
+            <button id="btn-save-modal" class="btn btn-primary" type="button">Save Changes</button>
           </div>
         </div>
       </form>

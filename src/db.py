@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.10)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.11)."""
 
 from __future__ import annotations
 
@@ -878,6 +878,10 @@ class WeatherDatabase:
                     """,
                     (str(key), str(value), now_iso),
                 )
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
 
     def get_public_settings(self) -> dict[str, Any]:
         """Return non-secret station, location, ingestion, and unit settings for the WebUI."""

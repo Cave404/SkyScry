@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -589,14 +590,77 @@ def get_full_update_status() -> dict[str, Any]:
     }
 
 
+def _read_disk_version() -> str:
+    """Read `__version__` directly from `src/__init__.py` on disk so post-pull version changes are detected."""
+    init_file = PROJECT_ROOT / "src" / "__init__.py"
+    if init_file.is_file():
+        try:
+            content = init_file.read_text(encoding="utf-8")
+            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+    return __version__
+
+
+def schedule_process_restart(sdr_stream: Any = None, delay_seconds: float = 1.2) -> None:
+    """Spawn a background daemon thread that waits `delay_seconds`, stops `rtl_433`, flushes SQLite WAL, and restarts Python RAM."""
+
+    def _restart_worker() -> None:
+        time.sleep(max(0.5, float(delay_seconds)))
+        _log("Executing post-update daemon restart so Python RAM loads updated modules...")
+        try:
+            if sdr_stream is not None and hasattr(sdr_stream, "stop"):
+                sdr_stream.stop()
+        except Exception:
+            pass
+
+        _checkpoint_sqlite_wal()
+
+        # Inside Docker/Linux (where /.dockerenv exists or AUTO_UPDATE_ON_START is set with restart: unless-stopped):
+        # exit cleanly with code 0 so Docker restarts the container from entrypoint.sh with 100% fresh RAM.
+        is_docker = Path("/.dockerenv").exists() or bool(os.environ.get("AUTO_UPDATE_ON_START"))
+        if os.name != "nt" and is_docker:
+            _log("Docker environment detected; calling os._exit(0) to trigger container restart...")
+            os._exit(0)
+
+        # On local Windows or non-Docker Linux: re-exec or spawn a fresh Python process and exit
+        try:
+            clean_args = [a for a in sys.argv if a != "--skip-bootstrap"]
+            new_argv = [sys.executable, *clean_args, "--skip-bootstrap"]
+            if os.name == "nt":
+                subprocess.Popen(new_argv, cwd=str(PROJECT_ROOT))
+                os._exit(0)
+            else:
+                os.execv(sys.executable, new_argv)
+        except Exception as exc:
+            _warn(f"Process re-exec fallback triggered ({exc}); exiting with code 0.")
+            os._exit(0)
+
+    t = threading.Thread(target=_restart_worker, name="skyscry-self-restart", daemon=True)
+    t.start()
+
+
 def trigger_manual_update() -> dict[str, Any]:
     """Run an on-demand Git + pip + rtl_433 update check from the WebUI (`POST /api/trigger-update`)."""
+    _checkpoint_sqlite_wal()
     git_res = check_and_apply_git_update()
-    dep_res = verify_and_upgrade_dependencies(force= bool(git_res.get("updated")))
+    git_updated = bool(git_res.get("updated"))
+    dep_res = verify_and_upgrade_dependencies(force=git_updated)
     rtl_res = ensure_rtl433_windows_binaries(force_check=True)
+    disk_version = _read_disk_version()
     status = get_full_update_status()
+    status["version"] = disk_version
+
+    any_updated = git_updated or bool(dep_res.get("upgraded") and dep_res.get("missing_installed")) or (disk_version != __version__)
     return {
+        "ok": True,
         "status": "ok",
+        "updated": any_updated,
+        "restarting": any_updated,
+        "previous_version": __version__,
+        "new_version": disk_version,
         "git": git_res,
         "dependencies": dep_res,
         "rtl433": rtl_res,

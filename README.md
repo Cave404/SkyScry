@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.10-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.11-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,20 +10,20 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.10`)
+## Key Features (`v0.0.11`)
 
-- **Hardened Security Lockdown, Encrypted First-Run Password & Settings Tab (`v0.0.10`):**
+- **Hardened Security Lockdown, Encrypted First-Run Password & Settings Tab (`v0.0.11`):**
   - **Encrypted `system_settings` Table:** Stores all instance-specific configuration (`admin_password_hash`, 32-byte `secret_signing_key`, `inactivity_timeout_minutes`, `station_name`, coordinates, units, and NWS grid metadata) in `data/skyscry.db` with a **Zero-PII Guarantee** (zero secrets or personal coordinates in git-tracked files).
   - **First-Run Password Setup & Auto-Lock:** Prompts to create an encrypted Admin Password (`scrypt` / `PBKDF2-HMAC-SHA256`) on first launch, protects all mutating endpoints with `@require_admin_auth`, enforces an IP brute-force rate limiter (`5 attempts / 5m`), and auto-locks admin sessions after configurable inactivity (`5m–60m`).
   - **Dedicated `6. Settings 🔒` View:** Configure Security & Access Control, Station Coordinates & NWS Baseline, Ingestion & Data Hygiene (`VACUUM`), and Display Units (`°F`/`°C`, `mph`/`m/s`/`knots`, `inHg`/`hPa`, `in`/`mm`).
-- **AcuRite & Weather-Display (`grahamsbeach.htm`) Interactive SVG Gauges (`v0.0.10`):**
+- **AcuRite & Weather-Display (`grahamsbeach.htm`) Interactive SVG Gauges (`v0.0.11`):**
   - **Daily High/Low Extremes, Timestamps & 24h Sparklines:** Live `↗ Rising`, `→ Steady`, `↘ Falling` trend badges, High/Low timestamp pills, and 24-hour background SVG sparklines on the Outdoor Hero and Indoor Summary cards.
   - **AcuRite Radial Wind & Gust Dial:** 16-point compass markers, speed-scaled glow ring, 15-minute directional variance wedge, rotating needle, and `Avg (10m)` / `Peak (Today)` flanks.
   - **Vertical Barometer Mercury Tower (`29.20–30.50 inHg`), Animated Rain Cylinder (`0.0"–2.0"`) + Rain Records (`Rate`, `Week`, `Month`, `Year`), and Semi-Circular Humidity Comfort + Solar/UV Gauges.**
-- **National Weather Service (`api.weather.gov`) Corroboration & Live Radar (`v0.0.10`):**
+- **National Weather Service (`api.weather.gov`) Corroboration & Live Radar (`v0.0.11`):**
   - Resolves `/points/{lat},{lon}` to pull nearest official NWS station observations, active weather alerts (`/alerts/active`), and the 7-day official gridpoint forecast with 15-minute caching.
   - Includes an at-a-glance **Mini Live Radar Card** on the Overview Dashboard and a dedicated **`5. Radar & NWS Forecast`** view with animated RainViewer / NOAA NEXRAD Doppler radar, timeline scrubber, dBZ reflectivity scale, and hyperlocal microclimate delta table.
-- **Upgraded Nowcast & Long-Term Seasonal / Climatology Engine (`v0.0.10`):**
+- **Upgraded Nowcast & Long-Term Seasonal / Climatology Engine (`v0.0.11`):**
   - Multi-factor 1–24h nowcast combining 3h/6h barometric velocity, dew point depression, wind backing/veering, solar attenuation, and NWS PoP, plus `daily_summaries` rollups, HDD/CDD degree days, wet/dry streaks, and a Weather-Display Records Summary Table (`Today`, `Week`, `Month`, `Year`, `All-Time`).
 
 - **Opt-In Sensor Trust & TPMS / Soil / Barometer Gate (`v0.0.8+`):**
@@ -79,7 +79,7 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.10")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.11")
 │   ├── security.py                 # Encrypted password hashing, brute-force limiter, & session auto-lock
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
@@ -154,7 +154,7 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.10`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.11`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
 | `GET/POST` | `/api/auth/*` | First-run admin password setup (`/api/auth/setup`), session unlock (`/api/auth/unlock`), manual lock (`/api/auth/lock`), and password rotation (`/api/auth/change-password`). |
 | `GET/POST` | `/api/settings` | Reads or updates persistent instance settings in SQLite (`system_settings` table). |
 | `GET` | `/api/nws` | Returns official US National Weather Service (`api.weather.gov`) observations, active alerts, 7-day gridpoint forecast, and hyperlocal corroboration deltas. |

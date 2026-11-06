@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.10)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.11)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from src.security import (
     require_admin_auth,
     verify_admin_password,
 )
-from src.updater import get_full_update_status, trigger_manual_update
+from src.updater import get_full_update_status, schedule_process_restart, trigger_manual_update
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def create_app(
 
     @app.route("/", methods=["GET"])
     def index() -> str:
-        """Render the 6-view SkyScry v0.0.10 WebUI application."""
+        """Render the 6-view SkyScry v0.0.11 WebUI application."""
         return render_template("index.html", version=__version__)
 
     # ==========================================================================
@@ -159,15 +159,41 @@ def create_app(
         if new_pw != confirm_pw:
             return jsonify({"ok": False, "error": "Passwords do not match."}), 400
 
+        timeout_raw = body.get("inactivity_timeout_minutes")
+        if timeout_raw is not None:
+            try:
+                t_val = max(1, min(int(float(timeout_raw)), 240))
+                db.set_setting("inactivity_timeout_minutes", str(t_val))
+            except (ValueError, TypeError):
+                pass
+
         pw_hash = hash_admin_password(new_pw)
         db.set_setting("admin_password_hash", pw_hash)
-        security_mgr.unlock_session()
-        logger.info("First-run Admin Security Password created and encrypted in system_settings.")
+
+        # Immediately verify persistent storage by reading back from SQLite system_settings
+        persisted_hash = db.get_setting("admin_password_hash")
+        if not persisted_hash or persisted_hash != pw_hash:
+            logger.error("Failed to verify persisted admin_password_hash in SQLite system_settings!")
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Database write verification failed: could not persist admin_password_hash to SQLite.",
+                    }
+                ),
+                500,
+            )
+
+        token = security_mgr.unlock_session()
+        auth_status = security_mgr.get_auth_status(issued_token=token)
+        logger.info("First-run Admin Security Password created, verified, and encrypted in system_settings.")
         return jsonify(
             {
                 "ok": True,
                 "message": "Admin Security Password created and session unlocked.",
-                **security_mgr.get_auth_status(),
+                "token": token,
+                "auth": auth_status,
+                **auth_status,
             }
         )
 
@@ -228,12 +254,15 @@ def create_app(
             )
 
         security_mgr.rate_limiter.record_success(client_ip)
-        security_mgr.unlock_session()
+        token = security_mgr.unlock_session()
+        auth_status = security_mgr.get_auth_status(issued_token=token)
         return jsonify(
             {
                 "ok": True,
                 "message": "Admin controls unlocked.",
-                **security_mgr.get_auth_status(),
+                "token": token,
+                "auth": auth_status,
+                **auth_status,
             }
         )
 
@@ -241,11 +270,13 @@ def create_app(
     def api_auth_lock() -> Response:
         """Immediately lock the current Admin session (Read-Only mode)."""
         security_mgr.lock_session()
+        auth_status = security_mgr.get_auth_status()
         return jsonify(
             {
                 "ok": True,
                 "message": "Admin session locked (Read-Only).",
-                **security_mgr.get_auth_status(),
+                "auth": auth_status,
+                **auth_status,
             }
         )
 
@@ -375,9 +406,11 @@ def create_app(
     @app.route("/api/trigger-update", methods=["POST"])
     @admin_guard
     def api_trigger_update() -> tuple[Response, int] | Response:
-        """Check GitHub for new SkyScry commits, upgrade pip dependencies, and check `rtl_433` releases."""
+        """Check GitHub for new SkyScry commits, upgrade pip dependencies, and restart daemon if updated."""
         db.checkpoint_wal()
         result = trigger_manual_update()
+        if result.get("restarting"):
+            schedule_process_restart(sdr_stream=sdr_stream, delay_seconds=1.2)
         return jsonify({"ok": True, **result})
 
     @app.route("/api/overview", methods=["GET"])

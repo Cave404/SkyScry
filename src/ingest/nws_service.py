@@ -1,4 +1,4 @@
-"""US National Weather Service (api.weather.gov) baseline corroboration, active alerts, and radar metadata service for SkyScry (v0.0.10)."""
+"""US National Weather Service (api.weather.gov) baseline corroboration, active alerts, and radar metadata service for SkyScry (v0.0.11)."""
 
 from __future__ import annotations
 

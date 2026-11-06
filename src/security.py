@@ -1,4 +1,4 @@
-"""Hardened authentication, PBKDF2/scrypt password hashing, session security, and brute-force rate limiting for SkyScry (v0.0.10)."""
+"""Hardened authentication, PBKDF2/scrypt password hashing, dual Cookie + X-SkyScry-Token session security, and brute-force rate limiting for SkyScry (v0.0.11)."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ PBKDF2_ITERATIONS = 600000
 def hash_admin_password(password: str) -> str:
     """Hash an admin password using werkzeug scrypt or Python PBKDF2-HMAC-SHA256 (600,000 iterations)."""
     cleaned = (password or "").strip()
-    if len(cleaned) < 4:
-        raise ValueError("Admin password must be at least 4 characters long.")
+    if len(cleaned) < 6:
+        raise ValueError("Admin password must be at least 6 characters long.")
     try:
         return generate_password_hash(cleaned, method="scrypt")
     except Exception:
@@ -137,7 +137,7 @@ class BruteForceRateLimiter:
 
 
 class SecurityManager:
-    """Manages persistent secret signing keys, admin password setup, session auto-lock, and auth decorators."""
+    """Manages persistent secret signing keys, admin password setup, dual Cookie + X-SkyScry-Token sessions, and auth decorators."""
 
     def __init__(
         self,
@@ -149,20 +149,28 @@ class SecurityManager:
         self.fallback_pin = fallback_pin.strip() if fallback_pin and fallback_pin.strip() else None
         self.read_only_public = bool(read_only_public)
         self.rate_limiter = BruteForceRateLimiter()
+        self._token_lock = threading.Lock()
+        self._active_tokens: dict[str, float] = {}  # token -> last_active_epoch
+        self._signing_key: Optional[bytes] = None
 
     def ensure_secret_signing_key(self) -> bytes:
         """Load or generate a persistent 32-byte cryptographic `secret_signing_key` in `system_settings`."""
+        if self._signing_key is not None:
+            return self._signing_key
+
         raw_hex = self.db.get_setting("secret_signing_key")
         if raw_hex:
             try:
                 key_bytes = bytes.fromhex(raw_hex.strip())
                 if len(key_bytes) >= 32:
+                    self._signing_key = key_bytes
                     return key_bytes
             except ValueError:
                 pass
 
         new_key = secrets.token_bytes(32)
         self.db.set_setting("secret_signing_key", new_key.hex())
+        self._signing_key = new_key
         return new_key
 
     def is_password_configured(self) -> bool:
@@ -179,22 +187,75 @@ class SecurityManager:
         except (ValueError, TypeError):
             return 15
 
+    def _issue_signed_token(self) -> str:
+        """Generate an HMAC-SHA256 signed admin session token and register its activity timestamp."""
+        key = self.ensure_secret_signing_key()
+        now_ts = time.time()
+        nonce = secrets.token_hex(16)
+        payload = f"{int(now_ts)}.{nonce}"
+        sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        token = f"{payload}.{sig}"
+        with self._token_lock:
+            self._active_tokens[token] = now_ts
+        return token
+
+    def _verify_and_check_token(self, token: str, now_ts: float, timeout_sec: float) -> tuple[bool, Optional[int]]:
+        """Verify an `X-SkyScry-Token` header token and check its inactivity window."""
+        if not token or "." not in token:
+            return False, None
+        parts = token.strip().split(".")
+        if len(parts) != 3:
+            return False, None
+        ts_str, nonce, sig = parts
+        try:
+            issued_ts = float(int(ts_str))
+        except ValueError:
+            return False, None
+
+        key = self.ensure_secret_signing_key()
+        payload = f"{ts_str}.{nonce}"
+        expected_sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return False, None
+
+        with self._token_lock:
+            last_active = self._active_tokens.get(token, issued_ts)
+            # If the token was explicitly revoked via lock_session(), _active_tokens stores -1.0
+            if last_active < 0:
+                return False, None
+            if (now_ts - last_active) <= timeout_sec:
+                rem = max(0, int(timeout_sec - (now_ts - last_active)))
+                return True, rem
+            # Expired
+            self._active_tokens.pop(token, None)
+            return False, None
+
+    def get_request_token(self) -> str:
+        """Extract `X-SkyScry-Token` from request headers if present."""
+        return (request.headers.get("X-SkyScry-Token") or "").strip()
+
     def is_session_unlocked(self) -> bool:
-        """Check if the current Flask session or legacy header is unlocked and within inactivity timeout."""
+        """Check if the current `X-SkyScry-Token`, Flask session cookie, or legacy header is unlocked and within inactivity timeout."""
         now_ts = time.time()
         timeout_sec = self.get_inactivity_timeout_minutes() * 60.0
 
-        # Check Flask signed session
+        # 1. Check X-SkyScry-Token header (works across Cloudflare Tunnel, Brave Shields, and LAN)
+        hdr_token = self.get_request_token()
+        if hdr_token:
+            ok, _ = self._verify_and_check_token(hdr_token, now_ts, timeout_sec)
+            if ok:
+                return True
+
+        # 2. Check Flask signed session cookie
         if session.get("admin_unlocked") is True:
             last_active = float(session.get("admin_last_active") or 0.0)
             if now_ts - last_active <= timeout_sec:
                 return True
-            # Session expired due to inactivity
             session.pop("admin_unlocked", None)
             session.pop("admin_last_active", None)
-            return False
+            session.pop("admin_token", None)
 
-        # Support header-based password/PIN for headless API callers if provided
+        # 3. Support header-based password/PIN for headless API callers
         candidate_hdr = (
             request.headers.get("X-Admin-Password")
             or request.headers.get("X-Admin-Pin")
@@ -211,42 +272,78 @@ class SecurityManager:
         return False
 
     def touch_admin_session(self) -> None:
-        """Refresh the admin session activity timestamp on admin interaction."""
+        """Refresh the admin session activity timestamp on admin interaction (both cookie and token)."""
+        now_ts = time.time()
+        hdr_token = self.get_request_token()
+        if hdr_token:
+            with self._token_lock:
+                if hdr_token in self._active_tokens and self._active_tokens[hdr_token] > 0:
+                    self._active_tokens[hdr_token] = now_ts
+
         if session.get("admin_unlocked") is True:
-            session["admin_last_active"] = time.time()
+            session["admin_last_active"] = now_ts
             session.modified = True
 
-    def unlock_session(self) -> None:
-        """Mark the current Flask session as unlocked."""
+    def unlock_session(self) -> str:
+        """Mark the current Flask session as unlocked AND issue a signed `X-SkyScry-Token`."""
+        now_ts = time.time()
+        token = self._issue_signed_token()
         session.permanent = True
         session["admin_unlocked"] = True
-        session["admin_last_active"] = time.time()
+        session["admin_last_active"] = now_ts
+        session["admin_token"] = token
         session.modified = True
+        return token
 
     def lock_session(self) -> None:
-        """Immediately lock the current Flask session."""
+        """Immediately lock both the `X-SkyScry-Token` and the current Flask session cookie."""
+        hdr_token = self.get_request_token()
+        sess_token = session.get("admin_token")
+        with self._token_lock:
+            if hdr_token:
+                self._active_tokens[hdr_token] = -1.0
+            if sess_token:
+                self._active_tokens[str(sess_token)] = -1.0
         session.pop("admin_unlocked", None)
         session.pop("admin_last_active", None)
+        session.pop("admin_token", None)
         session.modified = True
 
-    def get_auth_status(self) -> dict[str, Any]:
+    def get_auth_status(self, issued_token: Optional[str] = None) -> dict[str, Any]:
         """Compile `/api/auth/status` payload."""
+        now_ts = time.time()
         pw_configured = self.is_password_configured()
-        unlocked = self.is_session_unlocked()
         timeout_min = self.get_inactivity_timeout_minutes()
-        remaining_sec: Optional[int] = None
-        if unlocked and session.get("admin_unlocked") is True:
-            last_active = float(session.get("admin_last_active") or time.time())
-            rem = int((timeout_min * 60.0) - (time.time() - last_active))
-            remaining_sec = max(0, rem)
+        timeout_sec = timeout_min * 60.0
+        unlocked = self.is_session_unlocked()
 
-        return {
+        remaining_sec: Optional[int] = None
+        active_token: Optional[str] = issued_token
+
+        if unlocked:
+            hdr_token = self.get_request_token()
+            if hdr_token:
+                ok, rem = self._verify_and_check_token(hdr_token, now_ts, timeout_sec)
+                if ok:
+                    remaining_sec = rem
+                    if not active_token:
+                        active_token = hdr_token
+            if remaining_sec is None and session.get("admin_unlocked") is True:
+                last_active = float(session.get("admin_last_active") or now_ts)
+                remaining_sec = max(0, int(timeout_sec - (now_ts - last_active)))
+                if not active_token and session.get("admin_token"):
+                    active_token = str(session.get("admin_token"))
+
+        payload: dict[str, Any] = {
             "ok": True,
             "password_configured": pw_configured,
             "unlocked": unlocked,
             "timeout_minutes": timeout_min,
             "remaining_seconds": remaining_sec,
         }
+        if active_token:
+            payload["token"] = active_token
+        return payload
 
 
 def require_admin_auth(security_mgr: SecurityManager) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -255,7 +352,6 @@ def require_admin_auth(security_mgr: SecurityManager) -> Callable[[Callable[...,
     def decorator(view_func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(view_func)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
-            # Also check if password/pin was passed in JSON body for backwards compatibility
             body = request.get_json(silent=True) if request.is_json else None
             body_pw = ""
             if isinstance(body, dict):
