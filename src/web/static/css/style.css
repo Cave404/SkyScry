@@ -558,10 +558,22 @@ code {
   align-items: center;
 }
 
-/* AcuRite & Weather-Display Gauge Cards */
+/* ==========================================================================
+   ACURITE & WEATHER-DISPLAY ENLARGED INTERACTIVE HARDWARE GAUGES
+   ========================================================================== */
+
+/* 1. AcuRite Radial Wind & Gust Dial (175px x 175px) */
+.wind-gauge-layout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  height: 100%;
+}
+
 .acurite-wind-wrap {
-  width: 138px;
-  height: 144px;
+  width: 175px;
+  height: 175px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -569,97 +581,196 @@ code {
   justify-content: center;
 }
 
-.acurite-wind-Wrap-svg {
-  width: 126px;
-  height: 126px;
+.acurite-wind-svg {
+  width: 175px;
+  height: 175px;
+  display: block;
 }
 
-.wind-bottom-flank {
-  width: 100%;
+.wind-stats-flank {
   display: flex;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-secondary);
-  margin-top: 2px;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
 }
 
+.stat-callout-box {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 8px;
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-callout-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.stat-callout-val {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #ffffff;
+  margin: 2px 0 1px;
+}
+
+.stat-callout-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+/* 2. Vertical Barometric Pressure Tower Gauge (165px tall x 75px wide) */
 .baro-tower-layout {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 18px;
   height: 100%;
 }
 
-.baro-metrics-col {
+.baro-readout-col {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
+  flex: 1;
 }
 
-.baro-tower-wrap {
-  width: 68px;
-  height: 132px;
+.baro-primary-val {
+  font-family: var(--font-mono);
+  font-size: 2.4rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.stat-pill-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-pill-row {
+  font-family: var(--font-mono);
+  font-size: 1.0rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+
+.stat-pill-dual {
+  display: flex;
+  gap: 8px;
+}
+
+.stat-pill-mini {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 1.0rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 6px;
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.baro-tower-svg-wrap {
+  width: 75px;
+  height: 165px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: center;
 }
 
 .baro-tower-svg {
-  width: 68px;
-  height: 132px;
+  width: 75px;
+  height: 165px;
   overflow: visible;
 }
 
+/* 3. Graduated Rain Cylinder + AcuRite Records Table (165px tall x 70px wide) */
 .rain-gauge-layout {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 18px;
   height: 100%;
 }
 
-.rain-metrics-col {
+.rain-records-col {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   flex: 1;
 }
 
-.acurite-rain-table {
-  margin-top: 6px;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 6px 9px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
+.rain-primary-val {
+  font-family: var(--font-mono);
+  font-size: 2.4rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #ffffff;
+  letter-spacing: -0.01em;
 }
 
-.rain-rec-row {
-  display: flex;
-  justify-content: space-between;
+.acurite-rain-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.acurite-rain-table td {
+  padding: 6px 10px;
+  font-size: 1.0rem;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.5);
   color: var(--text-secondary);
 }
 
+.acurite-rain-table td.mono {
+  font-family: var(--font-mono);
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.acurite-rain-table tr:last-child td {
+  border-bottom: none;
+}
+
 .rain-cylinder-wrap {
-  width: 58px;
-  height: 132px;
+  width: 70px;
+  height: 165px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: center;
 }
 
 .rain-cylinder-svg {
-  width: 58px;
-  height: 132px;
+  width: 70px;
+  height: 165px;
   overflow: visible;
 }
 
-.humidity-uv-layout {
+/* 4. Humidity Comfort Arc & Solar UV (165px wide) */
+.humidity-solar-stack {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 8px;
+  gap: 14px;
   height: 100%;
 }
 
@@ -667,76 +778,228 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 16px;
 }
 
 .semi-gauge-wrap {
-  width: 106px;
-  height: 64px;
+  width: 165px;
+  height: 95px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: center;
 }
 
 .semi-gauge-svg {
-  width: 106px;
-  height: 64px;
+  width: 165px;
+  height: 95px;
   overflow: visible;
 }
 
-.uv-solar-strip {
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 7px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.rh-details-col {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  flex: 1;
 }
 
-.uv-bar-header {
+.rh-stat-item {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.rh-stat-lbl {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.rh-stat-val {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin-top: 2px;
+}
+
+.solar-arc-box {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.solar-arc-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
 }
 
 .uv-bar-track {
   width: 100%;
-  height: 6px;
+  height: 8px;
   background: rgba(30, 41, 59, 0.9);
-  border-radius: 3px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
 .uv-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #10b981 0%, #f59e0b 55%, #ef4444 85%, #a855f7 100%);
-  border-radius: 3px;
+  border-radius: 4px;
   transition: width 0.5s ease;
 }
 
-.hero-main {
+.hero-split-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .hero-split-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+}
+
+.hero-left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hero-main-flex {
   display: flex;
   align-items: center;
-  gap: 26px;
-  flex-wrap: wrap;
+  gap: 20px;
 }
 
 .weather-icon-stage {
-  width: 136px;
-  height: 136px;
+  width: 115px;
+  height: 115px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, rgba(15, 23, 42, 0.02) 72%);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.22) 0%, rgba(15, 23, 42, 0.02) 72%);
   border-radius: 50%;
-  border: 1px solid rgba(96, 165, 250, 0.16);
+  border: 1px solid rgba(96, 165, 250, 0.22);
 }
 
 .weather-icon-stage svg {
-  width: 122px;
-  height: 122px;
+  width: 115px;
+  height: 115px;
   overflow: visible;
+}
+
+.hero-right-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hero-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.quick-stat-box {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.quick-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.quick-val {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin: 2px 0 1px;
+}
+
+.quick-sub {
+  font-size: 11px;
+  color: #64748b;
+  font-family: var(--font-mono);
+}
+
+.hero-sparkline-panel {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.sparkline-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.sparkline-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+
+.sparkline-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.temp-dot {
+  background: #38bdf8;
+}
+
+.dew-dot {
+  background: #10b981;
+}
+
+.sparkline-svg-container {
+  width: 100%;
+  height: 75px;
+  position: relative;
+}
+
+.hero-trend-svg {
+  width: 100%;
+  height: 75px;
+  display: block;
 }
 
 /* Keyframe Animations for High-Visibility Weather SVGs */
@@ -822,7 +1085,7 @@ code {
 }
 
 .hero-condition-title {
-  font-size: 24px;
+  font-size: 1.65rem;
   font-weight: 700;
   color: var(--text-primary);
   margin: 2px 0 6px;
@@ -836,7 +1099,7 @@ code {
 
 .hero-temp-primary {
   font-family: var(--font-mono);
-  font-size: 46px;
+  font-size: 4.2rem;
   font-weight: 800;
   line-height: 1.05;
   color: #ffffff;
@@ -974,13 +1237,13 @@ code {
 
 .ensemble-kpi-grid {
   display: grid;
-  grid-template-columns: 1.35fr repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 20px;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 768px) {
   .ensemble-kpi-grid {
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: 1fr;
   }
 }
 
@@ -988,7 +1251,9 @@ code {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 6px;
+  gap: 12px;
+  min-height: 280px;
+  padding: 20px 22px;
 }
 
 .kpi-primary {

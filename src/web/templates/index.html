@@ -120,30 +120,77 @@
       </div>
 
       <div class="overview-top-grid">
-        <!-- Hero Outdoor Weather Condition Card with High/Low Extremes & 24h Sparkline -->
+        <!-- Hero Outdoor Weather Condition Card with Full-Width Split Layout & 24h Area Sparkline -->
         <div class="hero-weather-card card">
           <svg id="ov-out-sparkline-svg" class="hero-sparkline-bg" viewBox="0 0 400 100" preserveAspectRatio="none" aria-hidden="true"></svg>
 
-          <div class="hero-main">
-            <div id="hero-weather-icon" class="weather-icon-stage" aria-hidden="true"></div>
-            <div class="hero-temp-block">
+          <div class="hero-split-grid">
+            <!-- Left Column: Primary Condition & Ensemble Readout -->
+            <div class="hero-left-col">
               <div class="hero-eyebrow">ESTIMATED LOCAL OUTDOOR CONDITION</div>
-              <div id="ov-condition-label" class="hero-condition-title">Synthesizing Telemetry...</div>
-              <div class="hero-temp-row">
-                <span id="ov-out-temp-f" class="hero-temp-primary">--.-&deg;F</span>
-                <span id="ov-out-temp-c" class="hero-temp-secondary">(--.-&deg;C)</span>
-                <span id="ov-out-trend-arrow" class="trend-arrow-badge steady" title="1-Hour Temperature Trend">&rarr; Steady</span>
+              <div class="hero-main-flex">
+                <div id="hero-weather-icon" class="weather-icon-stage" aria-hidden="true"></div>
+                <div class="hero-temp-block">
+                  <div id="ov-condition-label" class="hero-condition-title">Synthesizing Telemetry...</div>
+                  <div class="hero-temp-row">
+                    <span id="ov-out-temp-f" class="hero-temp-primary">--.-&deg;F</span>
+                    <span id="ov-out-temp-c" class="hero-temp-secondary">(--.-&deg;C)</span>
+                    <span id="ov-out-trend-arrow" class="trend-arrow-badge steady" title="1-Hour Temperature Trend">&rarr; Steady</span>
+                  </div>
+                  <!-- AcuRite-Style Daily High/Low Extremes Pills with Timestamps -->
+                  <div class="extremes-pill-row">
+                    <span id="ov-out-low-pill" class="extreme-pill low-pill">Low: --.-&deg;F (--)</span>
+                    <span class="extreme-sep">|</span>
+                    <span id="ov-out-high-pill" class="extreme-pill high-pill">High: --.-&deg;F (--)</span>
+                  </div>
+                  <div id="ov-out-spread" class="hero-spread-sub">Outdoor ensemble across -- station(s)</div>
+                </div>
               </div>
-              <!-- AcuRite-Style Daily High/Low Extremes Pills with Timestamps -->
-              <div class="extremes-pill-row">
-                <span id="ov-out-low-pill" class="extreme-pill low-pill">Low: --.-&deg;F (--)</span>
-                <span class="extreme-sep">|</span>
-                <span id="ov-out-high-pill" class="extreme-pill high-pill">High: --.-&deg;F (--)</span>
+            </div>
+
+            <!-- Right Column: Live 24-Hour Mini Trend Sparkline + 4-Metric Quick Grid -->
+            <div class="hero-right-col">
+              <!-- 4-Box Hyperlocal Quick Grid -->
+              <div class="hero-quick-grid">
+                <div class="quick-stat-box">
+                  <span class="quick-label">FEELS LIKE</span>
+                  <div id="ov-hero-feels" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-feels-sub" class="quick-sub">Apparent Temp</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">DEW POINT &amp; SPREAD</span>
+                  <div id="ov-hero-dew" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-dew-spread" class="quick-sub">Spread: --.-&deg;F</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">TODAY'S RANGE</span>
+                  <div id="ov-hero-range" class="quick-val">&Delta; --.-&deg;F</div>
+                  <span id="ov-hero-range-sub" class="quick-sub">L: --&deg; | H: --&deg;</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">ENSEMBLE SPREAD</span>
+                  <div id="ov-hero-spread-val" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-spread-count" class="quick-sub">-- station(s)</span>
+                </div>
               </div>
-              <div id="ov-out-spread" class="hero-spread-sub">Outdoor ensemble across -- station(s)</div>
+
+              <!-- 24-Hour Temperature & Dew Point Trend Sparkline SVG Panel -->
+              <div class="hero-sparkline-panel">
+                <div class="sparkline-header-row">
+                  <span class="sparkline-title">24-HOUR TEMPERATURE &amp; DEW POINT TRAJECTORY</span>
+                  <div class="sparkline-legend">
+                    <span class="legend-dot temp-dot"></span><span>Temp</span>
+                    <span class="legend-dot dew-dot"></span><span>Dew Pt</span>
+                  </div>
+                </div>
+                <div class="sparkline-svg-container">
+                  <svg id="ov-hero-sparkline-svg" class="hero-trend-svg" viewBox="0 0 420 85" preserveAspectRatio="none" aria-label="24-hour temperature and dew point area trend chart"></svg>
+                </div>
+              </div>
             </div>
           </div>
 
+          <!-- Bottom Nowcast Bar -->
           <div class="hero-nowcast-box">
             <div class="nowcast-header">
               <span class="nowcast-title">MULTI-FACTOR 12H/24H NOWCAST TRAJECTORY</span>
@@ -200,7 +247,7 @@
         </div>
       </div>
 
-      <!-- AcuRite & Weather-Display Inspired Hardware SVG Gauges Grid -->
+      <!-- AcuRite & Weather-Display Inspired Hardware SVG Gauges Grid (Roomy 2x2 Layout) -->
       <div class="ensemble-kpi-grid">
         <!-- 1. AcuRite Radial Wind Gauge with Gust Ring & 15m Directional Sector -->
         <div class="kpi-tile kpi-wind-card card">
@@ -209,65 +256,75 @@
             <span id="ov-wind-bearing" class="metric-sub">Bearing: -- deg</span>
           </div>
 
-          <div class="acurite-wind-wrap">
-            <svg class="acurite-wind-svg" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg" aria-label="AcuRite Radial Wind Gauge">
-              <defs>
-                <radialGradient id="windDialBg" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stop-color="#0f172a" />
-                  <stop offset="100%" stop-color="#070b14" />
-                </radialGradient>
-              </defs>
-              <!-- Outer Bezel & Speed Color Ring -->
-              <circle cx="90" cy="90" r="82" fill="url(#windDialBg)" stroke="#24324b" stroke-width="2.5" />
-              <circle id="wind-speed-glow-ring" cx="90" cy="90" r="76" fill="none" stroke="rgba(56, 189, 248, 0.28)" stroke-width="4" />
+          <div class="wind-gauge-layout">
+            <div class="acurite-wind-wrap">
+              <svg class="acurite-wind-svg" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg" aria-label="AcuRite Radial Wind Gauge">
+                <defs>
+                  <radialGradient id="windDialBg" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stop-color="#0f172a" />
+                    <stop offset="100%" stop-color="#070b14" />
+                  </radialGradient>
+                </defs>
+                <!-- Outer Bezel & Speed Color Ring -->
+                <circle cx="90" cy="90" r="82" fill="url(#windDialBg)" stroke="#24324b" stroke-width="2.5" />
+                <circle id="wind-speed-glow-ring" cx="90" cy="90" r="76" fill="none" stroke="rgba(56, 189, 248, 0.28)" stroke-width="4" />
 
-              <!-- 15-Minute Wind Direction Variance Sector Wedge -->
-              <path id="wind-variance-wedge" d="" fill="rgba(56, 189, 248, 0.18)" stroke="rgba(56, 189, 248, 0.35)" stroke-width="1" />
+                <!-- 15-Minute Wind Direction Variance Sector Wedge -->
+                <path id="wind-variance-wedge" d="" fill="rgba(56, 189, 248, 0.18)" stroke="rgba(56, 189, 248, 0.35)" stroke-width="1" />
 
-              <!-- 16-Point Compass Labels -->
-              <g font-family="monospace" font-weight="700" text-anchor="middle">
-                <text x="90" y="24" fill="#38bdf8" font-size="11">N</text>
-                <text x="116" y="29" fill="#64748b" font-size="7.5">NNE</text>
-                <text x="138" y="43" fill="#94a3b8" font-size="8.5">NE</text>
-                <text x="152" y="65" fill="#64748b" font-size="7.5">ENE</text>
-                <text x="158" y="93" fill="#e2e8f0" font-size="10.5">E</text>
-                <text x="152" y="120" fill="#64748b" font-size="7.5">ESE</text>
-                <text x="138" y="141" fill="#94a3b8" font-size="8.5">SE</text>
-                <text x="116" y="155" fill="#64748b" font-size="7.5">SSE</text>
-                <text x="90" y="161" fill="#e2e8f0" font-size="10.5">S</text>
-                <text x="64" y="155" fill="#64748b" font-size="7.5">SSW</text>
-                <text x="42" y="141" fill="#94a3b8" font-size="8.5">SW</text>
-                <text x="28" y="120" fill="#64748b" font-size="7.5">WSW</text>
-                <text x="22" y="93" fill="#e2e8f0" font-size="10.5">W</text>
-                <text x="28" y="65" fill="#64748b" font-size="7.5">WNW</text>
-                <text x="42" y="43" fill="#94a3b8" font-size="8.5">NW</text>
-                <text x="64" y="29" fill="#64748b" font-size="7.5">NNW</text>
-              </g>
+                <!-- 16-Point Compass Labels (N, E, S, W in crisp 13px bold) -->
+                <g font-family="monospace" font-weight="700" text-anchor="middle">
+                  <text x="90" y="24" fill="#38bdf8" font-size="13" font-weight="800">N</text>
+                  <text x="117" y="29" fill="#64748b" font-size="8">NNE</text>
+                  <text x="139" y="44" fill="#94a3b8" font-size="10">NE</text>
+                  <text x="153" y="66" fill="#64748b" font-size="8">ENE</text>
+                  <text x="159" y="94" fill="#e2e8f0" font-size="13" font-weight="800">E</text>
+                  <text x="153" y="121" fill="#64748b" font-size="8">ESE</text>
+                  <text x="139" y="142" fill="#94a3b8" font-size="10">SE</text>
+                  <text x="117" y="156" fill="#64748b" font-size="8">SSE</text>
+                  <text x="90" y="162" fill="#e2e8f0" font-size="13" font-weight="800">S</text>
+                  <text x="63" y="156" fill="#64748b" font-size="8">SSW</text>
+                  <text x="41" y="142" fill="#94a3b8" font-size="10">SW</text>
+                  <text x="27" y="121" fill="#64748b" font-size="8">WSW</text>
+                  <text x="21" y="94" fill="#e2e8f0" font-size="13" font-weight="800">W</text>
+                  <text x="27" y="66" fill="#64748b" font-size="8">WNW</text>
+                  <text x="41" y="44" fill="#94a3b8" font-size="10">NW</text>
+                  <text x="63" y="29" fill="#64748b" font-size="8">NNW</text>
+                </g>
 
-              <!-- Inner Digital Readout Bezel -->
-              <circle cx="90" cy="90" r="46" fill="#0b1322" stroke="#1e293b" stroke-width="1.5" />
+                <!-- Inner Digital Readout Bezel -->
+                <circle cx="90" cy="90" r="46" fill="#0b1322" stroke="#1e293b" stroke-width="1.5" />
 
-              <!-- Rotating Primary Pointer Needle -->
-              <g id="compass-needle-group" class="compass-needle" style="transform: rotate(0deg); transform-origin: 90px 90px;">
-                <polygon points="90,10 83,32 90,27 97,32" fill="#f59e0b" />
-                <line x1="90" y1="27" x2="90" y2="44" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" />
-              </g>
+                <!-- Rotating Primary Pointer Needle -->
+                <g id="compass-needle-group" class="compass-needle" style="transform: rotate(0deg); transform-origin: 90px 90px;">
+                  <polygon points="90,10 83,32 90,27 97,32" fill="#f59e0b" />
+                  <line x1="90" y1="27" x2="90" y2="44" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" />
+                </g>
 
-              <!-- Center Digital Console Readout -->
-              <text id="wind-dial-cardinal" x="90" y="74" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="12" font-weight="800">--</text>
-              <text id="ov-wind-speed" x="90" y="97" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="20" font-weight="800">0.0</text>
-              <text id="wind-dial-unit" x="90" y="111" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="600">MPH</text>
-            </svg>
-          </div>
-
-          <div class="wind-bottom-flank">
-            <div class="wind-flank-box">
-              <span class="flank-label">AVG (10m)</span>
-              <span id="ov-wind-avg-10m" class="flank-val">0.0 mph</span>
+                <!-- Center Digital Console Readout (1.6rem bold) -->
+                <text id="wind-dial-cardinal" x="90" y="73" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="13" font-weight="800">--</text>
+                <text id="ov-wind-speed" x="90" y="98" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="24" font-weight="800">0.0</text>
+                <text id="wind-dial-unit" x="90" y="112" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9.5" font-weight="700">MPH</text>
+              </svg>
             </div>
-            <div class="wind-flank-box">
-              <span class="flank-label">PEAK (TODAY)</span>
-              <span id="ov-wind-gust" class="flank-val">0.0 mph</span>
+
+            <!-- High-Contrast Wind Stat Blocks Beside Dial -->
+            <div class="wind-stats-flank">
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">SUSTAINED SPEED</span>
+                <div id="ov-wind-speed-flank" class="stat-callout-val">0.0 mph</div>
+                <span id="ov-wind-bearing-flank" class="stat-callout-sub">Bearing: --° (--)</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">PEAK GUST (TODAY)</span>
+                <div id="ov-wind-gust" class="stat-callout-val">0.0 mph</div>
+                <span id="ov-wind-gust-time" class="stat-callout-sub">Max daily burst</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">10-MINUTE AVERAGE</span>
+                <div id="ov-wind-avg-10m" class="stat-callout-val">0.0 mph</div>
+                <span class="stat-callout-sub">Rolling anemometer</span>
+              </div>
             </div>
           </div>
         </div>
@@ -281,19 +338,22 @@
 
           <div class="baro-tower-layout">
             <div class="baro-readout-col">
-              <div id="ov-baro-inhg" class="kpi-primary">--.-- inHg</div>
-              <div id="ov-baro-hpa" class="kpi-sub">----.- hPa | 3h: --</div>
-              <div id="ov-baro-extremes" class="kpi-sub">Today L: --.-- | H: --.--</div>
-              <div id="ov-baro-source" class="kpi-sub text-muted">Source: Regional Reference</div>
-              <div class="delta-mini-grid">
-                <div><span class="metric-label">1H TEMP</span><div id="ov-delta-1h-temp" class="mono">--</div></div>
-                <div><span class="metric-label">3H BARO</span><div id="ov-delta-3h-baro" class="mono">--</div></div>
+              <div class="metric-label">SEA-LEVEL PRESSURE</div>
+              <div id="ov-baro-inhg" class="kpi-primary baro-primary-val">--.-- inHg</div>
+              <div class="stat-pill-stack">
+                <div id="ov-baro-hpa" class="stat-pill-row">----.- hPa | Steady</div>
+                <div id="ov-baro-extremes" class="stat-pill-row">Today L: --.-- | H: --.--</div>
+                <div class="stat-pill-dual">
+                  <span id="ov-delta-1h-temp" class="stat-pill-mini">1h &Delta;T: --</span>
+                  <span id="ov-delta-3h-baro" class="stat-pill-mini">3h &Delta;P: --</span>
+                </div>
               </div>
+              <div id="ov-baro-source" class="kpi-sub text-muted">Source: Regional Reference</div>
             </div>
 
-            <!-- Animated Vertical Mercury / Scale Column SVG (29.20 to 30.50 inHg) -->
+            <!-- Animated Vertical Mercury / Scale Column SVG (165px tall x 75px wide) -->
             <div class="baro-tower-svg-wrap" aria-label="Barometric Pressure Mercury Tower">
-              <svg viewBox="0 0 92 170" class="baro-tower-svg" xmlns="http://www.w3.org/2000/svg">
+              <svg viewBox="0 0 85 170" class="baro-tower-svg" xmlns="http://www.w3.org/2000/svg">
                 <defs>
                   <linearGradient id="baroMercuryGrad" x1="0" y1="1" x2="0" y2="0">
                     <stop offset="0%" stop-color="#3b82f6" />
@@ -302,27 +362,27 @@
                   </linearGradient>
                 </defs>
                 <!-- Weather Tendency Zone Icons -->
-                <text x="14" y="26" font-size="11" fill="#fbbf24" font-family="monospace" font-weight="700">SUN</text>
-                <text x="14" y="88" font-size="10" fill="#94a3b8" font-family="monospace" font-weight="700">CLD</text>
-                <text x="14" y="150" font-size="10" fill="#38bdf8" font-family="monospace" font-weight="700">RN</text>
+                <text x="12" y="26" font-size="11" fill="#fbbf24" font-family="monospace" font-weight="800">SUN</text>
+                <text x="12" y="88" font-size="10" fill="#94a3b8" font-family="monospace" font-weight="700">CLD</text>
+                <text x="12" y="150" font-size="10" fill="#38bdf8" font-family="monospace" font-weight="700">RN</text>
 
                 <!-- Tube Background -->
-                <rect x="40" y="14" width="14" height="142" rx="7" fill="#090d16" stroke="#334155" stroke-width="1.5" />
+                <rect x="36" y="14" width="16" height="142" rx="8" fill="#090d16" stroke="#334155" stroke-width="1.5" />
                 <!-- Animated Mercury Column -->
-                <rect id="baro-mercury-fill" x="42" y="85" width="10" height="71" rx="5" fill="url(#baroMercuryGrad)" />
+                <rect id="baro-mercury-fill" x="38" y="85" width="12" height="71" rx="6" fill="url(#baroMercuryGrad)" />
 
                 <!-- Scale Tick Marks (30.50 top -> 29.20 bottom) -->
-                <g stroke="#475569" stroke-width="1" font-family="monospace" font-size="7.5" fill="#94a3b8">
-                  <line x1="55" y1="18" x2="61" y2="18" /><text x="63" y="21" stroke="none">30.5</text>
-                  <line x1="55" y1="51" x2="61" y2="51" /><text x="63" y="54" stroke="none">30.2</text>
-                  <line x1="55" y1="84" x2="61" y2="84" /><text x="63" y="87" stroke="none">29.9</text>
-                  <line x1="55" y1="117" x2="61" y2="117" /><text x="63" y="120" stroke="none">29.5</text>
-                  <line x1="55" y1="150" x2="61" y2="150" /><text x="63" y="153" stroke="none">29.2</text>
+                <g stroke="#475569" stroke-width="1" font-family="monospace" font-size="8" font-weight="600" fill="#94a3b8">
+                  <line x1="53" y1="18" x2="60" y2="18" /><text x="62" y="21" stroke="none">30.50</text>
+                  <line x1="53" y1="51" x2="58" y2="51" /><text x="62" y="54" stroke="none">30.00</text>
+                  <line x1="53" y1="84" x2="60" y2="84" /><text x="62" y="87" stroke="none">29.70</text>
+                  <line x1="53" y1="117" x2="58" y2="117" /><text x="62" y="120" stroke="none">29.50</text>
+                  <line x1="53" y1="150" x2="60" y2="150" /><text x="62" y="153" stroke="none">29.20</text>
                 </g>
 
                 <!-- Sliding Horizontal Pointer Arrow -->
                 <g id="baro-tower-pointer" style="transform: translateY(84px); transition: transform 0.7s ease;">
-                  <polygon points="39,0 30,-5 30,5" fill="#38bdf8" />
+                  <polygon points="35,0 26,-5 26,5" fill="#38bdf8" />
                 </g>
               </svg>
             </div>
@@ -337,9 +397,9 @@
           </div>
 
           <div class="rain-gauge-layout">
-            <!-- SVG Vertical Graduated Rain Cylinder (0.0" to 2.0" with 0.25" ticks) -->
+            <!-- SVG Vertical Graduated Rain Cylinder (165px tall x 70px wide) -->
             <div class="rain-cylinder-wrap" aria-label="Animated Graduated Rain Cylinder">
-              <svg viewBox="0 0 82 170" class="rain-cylinder-svg" xmlns="http://www.w3.org/2000/svg">
+              <svg viewBox="0 0 76 170" class="rain-cylinder-svg" xmlns="http://www.w3.org/2000/svg">
                 <defs>
                   <linearGradient id="rainWaterGrad" x1="0" y1="0" x2="1" y2="0">
                     <stop offset="0%" stop-color="#0284c7" />
@@ -348,51 +408,51 @@
                   </linearGradient>
                 </defs>
                 <!-- Funnel Top & Graduated Cylinder Tube -->
-                <polygon points="16,12 48,12 43,20 21,20" fill="#0f172a" stroke="#334155" stroke-width="1.4" />
-                <rect x="21" y="20" width="22" height="136" rx="3" fill="#090d16" stroke="#334155" stroke-width="1.5" />
+                <polygon points="12,12 46,12 41,20 17,20" fill="#0f172a" stroke="#334155" stroke-width="1.4" />
+                <rect x="17" y="20" width="24" height="136" rx="4" fill="#090d16" stroke="#334155" stroke-width="1.5" />
 
                 <!-- Animated Water Fill & Meniscus -->
-                <rect id="rain-cylinder-fill" x="22.5" y="154" width="19" height="0" fill="url(#rainWaterGrad)" style="transition: all 0.7s ease;" />
-                <ellipse id="rain-cylinder-meniscus" cx="32" cy="154" rx="9.5" ry="2" fill="#bae6fd" opacity="0" />
+                <rect id="rain-cylinder-fill" x="18.5" y="154" width="21" height="0" fill="url(#rainWaterGrad)" style="transition: all 0.7s ease;" />
+                <ellipse id="rain-cylinder-meniscus" cx="29" cy="154" rx="10.5" ry="2.2" fill="#bae6fd" opacity="0" />
 
                 <!-- 0.25" Graduated Tick Marks (0.0" to 2.0") -->
-                <g stroke="#475569" stroke-width="1" font-family="monospace" font-size="7.5" fill="#94a3b8">
-                  <line x1="43" y1="22" x2="50" y2="22" /><text x="52" y="25" stroke="none">2.0"</text>
-                  <line x1="43" y1="38.5" x2="48" y2="38.5" />
-                  <line x1="43" y1="55" x2="50" y2="55" /><text x="52" y="58" stroke="none">1.5"</text>
-                  <line x1="43" y1="71.5" x2="48" y2="71.5" />
-                  <line x1="43" y1="88" x2="50" y2="88" /><text x="52" y="91" stroke="none">1.0"</text>
-                  <line x1="43" y1="104.5" x2="48" y2="104.5" />
-                  <line x1="43" y1="121" x2="50" y2="121" /><text x="52" y="124" stroke="none">0.5"</text>
-                  <line x1="43" y1="137.5" x2="48" y2="137.5" />
-                  <line x1="43" y1="154" x2="50" y2="154" /><text x="52" y="156" stroke="none">0.0"</text>
+                <g stroke="#475569" stroke-width="1" font-family="monospace" font-size="8" font-weight="600" fill="#94a3b8">
+                  <line x1="42" y1="22" x2="50" y2="22" /><text x="53" y="25" stroke="none">2.0"</text>
+                  <line x1="42" y1="38.5" x2="47" y2="38.5" />
+                  <line x1="42" y1="55" x2="50" y2="55" /><text x="53" y="58" stroke="none">1.5"</text>
+                  <line x1="42" y1="71.5" x2="47" y2="71.5" />
+                  <line x1="42" y1="88" x2="50" y2="88" /><text x="53" y="91" stroke="none">1.0"</text>
+                  <line x1="42" y1="104.5" x2="47" y2="104.5" />
+                  <line x1="42" y1="121" x2="50" y2="121" /><text x="53" y="124" stroke="none">0.5"</text>
+                  <line x1="42" y1="137.5" x2="47" y2="137.5" />
+                  <line x1="42" y1="154" x2="50" y2="154" /><text x="53" y="156" stroke="none">0.0"</text>
                 </g>
               </svg>
             </div>
 
             <div class="rain-records-col">
               <div class="metric-label">TODAY'S RAINFALL</div>
-              <div id="ov-rain-24h" class="kpi-primary">0.00 in</div>
+              <div id="ov-rain-24h" class="kpi-primary rain-primary-val">0.00 in</div>
               <div id="ov-rain-mm" class="kpi-sub">24h: 0.00 in (0.0 mm)</div>
 
-              <!-- AcuRite Rain Records Breakdown Table -->
+              <!-- AcuRite Rain Records Breakdown Table (1.0rem font size with clean dividers) -->
               <table class="acurite-rain-table">
                 <tbody>
                   <tr>
                     <td>Rate</td>
-                    <td id="rain-rec-rate" class="mono">0.00 in/hr</td>
+                    <td id="rain-rec-rate" class="mono text-right">0.00 in/hr</td>
                   </tr>
                   <tr>
                     <td>Week (7d)</td>
-                    <td id="rain-rec-week" class="mono">0.00 in</td>
+                    <td id="rain-rec-week" class="mono text-right">0.00 in</td>
                   </tr>
                   <tr>
                     <td>Month</td>
-                    <td id="rain-rec-month" class="mono">0.00 in</td>
+                    <td id="rain-rec-month" class="mono text-right">0.00 in</td>
                   </tr>
                   <tr>
                     <td>Year (YTD)</td>
-                    <td id="rain-rec-year" class="mono">0.00 in</td>
+                    <td id="rain-rec-year" class="mono text-right">0.00 in</td>
                   </tr>
                 </tbody>
               </table>
@@ -407,31 +467,46 @@
             <span id="ov-rh-comfort-badge" class="badge">OPTIMAL</span>
           </div>
 
-          <!-- Semi-Circular Radial Humidity Comfort Gauge -->
+          <!-- Semi-Circular Radial Humidity Comfort Gauge (165px wide) -->
           <div class="humidity-solar-stack">
             <div class="semi-gauge-row">
-              <svg viewBox="0 0 130 78" class="semi-gauge-svg" xmlns="http://www.w3.org/2000/svg">
-                <!-- Background Arc (Dry <30%, Optimal 30-60%, Humid 60-85%, Saturated >85%) -->
-                <path d="M 15 65 A 50 50 0 0 1 115 65" fill="none" stroke="#1e293b" stroke-width="10" stroke-linecap="round" />
-                <path id="rh-gauge-arc" d="M 15 65 A 50 50 0 0 1 115 65" fill="none" stroke="#10b981" stroke-width="10" stroke-linecap="round" stroke-dasharray="157" stroke-dashoffset="78" style="transition: stroke-dashoffset 0.7s ease, stroke 0.4s ease;" />
-                <text id="ov-out-rh" x="65" y="58" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="18" font-weight="800">--%</text>
-                <text x="15" y="76" text-anchor="start" fill="#64748b" font-family="monospace" font-size="7.5">DRY</text>
-                <text x="65" y="76" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7.5">OPT</text>
-                <text x="115" y="76" text-anchor="end" fill="#64748b" font-family="monospace" font-size="7.5">SAT</text>
-              </svg>
+              <div class="semi-gauge-wrap">
+                <svg viewBox="0 0 165 95" class="semi-gauge-svg" xmlns="http://www.w3.org/2000/svg">
+                  <!-- Background Arc (Dry <30%, Optimal 30-60%, Humid >60%) -->
+                  <path d="M 18 80 A 64 64 0 0 1 147 80" fill="none" stroke="#1e293b" stroke-width="12" stroke-linecap="round" />
+                  <path id="rh-gauge-arc" d="M 18 80 A 64 64 0 0 1 147 80" fill="none" stroke="#10b981" stroke-width="12" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="100" style="transition: stroke-dashoffset 0.7s ease, stroke 0.4s ease;" />
+                  <text id="ov-out-rh" x="82.5" y="70" text-anchor="middle" fill="#ffffff" font-family="monospace" font-size="28" font-weight="800">--%</text>
+                  <text x="18" y="93" text-anchor="start" fill="#64748b" font-family="monospace" font-size="9" font-weight="700">DRY</text>
+                  <text x="82.5" y="93" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9" font-weight="700">OPT</text>
+                  <text x="147" y="93" text-anchor="end" fill="#64748b" font-family="monospace" font-size="9" font-weight="700">SAT</text>
+                </svg>
+              </div>
 
+              <!-- Large 1.05rem Readable Stat Blocks -->
               <div class="rh-details-col">
-                <div id="ov-out-dp" class="kpi-sub">Dew Pt: --.-&deg;F</div>
-                <div id="ov-feels-inline" class="kpi-sub">Feels: --.-&deg;F</div>
-                <div id="ov-dew-spread" class="kpi-sub">Spread: --.-&deg;F</div>
-                <div id="ov-delta-3h-temp" class="kpi-sub">3h &Delta;T: --</div>
+                <div class="rh-stat-item">
+                  <span class="rh-stat-lbl">DEW POINT</span>
+                  <div id="ov-out-dp" class="rh-stat-val">--.-&deg;F</div>
+                </div>
+                <div class="rh-stat-item">
+                  <span class="rh-stat-lbl">FEELS LIKE</span>
+                  <div id="ov-feels-inline" class="rh-stat-val">--.-&deg;F</div>
+                </div>
+                <div class="rh-stat-item">
+                  <span class="rh-stat-lbl">DEW SPREAD</span>
+                  <div id="ov-dew-spread" class="rh-stat-val">--.-&deg;F</div>
+                </div>
+                <div class="rh-stat-item">
+                  <span class="rh-stat-lbl">3H &Delta;T</span>
+                  <div id="ov-delta-3h-temp" class="rh-stat-val">--.-&deg;F</div>
+                </div>
               </div>
             </div>
 
             <!-- Solar / UV Arc Gauge -->
             <div class="solar-arc-box">
               <div class="solar-arc-header">
-                <span class="metric-label">SOLAR / UV INDEX ARC</span>
+                <span class="metric-label">SOLAR &amp; UV INDEX INTENSITY</span>
                 <span id="ov-uv-inline" class="mono metric-sub">UV 0.0 | -- lux</span>
               </div>
               <div class="uv-bar-track">

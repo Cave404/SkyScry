@@ -1,4 +1,4 @@
-"""Hardened authentication, PBKDF2/scrypt password hashing, dual Cookie + X-SkyScry-Token session security, and brute-force rate limiting for SkyScry (v0.0.11)."""
+"""Hardened authentication, PBKDF2/scrypt password hashing, dual Cookie + X-SkyScry-Token session security, and brute-force rate limiting for SkyScry (v0.0.12)."""
 
 from __future__ import annotations
 

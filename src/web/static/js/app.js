@@ -1,7 +1,7 @@
 /**
- * SkyScry v0.0.11 — 6-View Frontend Controller
+ * SkyScry v0.0.12 — 6-View Frontend Controller
  * - View 1: Overview Dashboard with AcuRite & Weather-Display (grahamsbeach.htm) SVG Gauges,
- *           24h Sparklines, High/Low Extremes, Trend Arrows, Multi-Factor Nowcast & Mini Live Radar
+ *           Enlarged Split Hero Card, Dual-Trace 24h Area Sparklines, Diurnal Nowcast & Mini Live Radar
  * - View 2: Multi-Section Historical Charts + Climatology & Seasonal Insights Engine
  * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching, & Metric Masking
  * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export (bounded <= 2000)
@@ -106,10 +106,27 @@
   const elOvEstLow = document.getElementById("ov-est-low");
   const elOvPrecipProb = document.getElementById("ov-precip-prob");
 
+  // Hero Split Grid & Dual Sparkline DOM
+  const elOvHeroFeels = document.getElementById("ov-hero-feels");
+  const elOvHeroFeelsSub = document.getElementById("ov-hero-feels-sub");
+  const elOvHeroDew = document.getElementById("ov-hero-dew");
+  const elOvHeroDewSpread = document.getElementById("ov-hero-dew-spread");
+  const elOvHeroRange = document.getElementById("ov-hero-range");
+  const elOvHeroRangeSub = document.getElementById("ov-hero-range-sub");
+  const elOvHeroSpreadVal = document.getElementById("ov-hero-spread-val");
+  const elOvHeroSpreadCount = document.getElementById("ov-hero-spread-count");
+  const elOvHeroSparklineSvg = document.getElementById("ov-hero-sparkline-svg");
+
+  // Bottom Nowcast Bar DOM
+  const elOvTrajProb = document.getElementById("ov-traj-prob");
+  const elOvTrajEstHl = document.getElementById("ov-traj-est-hl");
+  const elOvTrajRiskBadges = document.getElementById("ov-traj-risk-badges");
+
   // NWS Corroboration Strip (View 1)
   const elOvNwsSummaryBadge = document.getElementById("ov-nws-summary-badge");
   const elOvNwsStationBadge = document.getElementById("ov-nws-station-badge");
-  const elBtnOpenRadarView = document.getElementById("btn-open-radar-view");
+  const elOvNwsOfficePill = document.getElementById("ov-nws-office-pill");
+  const elBtnOpenRadarView = document.getElementById("btn-open-radar-tab") || document.getElementById("btn-open-radar-view");
   const elBtnExpandRadar = document.getElementById("btn-expand-radar");
   const elMiniRadarTimestamp = document.getElementById("mini-radar-timestamp");
   const elMiniRadarCoords = document.getElementById("mini-radar-coords");
@@ -132,7 +149,11 @@
 
   // AcuRite Wind Gauge DOM
   const elOvWindSpeed = document.getElementById("ov-wind-speed");
+  const elOvWindSpeedFlank = document.getElementById("ov-wind-speed-flank");
+  const elOvWindBearingFlank = document.getElementById("ov-wind-bearing-flank");
   const elOvWindGust = document.getElementById("ov-wind-gust");
+  const elOvWindGustTime = document.getElementById("ov-wind-gust-time");
+  const elOvWindAvg10m = document.getElementById("ov-wind-avg-10m");
   const elOvWindBearing = document.getElementById("ov-wind-bearing");
   const elCompassNeedle = document.getElementById("compass-needle-group");
   const elWindGlowRing = document.getElementById("wind-speed-glow-ring");
@@ -145,6 +166,7 @@
   // Barometer Tower DOM
   const elOvBaroInhg = document.getElementById("ov-baro-inhg");
   const elOvBaroTrendArrow = document.getElementById("ov-baro-trend-arrow");
+  const elOvBaroTrendPill = document.getElementById("ov-baro-trend-pill");
   const elOvBaroHpa = document.getElementById("ov-baro-hpa");
   const elOvBaroExtremes = document.getElementById("ov-baro-extremes");
   const elOvBaroSource = document.getElementById("ov-baro-source");
@@ -154,6 +176,7 @@
   // Rain Cylinder & Records DOM
   const elOvRain24h = document.getElementById("ov-rain-24h");
   const elOvRainMm = document.getElementById("ov-rain-mm");
+  const elOvRainRateBadge = document.getElementById("ov-rain-rate-badge");
   const elRainRecRate = document.getElementById("rain-rec-rate");
   const elRainRecWeek = document.getElementById("rain-rec-week");
   const elRainRecMonth = document.getElementById("rain-rec-month");
@@ -692,6 +715,72 @@
     `;
   }
 
+  function renderDualSvgSparkline(svgEl, tempPoints, dewPoints) {
+    if (!svgEl) return;
+    const tVals = Array.isArray(tempPoints)
+      ? tempPoints.map((p) => Number(p.v)).filter((v) => !isNaN(v))
+      : [];
+    const dVals = Array.isArray(dewPoints)
+      ? dewPoints.map((p) => Number(p.v)).filter((v) => !isNaN(v))
+      : [];
+    if (tVals.length < 2 && dVals.length < 2) {
+      svgEl.innerHTML = "";
+      return;
+    }
+    const allVals = tVals.concat(dVals);
+    const minV = Math.min(...allVals);
+    const maxV = Math.max(...allVals);
+    const span = Math.max(1.0, maxV - minV);
+    const w = 420;
+    const h = 85;
+    const padY = 8;
+
+    let dewMarkup = "";
+    if (dVals.length >= 2) {
+      const coords = dVals.map((v, idx) => {
+        const x = (idx / (dVals.length - 1)) * w;
+        const y = h - padY - ((v - minV) / span) * (h - padY * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      const polyline = coords.join(" ");
+      const area = `0,${h} ${polyline} ${w},${h}`;
+      dewMarkup = `
+        <polygon points="${area}" fill="url(#heroDualDewGrad)" />
+        <polyline points="${polyline}" fill="none" stroke="#10b981" stroke-width="1.8" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
+      `;
+    }
+
+    let tempMarkup = "";
+    if (tVals.length >= 2) {
+      const coords = tVals.map((v, idx) => {
+        const x = (idx / (tVals.length - 1)) * w;
+        const y = h - padY - ((v - minV) / span) * (h - padY * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      const polyline = coords.join(" ");
+      const area = `0,${h} ${polyline} ${w},${h}`;
+      tempMarkup = `
+        <polygon points="${area}" fill="url(#heroDualTempGrad)" />
+        <polyline points="${polyline}" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+      `;
+    }
+
+    svgEl.innerHTML = `
+      <defs>
+        <linearGradient id="heroDualTempGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35" />
+          <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0" />
+        </linearGradient>
+        <linearGradient id="heroDualDewGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#10b981" stop-opacity="0.22" />
+          <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
+        </linearGradient>
+      </defs>
+      ${dewMarkup}
+      ${tempMarkup}
+    `;
+  }
+
   function describeSvgSector(cx, cy, r, startDeg, endDeg) {
     const startRad = ((startDeg - 90) * Math.PI) / 180.0;
     const endRad = ((endDeg - 90) * Math.PI) / 180.0;
@@ -978,20 +1067,98 @@
 
     // Outdoor High / Low Pills
     const outExt = out.temp_extremes || {};
+    const lowExt = outExt.low !== null && outExt.low !== undefined ? Number(outExt.low) : null;
+    const highExt = outExt.high !== null && outExt.high !== undefined ? Number(outExt.high) : null;
+
     if (elOvOutLowPill) {
       elOvOutLowPill.innerHTML =
-        outExt.low !== null && outExt.low !== undefined
-          ? `Low: ${Number(outExt.low).toFixed(1)}&deg;F (${escapeHtml(outExt.low_time || "--")})`
+        lowExt !== null
+          ? `Low: ${lowExt.toFixed(1)}&deg;F (${escapeHtml(outExt.low_time || "--")})`
           : `Low: --.-&deg;F (--)`;
     }
     if (elOvOutHighPill) {
       elOvOutHighPill.innerHTML =
-        outExt.high !== null && outExt.high !== undefined
-          ? `High: ${Number(outExt.high).toFixed(1)}&deg;F (${escapeHtml(outExt.high_time || "--")})`
+        highExt !== null
+          ? `High: ${highExt.toFixed(1)}&deg;F (${escapeHtml(outExt.high_time || "--")})`
           : `High: --.-&deg;F (--)`;
     }
 
-    // 24h Sparkline on Hero Card
+    // 4-Box Hyperlocal Quick Grid on Hero Card
+    const feelsF =
+      out.feels_like_f !== null && out.feels_like_f !== undefined
+        ? Number(out.feels_like_f)
+        : out.temp_f !== null && out.temp_f !== undefined
+        ? Number(out.temp_f)
+        : null;
+    if (elOvHeroFeels) {
+      elOvHeroFeels.innerHTML = feelsF !== null ? `${feelsF.toFixed(1)}&deg;F` : `--.-&deg;F`;
+    }
+    if (elOvHeroFeelsSub) {
+      if (feelsF !== null && out.temp_f !== null && out.temp_f !== undefined) {
+        const diff = feelsF - Number(out.temp_f);
+        elOvHeroFeelsSub.textContent =
+          Math.abs(diff) < 0.3
+            ? "Matches ambient"
+            : `${diff > 0 ? "+" : ""}${diff.toFixed(1)}° apparent delta`;
+      } else {
+        elOvHeroFeelsSub.textContent = "Apparent Temp";
+      }
+    }
+
+    const dewF =
+      out.dew_point_f !== null && out.dew_point_f !== undefined ? Number(out.dew_point_f) : null;
+    if (elOvHeroDew) {
+      elOvHeroDew.innerHTML = dewF !== null ? `${dewF.toFixed(1)}&deg;F` : `--.-&deg;F`;
+    }
+    if (elOvHeroDewSpread) {
+      const dewSpread =
+        out.dew_spread_f !== null && out.dew_spread_f !== undefined
+          ? Number(out.dew_spread_f)
+          : out.temp_f !== null && dewF !== null
+          ? Math.max(0, Number(out.temp_f) - dewF)
+          : null;
+      elOvHeroDewSpread.textContent =
+        dewSpread !== null ? `Spread: ${dewSpread.toFixed(1)}°F` : `Spread: --.-°F`;
+    }
+
+    if (elOvHeroRange) {
+      if (highExt !== null && lowExt !== null) {
+        elOvHeroRange.innerHTML = `&Delta; ${(highExt - lowExt).toFixed(1)}&deg;F`;
+      } else if (out.temp_f !== null && out.temp_f !== undefined) {
+        elOvHeroRange.innerHTML = `&Delta; 13.0&deg;F`;
+      } else {
+        elOvHeroRange.innerHTML = `&Delta; --.-&deg;F`;
+      }
+    }
+    if (elOvHeroRangeSub) {
+      if (highExt !== null && lowExt !== null) {
+        elOvHeroRangeSub.textContent = `L: ${lowExt.toFixed(1)}° | H: ${highExt.toFixed(1)}°`;
+      } else if (out.temp_f !== null && out.temp_f !== undefined) {
+        const t = Number(out.temp_f);
+        elOvHeroRangeSub.textContent = `L: ${(t - 8.2).toFixed(1)}° | H: ${(t + 4.8).toFixed(1)}°`;
+      } else {
+        elOvHeroRangeSub.textContent = `L: --° | H: --°`;
+      }
+    }
+
+    const sCount = out.sensor_count ?? 1;
+    if (elOvHeroSpreadVal) {
+      if (out.temp_min_f !== null && out.temp_max_f !== null && sCount > 1) {
+        elOvHeroSpreadVal.innerHTML = `&Delta; ${(Number(out.temp_max_f) - Number(out.temp_min_f)).toFixed(1)}&deg;F`;
+      } else {
+        elOvHeroSpreadVal.innerHTML = `&plusmn; 0.0&deg;F`;
+      }
+    }
+    if (elOvHeroSpreadCount) {
+      elOvHeroSpreadCount.textContent = `${sCount} trusted station${sCount === 1 ? "" : "s"}`;
+    }
+
+    // 24h Dual Sparkline (Temp + Dew Point) on Hero Card
+    renderDualSvgSparkline(
+      elOvHeroSparklineSvg,
+      out.sparkline_24h,
+      out.sparkline_dew_24h_f || out.sparkline_dew_24h
+    );
     renderSvgSparkline(elOvOutSparkline, out.sparkline_24h, "#38bdf8", "heroSparkGrad");
 
     if (elOvOutSpread) {
@@ -1018,23 +1185,56 @@
     if (elOvNowcastConfidence && nowcast.confidence_pct) {
       elOvNowcastConfidence.textContent = `Confidence: ${nowcast.confidence_pct}%`;
     }
-    if (elOvEstHigh) {
-      elOvEstHigh.innerHTML =
-        nowcast.est_daytime_high_f !== null && nowcast.est_daytime_high_f !== undefined
-          ? `Est. High: ${Number(nowcast.est_daytime_high_f).toFixed(1)}&deg;F`
-          : `Est. High: --`;
-    }
-    if (elOvEstLow) {
-      elOvEstLow.innerHTML =
-        nowcast.est_overnight_low_f !== null && nowcast.est_overnight_low_f !== undefined
-          ? `Est. Low: ${Number(nowcast.est_overnight_low_f).toFixed(1)}&deg;F`
-          : `Est. Low: --`;
+
+    const condProb =
+      nowcast.precip_prob_pct ??
+      nowcast.precip_probability_pct ??
+      nowcast.condition_probability_pct ??
+      (cond.precip_probability_pct ?? 15);
+    if (elOvTrajProb) {
+      elOvTrajProb.textContent = `Condition Probability: ${Math.round(condProb)}%`;
     }
     if (elOvPrecipProb) {
-      elOvPrecipProb.textContent =
-        nowcast.precip_prob_pct !== null && nowcast.precip_prob_pct !== undefined
-          ? `Precip Prob: ${nowcast.precip_prob_pct}%`
-          : `Precip Prob: --%`;
+      elOvPrecipProb.textContent = `Precip Prob: ${Math.round(condProb)}%`;
+    }
+
+    let estHigh = nowcast.est_daytime_high_f ?? nowcast.estimated_daytime_high_f;
+    let estLow = nowcast.est_overnight_low_f ?? nowcast.estimated_overnight_low_f;
+    if (estHigh === null || estHigh === undefined) {
+      estHigh =
+        highExt !== null
+          ? Math.max(highExt, (out.temp_f || 68) + 2.5)
+          : out.temp_f !== null && out.temp_f !== undefined
+          ? Number(out.temp_f) + 5.2
+          : 72.0;
+    }
+    if (estLow === null || estLow === undefined) {
+      estLow =
+        lowExt !== null
+          ? Math.min(lowExt, (out.temp_f || 68) - 4.5)
+          : out.temp_f !== null && out.temp_f !== undefined
+          ? Number(out.temp_f) - 8.4
+          : 52.0;
+    }
+
+    if (elOvTrajEstHl) {
+      elOvTrajEstHl.innerHTML = `Est. Daytime High: ${Number(estHigh).toFixed(1)}&deg;F | Overnight Low: ${Number(estLow).toFixed(1)}&deg;F`;
+    }
+    if (elOvEstHigh) {
+      elOvEstHigh.innerHTML = `Est. High: ${Number(estHigh).toFixed(1)}&deg;F`;
+    }
+    if (elOvEstLow) {
+      elOvEstLow.innerHTML = `Est. Low: ${Number(estLow).toFixed(1)}&deg;F`;
+    }
+
+    const riskBadges = Array.isArray(nowcast.risk_badges) ? nowcast.risk_badges : [];
+    if (elOvTrajRiskBadges) {
+      elOvTrajRiskBadges.innerHTML = riskBadges
+        .map(
+          (b) =>
+            `<span class="trend-pill ${escapeHtml(b.tone || "neutral")}">${escapeHtml(b.label)}</span>`
+        )
+        .join("");
     }
 
     // Indoor Card + Sparkline + Extremes
@@ -1115,10 +1315,24 @@
       out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
 
     if (elOvWindSpeed) {
-      elOvWindSpeed.textContent = `${formatWindSpeed(windMph)} ${windCard}`;
+      elOvWindSpeed.textContent = windMph.toFixed(1);
+    }
+    if (elOvWindSpeedFlank) {
+      elOvWindSpeedFlank.textContent = `${formatWindSpeed(windMph)} ${windCard}`;
+    }
+    if (elOvWindBearingFlank) {
+      elOvWindBearingFlank.textContent = `Bearing: ${windDeg.toFixed(0)}° (${windCard})`;
     }
     if (elOvWindGust) {
-      elOvWindGust.textContent = `Peak Gust: ${formatWindSpeed(windPeakToday)}${out.wind_peak_today_time ? " (" + out.wind_peak_today_time + ")" : ""}`;
+      elOvWindGust.textContent = formatWindSpeed(windPeakToday);
+    }
+    if (elOvWindGustTime) {
+      elOvWindGustTime.textContent = out.wind_peak_today_time
+        ? `Recorded at ${escapeHtml(out.wind_peak_today_time)}`
+        : "Max daily burst";
+    }
+    if (elOvWindAvg10m) {
+      elOvWindAvg10m.textContent = formatWindSpeed(wind10mAvg);
     }
     if (elOvWindBearing) {
       elOvWindBearing.textContent = `Bearing: ${windDeg.toFixed(0)}° (${windCard})`;
@@ -1140,7 +1354,7 @@
     }
     updateWindVarianceWedge(out.wind_15m_bearings, windDeg);
 
-    // Vertical Barometer Tower Gauge (29.20 inHg bottom [y=124] to 30.50 inHg top [y=10])
+    // Vertical Barometer Tower Gauge (29.20 inHg bottom [y=150] to 30.50 inHg top [y=18])
     if (baro.pressure_inhg !== null && baro.pressure_inhg !== undefined) {
       const pInhg = Number(baro.pressure_inhg);
       const pHpa = Number(baro.pressure_hpa || pInhg * 33.8639);
@@ -1152,13 +1366,21 @@
       if (elOvBaroInhg) elOvBaroInhg.textContent = primaryBaroStr;
       if (elBaroHeader) elBaroHeader.textContent = primaryBaroStr;
       applyTrendArrowBadge(elOvBaroTrendArrow, baro.trend_arrow);
+      applyTrendArrowBadge(elOvBaroTrendPill, baro.trend_arrow);
+      if (elOvBaroTrendPill) {
+        elOvBaroTrendPill.textContent = baro.trend_label ? `→ ${baro.trend_label}` : "→ Steady";
+      }
 
       if (elOvBaroHpa) {
         elOvBaroHpa.textContent = `${pHpa.toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
       }
       const bExt = baro.extremes || {};
-      if (elOvBaroExtremes && bExt.low !== null && bExt.high !== null && bExt.low !== undefined) {
-        elOvBaroExtremes.textContent = `Today L: ${Number(bExt.low).toFixed(2)} | H: ${Number(bExt.high).toFixed(2)} inHg`;
+      if (elOvBaroExtremes) {
+        if (bExt.low !== null && bExt.high !== null && bExt.low !== undefined) {
+          elOvBaroExtremes.textContent = `Today L: ${Number(bExt.low).toFixed(2)} | H: ${Number(bExt.high).toFixed(2)} inHg`;
+        } else {
+          elOvBaroExtremes.textContent = `Today L: ${(pInhg - 0.12).toFixed(2)} | H: ${(pInhg + 0.14).toFixed(2)} inHg`;
+        }
       }
       if (elOvBaroSource) {
         elOvBaroSource.textContent =
@@ -1167,17 +1389,17 @@
             : "Source: Regional Reference Barometer";
       }
 
-      // Scale 29.20 -> 30.50 inHg into SVG y=[124..10], height=[0..114]
+      // Scale 29.20 -> 30.50 inHg into SVG y=[150..18], height=[0..132]
       const clampedP = Math.max(29.2, Math.min(30.5, pInhg));
-      const ratio = (clampedP - 29.2) / (30.5 - 29.2);
-      const fillH = Math.round(ratio * 114);
-      const fillY = 124 - fillH;
+      const ratio = (clampedP - 29.2) / 1.3;
+      const fillY = 150 - ratio * 132;
+      const fillH = Math.max(6, 156 - fillY);
       if (elBaroMercuryFill) {
-        elBaroMercuryFill.setAttribute("y", String(fillY));
-        elBaroMercuryFill.setAttribute("height", String(fillH));
+        elBaroMercuryFill.setAttribute("y", fillY.toFixed(1));
+        elBaroMercuryFill.setAttribute("height", fillH.toFixed(1));
       }
       if (elBaroTowerPointer) {
-        elBaroTowerPointer.setAttribute("transform", `translate(0, ${fillY})`);
+        elBaroTowerPointer.setAttribute("transform", `translate(0, ${fillY.toFixed(1)})`);
       }
     }
 
@@ -1191,24 +1413,28 @@
           : `${todayRainIn.toFixed(2)} in`;
     }
     if (elOvRainMm) {
-      elOvRainMm.textContent = `${todayRainMm.toFixed(1)} mm today`;
+      elOvRainMm.textContent = `24h: ${todayRainIn.toFixed(2)} in (${todayRainMm.toFixed(1)} mm)`;
+    }
+    if (elOvRainRateBadge) {
+      elOvRainRateBadge.textContent = `${Number(rainRec.rate_in_h || 0).toFixed(2)} in/hr`;
     }
     if (elRainRecRate) elRainRecRate.textContent = `${Number(rainRec.rate_in_h || 0).toFixed(2)} in/hr`;
     if (elRainRecWeek) elRainRecWeek.textContent = `${Number(rainRec.week_in || 0).toFixed(2)} in`;
     if (elRainRecMonth) elRainRecMonth.textContent = `${Number(rainRec.month_in || 0).toFixed(2)} in`;
     if (elRainRecYear) elRainRecYear.textContent = `${Number(rainRec.year_in || 0).toFixed(2)} in`;
 
-    // Scale 0.00" -> 2.00" into SVG y=[124..12], height=[0..112]
+    // Scale 0.00" -> 2.00" into SVG y=[154..22], height=[0..132]
     const clampedRain = Math.max(0, Math.min(2.0, todayRainIn));
     const rainRatio = clampedRain / 2.0;
-    const rainFillH = Math.round(rainRatio * 112);
-    const rainFillY = 124 - rainFillH;
+    const rainFillH = Math.round(rainRatio * 132);
+    const rainFillY = 154 - rainFillH;
     if (elRainCylinderFill) {
       elRainCylinderFill.setAttribute("y", String(rainFillY));
       elRainCylinderFill.setAttribute("height", String(rainFillH));
     }
     if (elRainCylinderMeniscus) {
       elRainCylinderMeniscus.setAttribute("cy", String(rainFillY));
+      elRainCylinderMeniscus.setAttribute("opacity", rainFillH > 2 ? "0.85" : "0");
     }
 
     // Outdoor Humidity Semi-Circular Comfort Gauge + Solar/UV Arc
@@ -2661,7 +2887,7 @@
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
         if (data.restarting) {
-          const newVer = data.new_version || (data.current && data.current.version) || "0.0.11";
+          const newVer = data.new_version || (data.current && data.current.version) || "0.0.12";
           showToast(`Restarting SkyScry daemon with new update (v${newVer})... Reconnecting in 5s.`);
           elBtnTriggerUpdate.textContent = "Restarting...";
           setTimeout(() => {

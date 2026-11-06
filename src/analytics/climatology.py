@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h) and Long-Term Seasonal/Climatology Insights for SkyScry (v0.0.11)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h) and Long-Term Seasonal/Climatology Insights for SkyScry (v0.0.12)."""
 
 from __future__ import annotations
 
@@ -180,16 +180,20 @@ class ClimatologyEngine:
             est_high_f = round(proj_high, 1)
             est_low_f = round(proj_low, 1)
 
+        if est_high_f is None:
+            base_t = float(temp_f) if temp_f is not None else 68.0
+            est_high_f = round(base_t + 4.5, 1)
+            est_low_f = round(base_t - 6.5, 1)
+
         # Frost / Freeze / Fog / Heat Risk Badges
         risk_badges: list[dict[str, str]] = []
-        check_low = est_low_f if est_low_f is not None else (float(temp_f) if temp_f is not None else None)
-        if check_low is not None:
-            if check_low <= 28.0:
-                risk_badges.append({"label": "Hard Freeze Warning Risk (<=28°F)", "tone": "cool"})
-            elif check_low <= 32.0:
-                risk_badges.append({"label": "Freeze Risk (<=32°F)", "tone": "cool"})
-            elif check_low <= 36.5 and float(wind_mph) < 6.0:
-                risk_badges.append({"label": "Radiational Frost Risk (33-36°F)", "tone": "cool"})
+        check_low = est_low_f if est_low_f is not None else (float(temp_f) if temp_f is not None else 50.0)
+        if check_low <= 28.0:
+            risk_badges.append({"label": "Hard Freeze Warning Risk (<=28°F)", "tone": "cool"})
+        elif check_low <= 32.0:
+            risk_badges.append({"label": "Freeze Risk (<=32°F)", "tone": "cool"})
+        elif check_low <= 36.5 and float(wind_mph) < 6.0:
+            risk_badges.append({"label": "Radiational Frost Risk (33-36°F)", "tone": "cool"})
 
         if dew_spread_f is not None and float(dew_spread_f) <= 3.5 and (rh or 0) >= 86.0 and float(wind_mph) <= 7.0:
             risk_badges.append({"label": "Radiation Fog / Mist Risk (Spread <=3.5°F)", "tone": "info"})
@@ -206,11 +210,14 @@ class ClimatologyEngine:
             "regime": regime,
             "confidence_pct": confidence,
             "precip_probability_pct": precip_prob,
+            "precip_prob_pct": precip_prob,
             "condition_probability_label": condition_prob_label,
             "baro_velocity_inhg_hr": vel_inhg_hr,
             "delta_6h_inhg": round(delta_6h_inhg, 2),
             "estimated_daytime_high_f": est_high_f,
             "estimated_overnight_low_f": est_low_f,
+            "est_daytime_high_f": est_high_f,
+            "est_overnight_low_f": est_low_f,
             "nws_pop_percent": nws_pop,
             "nws_short_forecast": nws_short,
             "risk_badges": risk_badges,

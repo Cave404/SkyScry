@@ -1,4 +1,4 @@
-"""Analytics and Climatology engine for SkyScry (v0.0.11)."""
+"""Analytics and Climatology engine for SkyScry (v0.0.12)."""
 
 from __future__ import annotations
 

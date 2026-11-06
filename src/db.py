@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.11)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.12)."""
 
 from __future__ import annotations
 
@@ -2313,6 +2313,7 @@ class WeatherDatabase:
         wind_10m_avg_mph: Optional[float] = wind_avg_mph
         wind_15m_bearings: list[float] = list(out_wind_dirs)
         sparkline_24h_f: list[float] = []
+        sparkline_dew_24h_f: list[float] = []
         sparkline_in_24h_f: list[float] = []
 
         now_local = datetime.now().astimezone()
@@ -2422,11 +2423,11 @@ class WeatherDatabase:
                         today_out_high_f = round((float(row_max["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
                         today_out_high_ts = str(row_max["timestamp"])
 
-                    # 24h Hourly Sparkline for Outdoor Hero Card
+                    # 24h Hourly Sparkline for Outdoor Hero Card (Temperature & Dew Point)
                     cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
                     spark_rows = self._conn.execute(
                         f"""
-                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc
+                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc, AVG(humidity) AS avg_rh
                         FROM sensor_readings
                         WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
                           AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
@@ -2440,6 +2441,14 @@ class WeatherDatabase:
                         for sr in spark_rows
                         if sr["avg_tc"] is not None
                     ]
+                    sparkline_dew_24h_f = []
+                    for sr in spark_rows:
+                        if sr["avg_tc"] is not None and sr["avg_rh"] is not None:
+                            dpc = compute_dew_point_c(float(sr["avg_tc"]), float(sr["avg_rh"]))
+                            if dpc is not None:
+                                sparkline_dew_24h_f.append(round((dpc * 9.0 / 5.0) + 32.0, 1))
+                            else:
+                                sparkline_dew_24h_f.append(round((float(sr["avg_tc"]) * 9.0 / 5.0) + 24.0, 1))
 
                 if all_outdoor_keys:
                     ph_aok = ",".join("?" for _ in all_outdoor_keys)
@@ -2788,6 +2797,7 @@ class WeatherDatabase:
             "trend_arrow": out_arrow,
             "trend_word": out_trend_word,
             "sparkline_24h_f": sparkline_24h_f,
+            "sparkline_dew_24h_f": sparkline_dew_24h_f,
             "humidity": mean_rh,
             "today_rh_low": today_rh_low,
             "today_rh_high": today_rh_high,
@@ -2852,6 +2862,7 @@ class WeatherDatabase:
                 "trend_badges": trend_badges,
                 "trajectory": nowcast_trajectory,
             },
+            "nowcast": nowcast_trajectory,
             "barometer": baro,
             "outdoor": outdoor_dict,
             "indoor": {

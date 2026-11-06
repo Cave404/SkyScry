@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main CLI and daemon entrypoint for SkyScry (v0.0.11).
+"""Main CLI and daemon entrypoint for SkyScry (v0.0.12).
 
 Executes the standard-library pre-flight bootstrapper (`src.updater.run_startup_bootstrap`)
 before importing third-party libraries so fresh installs and self-updates never crash.
