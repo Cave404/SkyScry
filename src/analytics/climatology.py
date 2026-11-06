@@ -356,7 +356,7 @@ class ClimatologyEngine:
             "cdd_30d": monthly_stats.get("cdd_total", 0.0),
             "diurnal_swing_7d": weekly_stats.get("avg_diurnal_swing_f"),
             "baro_volatility": weekly_stats.get("baro_volatility_inhg") or 0.12,
-            "status_label": "Active Telemetry Learning Engine: Synthesizing Local 433 MHz RF Bursts with 30-Day Baseline",
+            "status_label": "Active Telemetry Learning Engine — Synthesizing 433 MHz RF + 30d Baseline",
         }
 
         seasonal_trajectory = {

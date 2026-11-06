@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.14-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.15-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,11 +10,19 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.14`)
+## Key Features (`v0.0.15`)
 
-- **Ultra-Compact Sticky Glassmorphic Top Bar & Slide-Out Hamburger Drawer (`v0.0.14`):**
-  - **56px Sticky Top Bar:** Glassmorphic bar (`backdrop-filter: blur(12px)`) pinned during scrolling with station brand, live active view badge, compact live SDR status (`● 6/7`), live barometer (`30.02"`), Admin lock icon button (`🔒`/`🔓`), and 1-tap `↻ Sync` button.
-  - **Slide-Out Hamburger Drawer (300px):** Smooth slide-over drawer neatly dividing the interface into **Section A (6 Navigation Views)**, **Section B (System Maintenance Actions)**, and **Section C (System Telemetry & Daemon Status)**.
+- **Ultra-Clean Sticky Header & Interactive Status Popover (`v0.0.15`):**
+  - **Zero Mobile Overcrowding:** Streamlined the sticky 56px top bar down to strictly 2 sides and 4 elements (Hamburger `☰`, Active View Title, `[● Status ▾]` popover button, and `↻ Sync`).
+  - **Interactive Status Popover Card:** Tap `[● Status ▾]` to reveal a floating dark-slate system summary card displaying live SDR stream status, active sensor ratio, barometric pressure, inline Admin Lock/Unlock controls, packets logged, WAL database size, system uptime, and build/version info.
+  - **Slide-Out Drawer Branding:** Moved station mark (`SS`) and version tag directly inside the slide-out Hamburger Drawer header.
+- **Climatology Layout Overhaul & Mobile Table Scrolling (`v0.0.15`):**
+  - **Single-Line Learning Engine Banner:** Eliminated redundant duplicate headers in the active telemetry learning banner with a unified title row and metric summary row.
+  - **Flexible Anomaly Pill:** Moved the 7-day vs 30-day anomaly pill onto its own responsive flex row.
+  - **Horizontally Scrollable Records Table:** Wrapped historical extremes (Today, 7d, Month, Year, All-Time) in a touch-friendly overflow container with non-wrapping cells.
+- **Cleaned NWS Baseline Strip & 24h Trajectory Header (`v0.0.15`):**
+  - Streamlined NWS corroboration strip (`NWS Official (KFYG): 53.6°F | Δ -0.1°F • Partly Cloudy`), auto-hiding empty WFO badges and aligning the radar link cleanly.
+  - Formatted the 24-hour Hero Sparkline header so High/Low range pills never awkwardly line-wrap on mobile viewports.
 - **Crisp Clutter-Free Mobile Charts & Non-Negative Rainfall Axis (`v0.0.14`):**
   - **Zero Point Clutter:** Eliminated caterpillar overlapping dots (`pointRadius: 0` on mobile, `1` on desktop) with responsive hover snaps (`pointHoverRadius: 5`, `pointHitRadius: 16`), silky cubic curves, and dedicated `260px` mobile wrapper height.
   - **Flat X-Axis Timestamps & Non-Negative Rain:** Clamped X-axis ticks to 6 on mobile with `maxRotation: 0` (no diagonal overlap), and strictly enforced non-negative rainfall (`min: 0`, `suggestedMax: 0.25 in`).
@@ -102,7 +110,7 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.14")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.15")
 │   ├── security.py                 # Encrypted password hashing, brute-force limiter, & session auto-lock
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
@@ -177,7 +185,7 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.14`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.15`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
 | `GET/POST` | `/api/auth/*` | First-run admin password setup (`/api/auth/setup`), session unlock (`/api/auth/unlock`), manual lock (`/api/auth/lock`), and password rotation (`/api/auth/change-password`). |
 | `GET/POST` | `/api/settings` | Reads or updates persistent instance settings in SQLite (`system_settings` table). |
 | `GET` | `/api/nws` | Returns official US National Weather Service (`api.weather.gov`) observations, active alerts, 7-day gridpoint forecast, and hyperlocal corroboration deltas. |

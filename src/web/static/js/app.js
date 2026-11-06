@@ -1,6 +1,7 @@
 /**
- * SkyScry v0.0.14 — 6-View Frontend Controller
- * - Sticky Glassmorphic Top Bar (56px) & Slide-Out Hamburger Navigation Drawer (300px)
+ * SkyScry v0.0.15 — 6-View Frontend Controller
+ * - Ultra-Clean Sticky Header & Floating System Status Popover Card
+ * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
  *           Enlarged Split Hero Card, Clean Dual-Trace 24h Area Sparklines & Diurnal Nowcast
  * - View 2: Multi-Section Historical Charts with Clutter-Free Lines, Bounded Y-Axes & Climatology Engine
@@ -79,6 +80,22 @@
   const elDrawerAuthIcon = document.getElementById("drawer-auth-icon");
   const elSparklineRangePill = document.getElementById("sparkline-range-pill");
   const elOvWindBearingVal = document.getElementById("ov-wind-bearing-val");
+
+  // System Status Popover DOM
+  const elStatusPopoverBtn = document.getElementById("status-popover-btn");
+  const elStatusPopover = document.getElementById("status-popover");
+  const elBtnPopoverClose = document.getElementById("btn-popover-close");
+  const elBtnPopoverAuth = document.getElementById("btn-popover-auth");
+  const elPopoverAuthStatus = document.getElementById("popover-auth-status");
+  const elTopbarAuthIndicator = document.getElementById("topbar-auth-indicator");
+  const elPopoverSdrStatus = document.getElementById("popover-sdr-status");
+  const elPopoverReadingCount = document.getElementById("popover-reading-count");
+  const elPopoverDbSize = document.getElementById("popover-db-size");
+  const elPopoverUptime = document.getElementById("popover-uptime");
+  const elPopoverLastSync = document.getElementById("popover-last-sync");
+  const elPopoverAppVersion = document.getElementById("popover-app-version");
+  const elPopoverGitCommit = document.getElementById("popover-git-commit");
+  const elPopoverRtl433Ver = document.getElementById("popover-rtl433-ver");
 
   // Header & Banners DOM
   const elGitCommit = document.getElementById("stat-git-commit");
@@ -486,6 +503,18 @@
   // SECURITY, FIRST-RUN PASSWORD SETUP & SESSION LOCK/UNLOCK FLOW
   // ==========================================================================
   function updateAuthHeaderUi() {
+    if (elTopbarAuthIndicator) {
+      elTopbarAuthIndicator.textContent = authState.unlocked ? "🔓" : "🔒";
+    }
+    if (elPopoverAuthStatus) {
+      elPopoverAuthStatus.textContent = authState.unlocked ? "Unlocked (Admin)" : "Locked (Read-Only)";
+    }
+    if (elBtnPopoverAuth) {
+      elBtnPopoverAuth.textContent = authState.unlocked ? "Lock Now" : "Unlock Admin";
+      elBtnPopoverAuth.className = authState.unlocked
+        ? "btn btn-xs btn-outline-warning"
+        : "btn btn-xs btn-outline-primary";
+    }
     if (elBtnAuthPill) {
       if (authState.unlocked) {
         elBtnAuthPill.innerHTML = '<span class="lock-icon">🔓</span> <span class="lock-label">UNLOCKED</span>';
@@ -1067,6 +1096,33 @@
       elUptime.textContent = formatDuration(data.uptime_seconds);
     }
 
+    // Populate Status Popover fields
+    if (elPopoverSdrStatus) {
+      elPopoverSdrStatus.textContent = sdrState.toUpperCase();
+      elPopoverSdrStatus.className = `status-badge ${sdrState === "running" ? "running" : "idle"}`;
+    }
+    if (elPopoverReadingCount) {
+      elPopoverReadingCount.textContent = Number(data.total_readings || 0).toLocaleString();
+    }
+    if (elPopoverDbSize) {
+      elPopoverDbSize.textContent = `${Number(data.database_size_mb || 0).toFixed(2)} MB`;
+    }
+    if (elPopoverUptime) {
+      elPopoverUptime.textContent = formatDuration(data.uptime_seconds);
+    }
+    if (elPopoverLastSync) {
+      elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
+    }
+    if (elPopoverAppVersion) {
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.15"}`;
+    }
+    if (elPopoverGitCommit) {
+      elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
+    }
+    if (elPopoverRtl433Ver) {
+      elPopoverRtl433Ver.textContent = data.rtl433_version ? `rtl_433:${data.rtl433_version}` : "rtl_433";
+    }
+
     if (data.auth) {
       authState = data.auth;
       updateAuthHeaderUi();
@@ -1614,17 +1670,23 @@
     }
 
     if (elOvNwsSummaryBadge) {
-      const localT =
-        deltas.local_temp_f !== undefined && deltas.local_temp_f !== null
-          ? `${Number(deltas.local_temp_f).toFixed(1)}°F`
-          : "--";
       const nwsT =
         obs.temp_f !== undefined && obs.temp_f !== null ? `${Number(obs.temp_f).toFixed(1)}°F` : "--";
       const dTemp =
         deltas.temp_delta_f !== undefined && deltas.temp_delta_f !== null
           ? `${deltas.temp_delta_f >= 0 ? "+" : ""}${Number(deltas.temp_delta_f).toFixed(1)}°F`
           : "--";
-      elOvNwsSummaryBadge.textContent = `NWS (${st.station_id || "Station"}): ${nwsT} | Δ ${dTemp} (${obs.text_description || obs.condition || "Synced"})`;
+      const condDesc = obs.text_description || obs.condition || "Synced";
+      elOvNwsSummaryBadge.textContent = `NWS Official (${st.station_id || "KFYG"}): ${nwsT} | Δ ${dTemp} • ${condDesc}`;
+    }
+
+    if (elOvNwsOfficePill) {
+      if (st.wfo && st.wfo !== "--") {
+        elOvNwsOfficePill.textContent = `WFO: ${st.wfo}`;
+        elOvNwsOfficePill.classList.remove("hidden");
+      } else {
+        elOvNwsOfficePill.classList.add("hidden");
+      }
     }
 
     // View 5 Corroboration Table
@@ -3118,7 +3180,7 @@
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
         if (data.restarting) {
-          const newVer = data.new_version || (data.current && data.current.version) || "0.0.14";
+          const newVer = data.new_version || (data.current && data.current.version) || "0.0.15";
           showToast(`Restarting SkyScry daemon with new update (v${newVer})... Reconnecting in 5s.`);
           elBtnTriggerUpdate.textContent = "Restarting...";
           setTimeout(() => {
@@ -3192,6 +3254,7 @@
   };
 
   function openNavDrawer() {
+    closeStatusPopover();
     if (elNavDrawer) elNavDrawer.classList.add("open");
     if (elNavDrawerBackdrop) elNavDrawerBackdrop.classList.add("open");
     if (elBtnNavDrawerToggle) elBtnNavDrawerToggle.setAttribute("aria-expanded", "true");
@@ -3213,7 +3276,27 @@
     }
   }
 
+  function openStatusPopover() {
+    closeNavDrawer();
+    if (elStatusPopover) elStatusPopover.classList.remove("hidden");
+    if (elStatusPopoverBtn) elStatusPopoverBtn.setAttribute("aria-expanded", "true");
+  }
+
+  function closeStatusPopover() {
+    if (elStatusPopover) elStatusPopover.classList.add("hidden");
+    if (elStatusPopoverBtn) elStatusPopoverBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleStatusPopover() {
+    if (elStatusPopover && !elStatusPopover.classList.contains("hidden")) {
+      closeStatusPopover();
+    } else {
+      openStatusPopover();
+    }
+  }
+
   function switchTab(tabName) {
+    closeStatusPopover();
     if (tabName === "settings" && !authState.unlocked) {
       requireUnlockedOrPrompt(() => switchTab("settings"));
       return;
@@ -3300,9 +3383,48 @@
     if (elNavDrawerBackdrop) {
       elNavDrawerBackdrop.addEventListener("click", closeNavDrawer);
     }
+
+    // Status Popover Trigger & Controls
+    if (elStatusPopoverBtn) {
+      elStatusPopoverBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        toggleStatusPopover();
+      });
+    }
+    if (elBtnPopoverClose) {
+      elBtnPopoverClose.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        closeStatusPopover();
+      });
+    }
+    if (elBtnPopoverAuth) {
+      elBtnPopoverAuth.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        if (authState.unlocked) {
+          handleLockNowClick();
+        } else {
+          closeStatusPopover();
+          requireUnlockedOrPrompt(() => {});
+        }
+      });
+    }
+    document.addEventListener("click", (evt) => {
+      if (
+        elStatusPopover &&
+        !elStatusPopover.classList.contains("hidden") &&
+        !elStatusPopover.contains(evt.target) &&
+        elStatusPopoverBtn &&
+        !elStatusPopoverBtn.contains(evt.target)
+      ) {
+        closeStatusPopover();
+      }
+    });
     document.addEventListener("keydown", (evt) => {
-      if (evt.key === "Escape" && elNavDrawer && elNavDrawer.classList.contains("open")) {
-        closeNavDrawer();
+      if (evt.key === "Escape") {
+        closeStatusPopover();
+        if (elNavDrawer && elNavDrawer.classList.contains("open")) {
+          closeNavDrawer();
+        }
       }
     });
 

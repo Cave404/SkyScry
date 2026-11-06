@@ -15,42 +15,94 @@
       <button id="btn-nav-drawer-toggle" class="hamburger-btn" type="button" aria-label="Open Navigation Drawer" title="Navigation &amp; System Menu">
         <span class="hamburger-icon">&#9776;</span>
       </button>
-      <div class="brand">
-        <div class="brand-mark">SS</div>
-        <span id="header-station-title" class="brand-title">SkyScry</span>
-      </div>
-      <span id="top-bar-active-view" class="topbar-view-pill">Overview</span>
+      <span id="top-bar-active-view" class="topbar-active-title">Overview</span>
     </div>
 
-    <!-- Desktop inline tab navigation bar (visible on large screens, hidden on mobile) -->
-    <nav class="desktop-top-nav" aria-label="Desktop Views">
-      <button class="tab-btn active" data-tab="overview" type="button">1. Overview</button>
-      <button class="tab-btn" data-tab="charts" type="button">2. Charts</button>
-      <button class="tab-btn" data-tab="sensors" type="button">3. Sensors</button>
-      <button class="tab-btn" data-tab="logs" type="button">4. Logs</button>
-      <button class="tab-btn" data-tab="radar" type="button">5. Radar</button>
-      <button class="tab-btn" data-tab="settings" type="button">6. Settings &#128274;</button>
-    </nav>
-
     <div class="topbar-right">
-      <div class="topbar-pill sdr-pill" title="SDR Ingestion &amp; Active Sensor Ratio">
+      <!-- Interactive Status Popover Trigger -->
+      <button id="status-popover-btn" class="topbar-status-btn" type="button" aria-haspopup="dialog" aria-expanded="false" title="System Status &amp; Telemetry Summary">
         <span id="stat-sync-indicator" class="sync-dot"></span>
-        <span id="stat-sensor-count">--</span>
-      </div>
-      <div class="topbar-pill baro-pill" title="Barometric Sea-Level Pressure">
-        <span id="stat-baro-header">--.--"</span>
-      </div>
-      <div class="auth-pill-group">
-        <button id="btn-auth-pill" class="topbar-icon-btn status-locked" type="button" title="Click to Unlock or Lock Admin Controls">
-          <span class="lock-icon">&#128274;</span>
-          <span class="lock-label">LOCKED</span>
-        </button>
-        <button id="btn-lock-now" class="btn-lock-quick hidden" type="button" title="Immediately lock Admin session">Lock</button>
-      </div>
+        <span id="topbar-auth-indicator" class="topbar-auth-icon">&#128274;</span>
+        <span class="status-btn-text">Status</span>
+        <span class="status-btn-caret">&#9662;</span>
+      </button>
+
+      <!-- 1-Tap Manual Refresh / Sync Button -->
       <button id="btn-refresh-now" class="btn btn-primary btn-sm topbar-sync-btn" type="button" title="Sync All Telemetry">
         <span class="sync-arrow">&#8635;</span>
         <span class="sync-btn-label">Sync</span>
       </button>
+    </div>
+
+    <!-- Floating System Status Popover Card -->
+    <div id="status-popover" class="status-popover hidden" role="dialog" aria-label="System Status Popover">
+      <div class="popover-header">
+        <div class="popover-title">SYSTEM STATUS</div>
+        <button id="btn-popover-close" class="popover-close-btn" type="button" aria-label="Close Status Popover">&times;</button>
+      </div>
+
+      <div class="popover-body">
+        <!-- SDR Stream & Active Sensors -->
+        <div class="popover-row">
+          <span class="popover-label">SDR Stream</span>
+          <div class="popover-val-group">
+            <span id="popover-sdr-status" class="status-badge running">RUNNING</span>
+            <span id="stat-sensor-count" class="popover-subval">--/--</span>
+          </div>
+        </div>
+
+        <!-- Barometer -->
+        <div class="popover-row">
+          <span class="popover-label">Barometer</span>
+          <span id="stat-baro-header" class="popover-val-accent">--.--"</span>
+        </div>
+
+        <!-- Security Mode -->
+        <div class="popover-row popover-auth-row">
+          <div class="popover-auth-info">
+            <span class="popover-label">Security</span>
+            <span id="popover-auth-status" class="popover-auth-val">Locked (Read-Only)</span>
+          </div>
+          <button id="btn-popover-auth" class="btn btn-xs btn-outline-primary" type="button">Unlock Admin</button>
+        </div>
+
+        <div class="popover-divider"></div>
+
+        <!-- Telemetry DB: Packets Logged & DB Size -->
+        <div class="popover-grid">
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">PACKETS LOGGED</span>
+            <span id="popover-reading-count" class="popover-cell-val">--</span>
+          </div>
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">DB SIZE (WAL)</span>
+            <span id="popover-db-size" class="popover-cell-val">-- MB</span>
+          </div>
+        </div>
+
+        <!-- Uptime & Last Sync -->
+        <div class="popover-grid">
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">UPTIME</span>
+            <span id="popover-uptime" class="popover-cell-val">--</span>
+          </div>
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">LAST SYNC</span>
+            <span id="popover-last-sync" class="popover-cell-val">--</span>
+          </div>
+        </div>
+
+        <div class="popover-divider"></div>
+
+        <!-- Version & Build -->
+        <div class="popover-footer">
+          <span id="popover-app-version">v{{ version }}</span>
+          <span class="popover-bullet">&bull;</span>
+          <span id="popover-git-commit">git:local</span>
+          <span class="popover-bullet">&bull;</span>
+          <span id="popover-rtl433-ver">rtl_433</span>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -61,7 +113,7 @@
       <div class="drawer-brand">
         <div class="brand-mark">SS</div>
         <div>
-          <div class="drawer-title">SkyScry Console</div>
+          <div class="drawer-title"><span id="header-station-title">SkyScry</span> <span class="drawer-version-tag">v{{ version }}</span></div>
           <div class="drawer-subtitle">Telemetry &amp; Microclimate Control</div>
         </div>
       </div>
@@ -164,6 +216,7 @@
     </div>
   </aside>
 
+  <main class="main-content">
     <!-- ================================================================== -->
     <!-- VIEW 1: MAIN OVERVIEW DASHBOARD (ACURITE & WEATHER-DISPLAY GAUGES) -->
     <!-- ================================================================== -->
@@ -171,13 +224,12 @@
       <!-- Compact 1-Line Hyperlocal NWS Corroboration Strip -->
       <div class="nws-corroboration-strip card compact-strip">
         <div class="nws-strip-left">
-          <span class="nws-badge-tag">NWS BASELINE</span>
           <span id="ov-nws-summary-badge" class="nws-strip-text">
-            NWS: Syncing... | &Delta; --
+            NWS Official: Syncing... | &Delta; --
           </span>
         </div>
         <div class="nws-strip-right">
-          <span id="ov-nws-office-pill" class="trend-pill neutral">WFO: --</span>
+          <span id="ov-nws-office-pill" class="trend-pill neutral hidden">WFO: --</span>
           <button id="btn-open-radar-tab" class="btn btn-secondary btn-sm compact-radar-btn" type="button">
             Radar &amp; 7-Day &rarr;
           </button>
@@ -602,22 +654,23 @@
     <section id="view-charts" class="view-panel">
       <!-- Climatology & Seasonal Insights Engine Panel -->
       <div class="climatology-panel card">
-        <div class="card-header">
-          <div>
+        <div class="card-header clim-card-header">
+          <div class="clim-header-main">
             <h3>Seasonal Trajectory &amp; Climatology Insights Engine</h3>
             <p id="clim-trajectory-narrative" class="text-muted">
               Calculating rolling 7-day and 30-day anomalies, Heating/Cooling Degree Days (HDD/CDD), and barometric volatility...
             </p>
           </div>
-          <span id="clim-anomaly-badge" class="trend-pill info">7d Anomaly: --</span>
+          <div class="clim-header-badge-row">
+            <span id="clim-anomaly-badge" class="trend-pill info">7d vs 30d Anomaly: --</span>
+          </div>
         </div>
 
         <!-- Live Active Telemetry Learning Status Banner -->
         <div id="clim-learning-banner" class="learning-banner">
           <div class="learning-banner-header">
             <span class="learning-pulse-dot" aria-hidden="true"></span>
-            <strong>ACTIVE TELEMETRY LEARNING ENGINE:</strong>
-            <span id="clim-learning-status">Analyzing local RF bursts &amp; 30-day baseline...</span>
+            <span id="clim-learning-status" class="learning-banner-title">Active Telemetry Learning Engine &mdash; Synthesizing 433 MHz RF + 30d Baseline</span>
           </div>
           <div id="clim-learning-details" class="learning-banner-details mono">
             <span id="clim-learn-packets">-- packets analyzed</span> &bull;
@@ -652,7 +705,7 @@
         </div>
 
         <!-- Weather-Display Style Records Summary Table -->
-        <div class="table-responsive" style="margin-top: 14px;">
+        <div class="table-responsive clim-table-scroll" style="overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; margin-top: 14px;">
           <table class="data-table records-summary-table">
             <thead>
               <tr>
