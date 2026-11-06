@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main CLI and daemon entrypoint for SkyScry (v0.0.6).
+"""Main CLI and daemon entrypoint for SkyScry (v0.0.10).
 
 Executes the standard-library pre-flight bootstrapper (`src.updater.run_startup_bootstrap`)
 before importing third-party libraries so fresh installs and self-updates never crash.
@@ -30,6 +30,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from src import __version__
 from src.config import AppConfig, load_config
 from src.db import WeatherDatabase
+from src.ingest.nws_service import NWSWeatherService
 from src.ingest.reference_weather import ReferenceWeatherService
 from src.ingest.sdr_stream import SDRStream, SDRStreamError
 from src.models import NormalizedReading
@@ -379,6 +380,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         default_lat=config.location.latitude,
         default_lon=config.location.longitude,
     )
+    nws_service = NWSWeatherService(
+        db=db,
+        default_lat=config.location.latitude,
+        default_lon=config.location.longitude,
+    )
 
     stop_event = threading.Event()
     http_server: Optional[BaseWSGIServer] = None
@@ -420,6 +426,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 db=db,
                 sdr_stream=stream,
                 ref_service=ref_service,
+                nws_service=nws_service,
                 admin_pin=config.web.admin_pin,
                 read_only_public=config.web.read_only_public,
             )

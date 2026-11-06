@@ -75,7 +75,7 @@ class ReferenceWeatherService:
         url = f"{OPEN_METEO_URL}?{urllib.parse.urlencode(query_params)}"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "SkyScry/0.0.8 (https://github.com/Cave404/SkyScry)"},
+            headers={"User-Agent": "SkyScry/0.0.10 (https://github.com/Cave404/SkyScry)"},
         )
 
         with urllib.request.urlopen(req, timeout=12.0) as resp:

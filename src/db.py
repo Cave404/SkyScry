@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.8)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, and charting for SkyScry (v0.0.10)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Optional
 
+from src.analytics.climatology import ClimatologyEngine
 from src.models import (
     COMPASS_16_POINTS,
     NormalizedReading,
@@ -37,10 +38,57 @@ VALID_HIDDEN_METRICS: frozenset[str] = frozenset(
 
 HPA_TO_INHG = 0.029529983071445
 
+DEFAULT_SYSTEM_SETTINGS: dict[str, str] = {
+    "station_name": "SkyScry 433.92 MHz Telemetry Console",
+    "latitude": "0.0",
+    "longitude": "0.0",
+    "elevation_m": "0.0",
+    "nws_office": "",
+    "nws_grid_x": "",
+    "nws_grid_y": "",
+    "radar_zoom": "7",
+    "inactivity_timeout_minutes": "15",
+    "temp_unit": "F",
+    "wind_unit": "mph",
+    "pressure_unit": "inHg",
+    "rain_unit": "in",
+    "auto_update_enabled": "true",
+    "outlier_threshold_f": "22.0",
+    "dedup_window_seconds": "4.0",
+    "auto_expunge_enabled": "true",
+}
+
+PUBLIC_SETTINGS_KEYS: frozenset[str] = frozenset(DEFAULT_SYSTEM_SETTINGS.keys())
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS system_settings (
     key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    date_str TEXT PRIMARY KEY,
+    temp_min_c REAL,
+    temp_max_c REAL,
+    temp_mean_c REAL,
+    temp_min_f REAL,
+    temp_max_f REAL,
+    temp_mean_f REAL,
+    humidity_min REAL,
+    humidity_max REAL,
+    humidity_mean REAL,
+    hdd REAL DEFAULT 0.0,
+    cdd REAL DEFAULT 0.0,
+    rain_total_mm REAL DEFAULT 0.0,
+    rain_total_in REAL DEFAULT 0.0,
+    wind_peak_mps REAL DEFAULT 0.0,
+    wind_peak_mph REAL DEFAULT 0.0,
+    pressure_min_hpa REAL,
+    pressure_max_hpa REAL,
+    pressure_range_inhg REAL,
+    reading_count INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS reference_weather_history (
@@ -274,6 +322,7 @@ class WeatherDatabase:
                 self._conn.executescript(SCHEMA_SQL)
 
                 # Idempotent column checks via PRAGMA table_info
+                self._ensure_column("system_settings", "updated_at", "TEXT NOT NULL DEFAULT ''")
                 self._ensure_column("sensors", "hidden_metrics", "TEXT DEFAULT '[]'")
                 self._ensure_column("sensors", "last_snr", "REAL")
                 self._ensure_column("sensors", "last_noise", "REAL")
@@ -290,6 +339,17 @@ class WeatherDatabase:
                 self._ensure_column("sensor_readings", "noise", "REAL")
                 self._ensure_column("sensor_readings", "rssi", "REAL")
                 self._ensure_column("sensor_readings", "sensor_key", "TEXT")
+
+                now_iso = format_utc_z(datetime.now(timezone.utc))
+                for def_k, def_v in DEFAULT_SYSTEM_SETTINGS.items():
+                    self._conn.execute(
+                        """
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO NOTHING;
+                        """,
+                        (def_k, def_v, now_iso),
+                    )
 
                 # Populate computed/indexed sensor_key column on sensor_readings for fast indexed joins
                 self._conn.execute(
@@ -643,7 +703,8 @@ class WeatherDatabase:
                     if outdoor_median_f is not None:
                         dev_f = abs(reading.temp_f - outdoor_median_f)
                         low_snr = reading.snr is not None and reading.snr < 9.0
-                        max_allowed_dev = 15.0 if (pkt_cnt <= 2 and low_snr) else 22.0
+                        cfg_thresh = float(self.get_setting("outlier_threshold_f", "22.0") or "22.0")
+                        max_allowed_dev = min(15.0, cfg_thresh) if (pkt_cnt <= 2 and low_snr) else max(8.0, cfg_thresh)
                         if dev_f > max_allowed_dev:
                             reason = (
                                 f"Deviated {dev_f:.1f}F from outdoor ensemble median "
@@ -787,6 +848,171 @@ class WeatherDatabase:
                 )
                 return int(cursor.lastrowid or 0)
 
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Retrieve a configuration value from `system_settings`."""
+        with self._lock:
+            if self._conn is None:
+                return default
+            row = self._conn.execute(
+                "SELECT value FROM system_settings WHERE key = ?;",
+                (str(key),),
+            ).fetchone()
+            if row and row["value"] is not None:
+                return str(row["value"])
+            return default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Persist a single key/value pair into `system_settings` with `updated_at` timestamp."""
+        now_iso = format_utc_z(datetime.now(timezone.utc))
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database connection is closed.")
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO system_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (str(key), str(value), now_iso),
+                )
+
+    def get_public_settings(self) -> dict[str, Any]:
+        """Return non-secret station, location, ingestion, and unit settings for the WebUI."""
+        with self._lock:
+            if self._conn is None:
+                return dict(DEFAULT_SYSTEM_SETTINGS)
+            rows = self._conn.execute("SELECT key, value FROM system_settings;").fetchall()
+            kv = {str(r["key"]): str(r["value"]) for r in rows}
+
+        merged: dict[str, Any] = {}
+        for k, def_v in DEFAULT_SYSTEM_SETTINGS.items():
+            raw_v = kv.get(k, def_v)
+            if k in ("latitude", "longitude", "elevation_m", "outlier_threshold_f", "dedup_window_seconds"):
+                try:
+                    merged[k] = float(raw_v)
+                except ValueError:
+                    merged[k] = float(def_v)
+            elif k in ("inactivity_timeout_minutes", "radar_zoom"):
+                try:
+                    merged[k] = int(float(raw_v))
+                except ValueError:
+                    merged[k] = int(def_v)
+            elif k in ("auto_update_enabled", "auto_expunge_enabled"):
+                merged[k] = str(raw_v).strip().lower() in ("1", "true", "yes", "on")
+            else:
+                merged[k] = str(raw_v)
+        return merged
+
+    def update_public_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Validate, sanitize, and persist public system settings."""
+        if not isinstance(updates, dict):
+            raise ValueError("Settings payload must be a JSON object.")
+
+        now_iso = format_utc_z(datetime.now(timezone.utc))
+        to_save: list[tuple[str, str, str]] = []
+
+        if "station_name" in updates and updates["station_name"] is not None:
+            name_val = str(updates["station_name"]).strip()[:80]
+            if name_val:
+                to_save.append(("station_name", name_val, now_iso))
+
+        if "latitude" in updates and updates["latitude"] is not None:
+            lat = max(-90.0, min(90.0, float(updates["latitude"])))
+            to_save.append(("latitude", f"{lat:.4f}", now_iso))
+
+        if "longitude" in updates and updates["longitude"] is not None:
+            lon = max(-180.0, min(180.0, float(updates["longitude"])))
+            to_save.append(("longitude", f"{lon:.4f}", now_iso))
+
+        if "elevation_m" in updates and updates["elevation_m"] is not None:
+            elev = max(-500.0, min(9000.0, float(updates["elevation_m"])))
+            to_save.append(("elevation_m", f"{elev:.1f}", now_iso))
+
+        if "radar_zoom" in updates and updates["radar_zoom"] is not None:
+            zoom = max(3, min(14, int(float(updates["radar_zoom"]))))
+            to_save.append(("radar_zoom", str(zoom), now_iso))
+
+        if "inactivity_timeout_minutes" in updates and updates["inactivity_timeout_minutes"] is not None:
+            timeout_m = max(1, min(240, int(float(updates["inactivity_timeout_minutes"]))))
+            to_save.append(("inactivity_timeout_minutes", str(timeout_m), now_iso))
+
+        if "outlier_threshold_f" in updates and updates["outlier_threshold_f"] is not None:
+            thresh_f = max(5.0, min(60.0, float(updates["outlier_threshold_f"])))
+            to_save.append(("outlier_threshold_f", f"{thresh_f:.1f}", now_iso))
+
+        if "dedup_window_seconds" in updates and updates["dedup_window_seconds"] is not None:
+            dedup_s = max(0.0, min(60.0, float(updates["dedup_window_seconds"])))
+            to_save.append(("dedup_window_seconds", f"{dedup_s:.1f}", now_iso))
+
+        if "auto_update_enabled" in updates and updates["auto_update_enabled"] is not None:
+            val_b = bool(updates["auto_update_enabled"])
+            if isinstance(updates["auto_update_enabled"], str):
+                val_b = updates["auto_update_enabled"].strip().lower() in ("1", "true", "yes", "on")
+            to_save.append(("auto_update_enabled", "true" if val_b else "false", now_iso))
+
+        if "auto_expunge_enabled" in updates and updates["auto_expunge_enabled"] is not None:
+            val_b = bool(updates["auto_expunge_enabled"])
+            if isinstance(updates["auto_expunge_enabled"], str):
+                val_b = updates["auto_expunge_enabled"].strip().lower() in ("1", "true", "yes", "on")
+            to_save.append(("auto_expunge_enabled", "true" if val_b else "false", now_iso))
+
+        if "temp_unit" in updates and updates["temp_unit"] is not None:
+            tu = str(updates["temp_unit"]).strip().upper()
+            if tu in ("F", "C"):
+                to_save.append(("temp_unit", tu, now_iso))
+
+        if "wind_unit" in updates and updates["wind_unit"] is not None:
+            wu = str(updates["wind_unit"]).strip().lower()
+            if wu in ("mph", "m/s", "knots"):
+                to_save.append(("wind_unit", wu, now_iso))
+
+        if "pressure_unit" in updates and updates["pressure_unit"] is not None:
+            pu = str(updates["pressure_unit"]).strip()
+            if pu in ("inHg", "hPa"):
+                to_save.append(("pressure_unit", pu, now_iso))
+
+        if "rain_unit" in updates and updates["rain_unit"] is not None:
+            ru = str(updates["rain_unit"]).strip().lower()
+            if ru in ("in", "mm"):
+                to_save.append(("rain_unit", ru, now_iso))
+
+        if to_save:
+            with self._lock:
+                if self._conn is None:
+                    raise RuntimeError("Database connection is closed.")
+                with self._conn:
+                    self._conn.executemany(
+                        """
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value = excluded.value,
+                            updated_at = excluded.updated_at;
+                        """,
+                        to_save,
+                    )
+
+        return self.get_public_settings()
+
+    def vacuum_database(self) -> dict[str, Any]:
+        """Run `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA optimize`, and `VACUUM` on SQLite."""
+        before_stats = self.get_db_stats()
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database connection is closed.")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            self._conn.execute("PRAGMA optimize;")
+            self._conn.execute("VACUUM;")
+        after_stats = self.get_db_stats()
+        return {
+            "before_size_mb": before_stats["database_size_mb"],
+            "after_size_mb": after_stats["database_size_mb"],
+            "reclaimed_mb": round(max(0.0, before_stats["database_size_mb"] - after_stats["database_size_mb"]), 3),
+        }
+
     def get_location_coordinates(
         self,
         default_lat: float = 0.0,
@@ -805,25 +1031,28 @@ class WeatherDatabase:
                 lon = float(kv.get("longitude", default_lon))
             except ValueError:
                 lat, lon = default_lat, default_lon
+            if abs(lat) < 0.0001 and abs(lon) < 0.0001 and (abs(default_lat) > 0.0001 or abs(default_lon) > 0.0001):
+                lat, lon = default_lat, default_lon
             return {"latitude": lat, "longitude": lon}
 
     def set_location_coordinates(self, latitude: float, longitude: float) -> dict[str, float]:
         """Persist station coordinates in `system_settings`."""
         lat = max(-90.0, min(90.0, float(latitude)))
         lon = max(-180.0, min(180.0, float(longitude)))
+        now_iso = format_utc_z(datetime.now(timezone.utc))
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database connection is closed.")
             with self._conn:
                 self._conn.execute(
-                    "INSERT INTO system_settings (key, value) VALUES ('latitude', ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
-                    (f"{lat:.4f}",),
+                    "INSERT INTO system_settings (key, value, updated_at) VALUES ('latitude', ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;",
+                    (f"{lat:.4f}", now_iso),
                 )
                 self._conn.execute(
-                    "INSERT INTO system_settings (key, value) VALUES ('longitude', ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
-                    (f"{lon:.4f}",),
+                    "INSERT INTO system_settings (key, value, updated_at) VALUES ('longitude', ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;",
+                    (f"{lon:.4f}", now_iso),
                 )
         return {"latitude": lat, "longitude": lon}
 
@@ -1115,9 +1344,9 @@ class WeatherDatabase:
         hours: float = 24.0,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        """Return time-series readings filtered by optional `sensor_key` and UTC time window."""
+        """Return time-series readings filtered by optional `sensor_key` and UTC time window (bounded max 2000)."""
         safe_hours = max(0.1, min(float(hours), 24.0 * 365.0))
-        safe_limit = max(1, min(int(limit), 5000))
+        safe_limit = max(1, min(int(limit), 2000))
         cutoff_iso = format_utc_z(datetime.now(timezone.utc) - timedelta(hours=safe_hours))
 
         params: list[Any] = [cutoff_iso]
@@ -1512,6 +1741,7 @@ class WeatherDatabase:
         source = "rf_sensor" if rf_press_hpa is not None else "regional_reference"
         current_hpa = rf_press_hpa
         past_3h_hpa: Optional[float] = None
+        past_6h_hpa: Optional[float] = None
 
         with self._lock:
             if self._conn is not None:
@@ -1541,13 +1771,29 @@ class WeatherDatabase:
                 if row_3h and row_3h["avg_p"] is not None:
                     past_3h_hpa = float(row_3h["avg_p"])
 
+                t_6h_start = format_utc_z(now_utc - timedelta(minutes=390))
+                t_6h_end = format_utc_z(now_utc - timedelta(minutes=330))
+                row_6h = self._conn.execute(
+                    """
+                    SELECT AVG(pressure_hpa) AS avg_p FROM reference_weather_history
+                    WHERE timestamp BETWEEN ? AND ?
+                      AND pressure_hpa IS NOT NULL
+                      AND pressure_hpa BETWEEN 870.0 AND 1085.0;
+                    """,
+                    (t_6h_start, t_6h_end),
+                ).fetchone()
+                if row_6h and row_6h["avg_p"] is not None:
+                    past_6h_hpa = float(row_6h["avg_p"])
+
         if current_hpa is None:
             return {
                 "pressure_hpa": None,
                 "pressure_inhg": None,
                 "delta_3h_hpa": None,
                 "delta_3h_inhg": None,
+                "delta_6h_inhg": None,
                 "trend_label": "Awaiting Sync",
+                "trend_arrow": "→",
                 "source": "none",
                 "forecast_24h": "Syncing regional barometric pressure history...",
             }
@@ -1557,19 +1803,28 @@ class WeatherDatabase:
         delta_3h_inhg = (
             round((current_hpa - past_3h_hpa) * HPA_TO_INHG, 2) if past_3h_hpa is not None else None
         )
+        delta_6h_inhg = (
+            round((current_hpa - past_6h_hpa) * HPA_TO_INHG, 2) if past_6h_hpa is not None else None
+        )
 
         if delta_3h_inhg is None:
             trend_label = "Steady"
+            trend_arrow = "→"
         elif delta_3h_inhg >= 0.06:
             trend_label = f"Rising Rapidly ({delta_3h_inhg:+.2f} inHg/3h)"
+            trend_arrow = "↗"
         elif delta_3h_inhg >= 0.02:
             trend_label = f"Rising ({delta_3h_inhg:+.2f} inHg/3h)"
+            trend_arrow = "↗"
         elif delta_3h_inhg <= -0.06:
             trend_label = f"Falling Rapidly ({delta_3h_inhg:+.2f} inHg/3h)"
+            trend_arrow = "↘"
         elif delta_3h_inhg <= -0.02:
             trend_label = f"Falling ({delta_3h_inhg:+.2f} inHg/3h)"
+            trend_arrow = "↘"
         else:
             trend_label = f"Steady ({delta_3h_inhg:+.2f} inHg/3h)"
+            trend_arrow = "→"
 
         southerly_wind = wind_cardinal in ("S", "SSE", "SE", "ESE", "SSW", "SW")
         northerly_wind = wind_cardinal in ("N", "NNW", "NW", "WNW", "NNE", "NE")
@@ -1617,10 +1872,302 @@ class WeatherDatabase:
             "pressure_inhg": current_inhg,
             "delta_3h_hpa": delta_3h_hpa,
             "delta_3h_inhg": delta_3h_inhg,
+            "delta_6h_inhg": delta_6h_inhg,
             "trend_label": trend_label,
+            "trend_arrow": trend_arrow,
             "source": source,
             "forecast_24h": forecast_24h,
         }
+
+    def sync_daily_summaries(self, days_back: int = 90) -> int:
+        """Roll up historical trusted outdoor observations into `daily_summaries` for climatology & seasonal records."""
+        now_utc = datetime.now(timezone.utc)
+        cutoff_iso = format_utc_z(now_utc - timedelta(days=max(1, int(days_back))))
+        now_iso = format_utc_z(now_utc)
+
+        with self._lock:
+            if self._conn is None:
+                return 0
+            rows = self._conn.execute(
+                """
+                SELECT
+                    SUBSTR(sr.timestamp, 1, 10) AS date_str,
+                    MIN(sr.temp_c) AS min_tc,
+                    MAX(sr.temp_c) AS max_tc,
+                    AVG(sr.temp_c) AS avg_tc,
+                    MIN(sr.humidity) AS min_rh,
+                    MAX(sr.humidity) AS max_rh,
+                    AVG(sr.humidity) AS avg_rh,
+                    MAX(COALESCE(sr.wind_gust_mps, sr.wind_avg_mps, 0.0)) AS peak_wind_mps,
+                    MIN(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS min_p,
+                    MAX(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS max_p,
+                    COUNT(*) AS cnt
+                FROM sensor_readings sr
+                JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
+                WHERE sr.timestamp >= ?
+                  AND s.is_trusted = 1
+                  AND s.location_type = 'outdoor'
+                  AND (sr.temp_c IS NULL OR (sr.temp_c BETWEEN -31.67 AND 54.44))
+                GROUP BY SUBSTR(sr.timestamp, 1, 10)
+                ORDER BY date_str ASC;
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            # Compute daily rain delta per sensor and take max outdoor rain gauge per day
+            rain_rows = self._conn.execute(
+                """
+                SELECT
+                    SUBSTR(sr.timestamp, 1, 10) AS date_str,
+                    COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
+                    MAX(sr.rain_cumulative_mm) - MIN(sr.rain_cumulative_mm) AS rain_mm
+                FROM sensor_readings sr
+                JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
+                WHERE sr.timestamp >= ?
+                  AND s.is_trusted = 1
+                  AND s.location_type = 'outdoor'
+                  AND sr.rain_cumulative_mm IS NOT NULL
+                GROUP BY SUBSTR(sr.timestamp, 1, 10), skey;
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            # Also pull reference pressure range per day when RF barometer is absent
+            ref_press_rows = self._conn.execute(
+                """
+                SELECT
+                    SUBSTR(timestamp, 1, 10) AS date_str,
+                    MIN(pressure_hpa) AS min_p,
+                    MAX(pressure_hpa) AS max_p
+                FROM reference_weather_history
+                WHERE timestamp >= ?
+                  AND pressure_hpa BETWEEN 870.0 AND 1085.0
+                GROUP BY SUBSTR(timestamp, 1, 10);
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            rain_by_day: dict[str, float] = {}
+            for rr in rain_rows:
+                d_str = str(rr["date_str"])
+                delta_mm = max(0.0, float(rr["rain_mm"] or 0.0))
+                if delta_mm > rain_by_day.get(d_str, 0.0):
+                    rain_by_day[d_str] = delta_mm
+
+            ref_p_by_day: dict[str, tuple[float, float]] = {}
+            for rp in ref_press_rows:
+                if rp["min_p"] is not None and rp["max_p"] is not None:
+                    ref_p_by_day[str(rp["date_str"])] = (float(rp["min_p"]), float(rp["max_p"]))
+
+            upsert_params: list[tuple[Any, ...]] = []
+            for r in rows:
+                d_str = str(r["date_str"])
+                min_tc = float(r["min_tc"]) if r["min_tc"] is not None else None
+                max_tc = float(r["max_tc"]) if r["max_tc"] is not None else None
+                avg_tc = float(r["avg_tc"]) if r["avg_tc"] is not None else None
+
+                min_tf = round((min_tc * 9.0 / 5.0) + 32.0, 1) if min_tc is not None else None
+                max_tf = round((max_tc * 9.0 / 5.0) + 32.0, 1) if max_tc is not None else None
+                avg_tf = round((avg_tc * 9.0 / 5.0) + 32.0, 1) if avg_tc is not None else None
+
+                hdd = round(max(0.0, 65.0 - avg_tf), 1) if avg_tf is not None else 0.0
+                cdd = round(max(0.0, avg_tf - 65.0), 1) if avg_tf is not None else 0.0
+
+                r_mm = round(rain_by_day.get(d_str, 0.0), 2)
+                r_in = round(r_mm / 25.4, 3)
+
+                pk_mps = round(float(r["peak_wind_mps"] or 0.0), 2)
+                pk_mph = round(pk_mps * 2.23693629, 1)
+
+                min_p = float(r["min_p"]) if r["min_p"] is not None else None
+                max_p = float(r["max_p"]) if r["max_p"] is not None else None
+                if (min_p is None or max_p is None) and d_str in ref_p_by_day:
+                    min_p, max_p = ref_p_by_day[d_str]
+
+                p_range_inhg = (
+                    round((max_p - min_p) * HPA_TO_INHG, 2)
+                    if (min_p is not None and max_p is not None)
+                    else None
+                )
+
+                upsert_params.append(
+                    (
+                        d_str,
+                        round(min_tc, 2) if min_tc is not None else None,
+                        round(max_tc, 2) if max_tc is not None else None,
+                        round(avg_tc, 2) if avg_tc is not None else None,
+                        min_tf,
+                        max_tf,
+                        avg_tf,
+                        round(float(r["min_rh"]), 1) if r["min_rh"] is not None else None,
+                        round(float(r["max_rh"]), 1) if r["max_rh"] is not None else None,
+                        round(float(r["avg_rh"]), 1) if r["avg_rh"] is not None else None,
+                        hdd,
+                        cdd,
+                        r_mm,
+                        r_in,
+                        pk_mps,
+                        pk_mph,
+                        round(min_p, 1) if min_p is not None else None,
+                        round(max_p, 1) if max_p is not None else None,
+                        p_range_inhg,
+                        int(r["cnt"] or 0),
+                        now_iso,
+                    )
+                )
+
+            if upsert_params:
+                with self._conn:
+                    self._conn.executemany(
+                        """
+                        INSERT INTO daily_summaries (
+                            date_str, temp_min_c, temp_max_c, temp_mean_c,
+                            temp_min_f, temp_max_f, temp_mean_f,
+                            humidity_min, humidity_max, humidity_mean,
+                            hdd, cdd, rain_total_mm, rain_total_in,
+                            wind_peak_mps, wind_peak_mph,
+                            pressure_min_hpa, pressure_max_hpa, pressure_range_inhg,
+                            reading_count, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(date_str) DO UPDATE SET
+                            temp_min_c = excluded.temp_min_c,
+                            temp_max_c = excluded.temp_max_c,
+                            temp_mean_c = excluded.temp_mean_c,
+                            temp_min_f = excluded.temp_min_f,
+                            temp_max_f = excluded.temp_max_f,
+                            temp_mean_f = excluded.temp_mean_f,
+                            humidity_min = excluded.humidity_min,
+                            humidity_max = excluded.humidity_max,
+                            humidity_mean = excluded.humidity_mean,
+                            hdd = excluded.hdd,
+                            cdd = excluded.cdd,
+                            rain_total_mm = excluded.rain_total_mm,
+                            rain_total_in = excluded.rain_total_in,
+                            wind_peak_mps = excluded.wind_peak_mps,
+                            wind_peak_mph = excluded.wind_peak_mph,
+                            pressure_min_hpa = excluded.pressure_min_hpa,
+                            pressure_max_hpa = excluded.pressure_max_hpa,
+                            pressure_range_inhg = excluded.pressure_range_inhg,
+                            reading_count = excluded.reading_count,
+                            updated_at = excluded.updated_at;
+                        """,
+                        upsert_params,
+                    )
+            return len(upsert_params)
+
+    def get_daily_summaries(self, limit: int = 365) -> list[dict[str, Any]]:
+        """Return rolled-up daily summary rows ordered by date DESC (bounded max 2000)."""
+        safe_limit = max(1, min(int(limit), 2000))
+        with self._lock:
+            if self._conn is None:
+                return []
+            rows = self._conn.execute(
+                "SELECT * FROM daily_summaries ORDER BY date_str DESC LIMIT ?;",
+                (safe_limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def _query_period_records(self, cutoff_iso: Optional[str]) -> dict[str, Any]:
+        """Compute High/Low extremes and rain total for a UTC window across trusted outdoor stations."""
+        if self._conn is None:
+            return {}
+        where_time = "AND sr.timestamp >= ?" if cutoff_iso else ""
+        params: tuple[Any, ...] = (cutoff_iso,) if cutoff_iso else ()
+
+        row = self._conn.execute(
+            f"""
+            SELECT
+                MIN(sr.temp_c) AS min_tc,
+                MAX(sr.temp_c) AS max_tc,
+                MIN(sr.humidity) AS min_rh,
+                MAX(sr.humidity) AS max_rh,
+                MAX(COALESCE(sr.wind_gust_mps, sr.wind_avg_mps)) AS max_wind_mps,
+                MIN(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS min_p,
+                MAX(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS max_p
+            FROM sensor_readings sr
+            JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
+            WHERE s.is_trusted = 1
+              AND s.location_type = 'outdoor'
+              AND (sr.temp_c IS NULL OR (sr.temp_c BETWEEN -31.67 AND 54.44))
+              {where_time};
+            """,
+            params,
+        ).fetchone()
+
+        # Fallback to reference_weather_history for barometric min/max if RF barometer is None
+        min_p = float(row["min_p"]) if (row and row["min_p"] is not None) else None
+        max_p = float(row["max_p"]) if (row and row["max_p"] is not None) else None
+        if min_p is None or max_p is None:
+            where_ref = "AND timestamp >= ?" if cutoff_iso else ""
+            ref_row = self._conn.execute(
+                f"""
+                SELECT MIN(pressure_hpa) AS min_p, MAX(pressure_hpa) AS max_p
+                FROM reference_weather_history
+                WHERE pressure_hpa BETWEEN 870.0 AND 1085.0 {where_ref};
+                """,
+                params,
+            ).fetchone()
+            if ref_row:
+                if min_p is None and ref_row["min_p"] is not None:
+                    min_p = float(ref_row["min_p"])
+                if max_p is None and ref_row["max_p"] is not None:
+                    max_p = float(ref_row["max_p"])
+
+        # Rain accumulation in period
+        rain_rows = self._conn.execute(
+            f"""
+            SELECT
+                COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
+                MAX(sr.rain_cumulative_mm) - MIN(sr.rain_cumulative_mm) AS delta_mm
+            FROM sensor_readings sr
+            JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
+            WHERE s.is_trusted = 1
+              AND s.location_type = 'outdoor'
+              AND sr.rain_cumulative_mm IS NOT NULL
+              {where_time}
+            GROUP BY skey;
+            """,
+            params,
+        ).fetchall()
+        rain_mm = max([max(0.0, float(r["delta_mm"] or 0.0)) for r in rain_rows], default=0.0)
+
+        min_tc = float(row["min_tc"]) if (row and row["min_tc"] is not None) else None
+        max_tc = float(row["max_tc"]) if (row and row["max_tc"] is not None) else None
+        min_rh = float(row["min_rh"]) if (row and row["min_rh"] is not None) else None
+        max_rh = float(row["max_rh"]) if (row and row["max_rh"] is not None) else None
+        max_wind_mps = float(row["max_wind_mps"]) if (row and row["max_wind_mps"] is not None) else None
+
+        return {
+            "temp_low_f": round((min_tc * 9.0 / 5.0) + 32.0, 1) if min_tc is not None else None,
+            "temp_high_f": round((max_tc * 9.0 / 5.0) + 32.0, 1) if max_tc is not None else None,
+            "humidity_low": round(min_rh, 0) if min_rh is not None else None,
+            "humidity_high": round(max_rh, 0) if max_rh is not None else None,
+            "wind_peak_mph": round(max_wind_mps * 2.23693629, 1) if max_wind_mps is not None else None,
+            "pressure_low_inhg": round(min_p * HPA_TO_INHG, 2) if min_p is not None else None,
+            "pressure_high_inhg": round(max_p * HPA_TO_INHG, 2) if max_p is not None else None,
+            "rain_in": round(rain_mm / 25.4, 2),
+            "rain_mm": round(rain_mm, 1),
+        }
+
+    def get_records_summary_table(self) -> dict[str, dict[str, Any]]:
+        """Return Weather-Display style High/Low records for Today, This Week, This Month, This Year, and All-Time."""
+        now_local = datetime.now().astimezone()
+        midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_iso = format_utc_z(midnight_local)
+        week_iso = format_utc_z(now_local - timedelta(days=7))
+        month_start_local = midnight_local.replace(day=1)
+        month_iso = format_utc_z(month_start_local)
+        year_start_local = midnight_local.replace(month=1, day=1)
+        year_iso = format_utc_z(year_start_local)
+
+        with self._lock:
+            return {
+                "today": self._query_period_records(today_iso),
+                "week": self._query_period_records(week_iso),
+                "month": self._query_period_records(month_iso),
+                "year": self._query_period_records(year_iso),
+                "all_time": self._query_period_records(None),
+            }
 
     def get_weather_overview(self) -> dict[str, Any]:
         """Synthesize current outdoor/indoor conditions, barometer (`inHg`), compass wind, and nowcast."""
@@ -1734,14 +2281,53 @@ class WeatherDatabase:
 
         rain_24h_mm = 0.0
         rain_30m_mm = 0.0
+        rain_today_mm = 0.0
+        rain_week_mm = 0.0
+        rain_month_mm = 0.0
+        rain_year_mm = 0.0
+        rain_rate_mm_h = 0.0
         temp_delta_1h_f: Optional[float] = None
         temp_delta_3h_f: Optional[float] = None
         rh_delta_1h: Optional[float] = None
         wind_dir_1h_ago: Optional[str] = None
+        in_temp_delta_1h_f: Optional[float] = None
 
+        # Today's & 30d/All-Time Extremes + Timestamps + Wind 15m variance + 24h Sparkline
+        today_out_low_f: Optional[float] = None
+        today_out_low_ts: Optional[str] = None
+        today_out_high_f: Optional[float] = None
+        today_out_high_ts: Optional[str] = None
+        today_in_low_f: Optional[float] = None
+        today_in_low_ts: Optional[str] = None
+        today_in_high_f: Optional[float] = None
+        today_in_high_ts: Optional[str] = None
+        today_rh_low: Optional[float] = None
+        today_rh_high: Optional[float] = None
+        today_peak_gust_mph: Optional[float] = None
+        today_baro_low_inhg: Optional[float] = None
+        today_baro_high_inhg: Optional[float] = None
+        wind_10m_avg_mph: Optional[float] = wind_avg_mph
+        wind_15m_bearings: list[float] = list(out_wind_dirs)
+        sparkline_24h_f: list[float] = []
+        sparkline_in_24h_f: list[float] = []
+
+        now_local = datetime.now().astimezone()
+        midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_today = format_utc_z(midnight_local)
+        cutoff_week = format_utc_z(now_local - timedelta(days=7))
+        cutoff_month = format_utc_z(midnight_local.replace(day=1))
+        cutoff_year = format_utc_z(midnight_local.replace(month=1, day=1))
+
+        all_outdoor_keys = [s["sensor_key"] for s in outdoor_sensors]
+        all_indoor_keys = [s["sensor_key"] for s in indoor_sensors]
         outdoor_keys = [
             s["sensor_key"]
             for s in outdoor_sensors
+            if "temperature" not in set(s.get("hidden_metrics") or [])
+        ]
+        indoor_temp_keys = [
+            s["sensor_key"]
+            for s in indoor_sensors
             if "temperature" not in set(s.get("hidden_metrics") or [])
         ]
         rain_keys = [
@@ -1749,53 +2335,241 @@ class WeatherDatabase:
             for s in outdoor_sensors
             if "rain" not in set(s.get("hidden_metrics") or [])
         ]
+        wind_keys = [
+            s["sensor_key"]
+            for s in outdoor_sensors
+            if "wind" not in set(s.get("hidden_metrics") or [])
+        ]
+
+        def _query_rain_delta(keys: list[str], since_iso: str) -> float:
+            if not keys or self._conn is None:
+                return 0.0
+            ph_r = ",".join("?" for _ in keys)
+            r_rows = self._conn.execute(
+                f"""
+                SELECT COALESCE(sensor_key, model || '_' || sensor_id) AS skey,
+                       MAX(rain_cumulative_mm) - MIN(rain_cumulative_mm) AS delta_mm
+                FROM sensor_readings
+                WHERE timestamp >= ?
+                  AND rain_cumulative_mm IS NOT NULL
+                  AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_r})
+                GROUP BY skey;
+                """,
+                [since_iso, *keys],
+            ).fetchall()
+            vals = [float(x["delta_mm"] or 0.0) for x in r_rows if (x["delta_mm"] or 0.0) >= 0.0]
+            return max(vals) if vals else 0.0
 
         with self._lock:
             if self._conn is not None:
                 if rain_keys:
-                    placeholders = ",".join("?" for _ in rain_keys)
                     cutoff_24h = format_utc_z(now_utc - timedelta(hours=24))
                     cutoff_30m = format_utc_z(now_utc - timedelta(minutes=30))
+                    rain_24h_mm = _query_rain_delta(rain_keys, cutoff_24h)
+                    rain_30m_mm = _query_rain_delta(rain_keys, cutoff_30m)
+                    rain_today_mm = _query_rain_delta(rain_keys, cutoff_today)
+                    rain_week_mm = _query_rain_delta(rain_keys, cutoff_week)
+                    rain_month_mm = _query_rain_delta(rain_keys, cutoff_month)
+                    rain_year_mm = _query_rain_delta(rain_keys, cutoff_year)
 
-                    rain_rows_24h = self._conn.execute(
+                    # Latest rain_rate_mm_h or derived from 30m rain
+                    ph_rk = ",".join("?" for _ in rain_keys)
+                    rr_row = self._conn.execute(
                         f"""
-                        SELECT COALESCE(sensor_key, model || '_' || sensor_id) AS skey,
-                               MAX(rain_cumulative_mm) - MIN(rain_cumulative_mm) AS delta_mm
+                        SELECT MAX(rain_rate_mm_h) AS max_rate
                         FROM sensor_readings
                         WHERE timestamp >= ?
-                          AND rain_cumulative_mm IS NOT NULL
-                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders})
-                        GROUP BY skey;
-                        """,
-                        [cutoff_24h, *rain_keys],
-                    ).fetchall()
-                    deltas_24h = [
-                        float(r["delta_mm"] or 0.0)
-                        for r in rain_rows_24h
-                        if (r["delta_mm"] or 0.0) >= 0.0
-                    ]
-                    if deltas_24h:
-                        rain_24h_mm = max(deltas_24h)
-
-                    rain_rows_30m = self._conn.execute(
-                        f"""
-                        SELECT COALESCE(sensor_key, model || '_' || sensor_id) AS skey,
-                               MAX(rain_cumulative_mm) - MIN(rain_cumulative_mm) AS delta_mm
-                        FROM sensor_readings
-                        WHERE timestamp >= ?
-                          AND rain_cumulative_mm IS NOT NULL
-                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({placeholders})
-                        GROUP BY skey;
+                          AND rain_rate_mm_h IS NOT NULL
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_rk});
                         """,
                         [cutoff_30m, *rain_keys],
+                    ).fetchone()
+                    if rr_row and rr_row["max_rate"] is not None and float(rr_row["max_rate"]) > 0.0:
+                        rain_rate_mm_h = float(rr_row["max_rate"])
+                    elif rain_30m_mm > 0.0:
+                        rain_rate_mm_h = rain_30m_mm * 2.0
+
+                # Outdoor Today High/Low & timestamps + 24h Sparkline
+                if outdoor_keys:
+                    ph_ok = ",".join("?" for _ in outdoor_keys)
+                    row_min = self._conn.execute(
+                        f"""
+                        SELECT temp_c, timestamp FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
+                        ORDER BY temp_c ASC, timestamp ASC LIMIT 1;
+                        """,
+                        [cutoff_today, *outdoor_keys],
+                    ).fetchone()
+                    if row_min and row_min["temp_c"] is not None:
+                        today_out_low_f = round((float(row_min["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_out_low_ts = str(row_min["timestamp"])
+
+                    row_max = self._conn.execute(
+                        f"""
+                        SELECT temp_c, timestamp FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
+                        ORDER BY temp_c DESC, timestamp DESC LIMIT 1;
+                        """,
+                        [cutoff_today, *outdoor_keys],
+                    ).fetchone()
+                    if row_max and row_max["temp_c"] is not None:
+                        today_out_high_f = round((float(row_max["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_out_high_ts = str(row_max["timestamp"])
+
+                    # 24h Hourly Sparkline for Outdoor Hero Card
+                    cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
+                    spark_rows = self._conn.execute(
+                        f"""
+                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc
+                        FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
+                        GROUP BY SUBSTR(timestamp, 1, 13)
+                        ORDER BY hr ASC;
+                        """,
+                        [cutoff_spark, *outdoor_keys],
                     ).fetchall()
-                    deltas_30m = [
-                        float(r["delta_mm"] or 0.0)
-                        for r in rain_rows_30m
-                        if (r["delta_mm"] or 0.0) >= 0.0
+                    sparkline_24h_f = [
+                        round((float(sr["avg_tc"]) * 9.0 / 5.0) + 32.0, 1)
+                        for sr in spark_rows
+                        if sr["avg_tc"] is not None
                     ]
-                    if deltas_30m:
-                        rain_30m_mm = max(deltas_30m)
+
+                if all_outdoor_keys:
+                    ph_aok = ",".join("?" for _ in all_outdoor_keys)
+                    row_rh_ext = self._conn.execute(
+                        f"""
+                        SELECT MIN(humidity) AS min_rh, MAX(humidity) AS max_rh
+                        FROM sensor_readings
+                        WHERE timestamp >= ? AND humidity BETWEEN 1.0 AND 100.0
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_aok});
+                        """,
+                        [cutoff_today, *all_outdoor_keys],
+                    ).fetchone()
+                    if row_rh_ext:
+                        if row_rh_ext["min_rh"] is not None:
+                            today_rh_low = round(float(row_rh_ext["min_rh"]), 0)
+                        if row_rh_ext["max_rh"] is not None:
+                            today_rh_high = round(float(row_rh_ext["max_rh"]), 0)
+
+                if wind_keys:
+                    ph_wk = ",".join("?" for _ in wind_keys)
+                    row_w_today = self._conn.execute(
+                        f"""
+                        SELECT MAX(COALESCE(wind_gust_mps, wind_avg_mps)) AS max_w
+                        FROM sensor_readings
+                        WHERE timestamp >= ?
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_wk});
+                        """,
+                        [cutoff_today, *wind_keys],
+                    ).fetchone()
+                    if row_w_today and row_w_today["max_w"] is not None:
+                        today_peak_gust_mph = round(float(row_w_today["max_w"]) * 2.23693629, 1)
+
+                    cutoff_10m = format_utc_z(now_utc - timedelta(minutes=10))
+                    row_w_10m = self._conn.execute(
+                        f"""
+                        SELECT AVG(wind_avg_mps) AS avg_w
+                        FROM sensor_readings
+                        WHERE timestamp >= ? AND wind_avg_mps IS NOT NULL
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_wk});
+                        """,
+                        [cutoff_10m, *wind_keys],
+                    ).fetchone()
+                    if row_w_10m and row_w_10m["avg_w"] is not None:
+                        wind_10m_avg_mph = round(float(row_w_10m["avg_w"]) * 2.23693629, 1)
+
+                    cutoff_15m = format_utc_z(now_utc - timedelta(minutes=15))
+                    rows_w_15m = self._conn.execute(
+                        f"""
+                        SELECT wind_dir_deg FROM sensor_readings
+                        WHERE timestamp >= ? AND wind_dir_deg IS NOT NULL
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_wk})
+                        ORDER BY timestamp DESC LIMIT 40;
+                        """,
+                        [cutoff_15m, *wind_keys],
+                    ).fetchall()
+                    if rows_w_15m:
+                        wind_15m_bearings = [float(r["wind_dir_deg"]) for r in rows_w_15m]
+
+                # Indoor Today High/Low & 1h delta + 24h Sparkline
+                if indoor_temp_keys:
+                    ph_ik = ",".join("?" for _ in indoor_temp_keys)
+                    in_min = self._conn.execute(
+                        f"""
+                        SELECT temp_c, timestamp FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ik})
+                        ORDER BY temp_c ASC, timestamp ASC LIMIT 1;
+                        """,
+                        [cutoff_today, *indoor_temp_keys],
+                    ).fetchone()
+                    if in_min and in_min["temp_c"] is not None:
+                        today_in_low_f = round((float(in_min["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_in_low_ts = str(in_min["timestamp"])
+
+                    in_max = self._conn.execute(
+                        f"""
+                        SELECT temp_c, timestamp FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ik})
+                        ORDER BY temp_c DESC, timestamp DESC LIMIT 1;
+                        """,
+                        [cutoff_today, *indoor_temp_keys],
+                    ).fetchone()
+                    if in_max and in_max["temp_c"] is not None:
+                        today_in_high_f = round((float(in_max["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_in_high_ts = str(in_max["timestamp"])
+
+                    if in_temp_f is not None:
+                        t_1h_s = format_utc_z(now_utc - timedelta(minutes=75))
+                        t_1h_e = format_utc_z(now_utc - timedelta(minutes=30))
+                        in_1h = self._conn.execute(
+                            f"""
+                            SELECT AVG(temp_c) AS avg_tc FROM sensor_readings
+                            WHERE timestamp BETWEEN ? AND ?
+                              AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ik});
+                            """,
+                            [t_1h_s, t_1h_e, *indoor_temp_keys],
+                        ).fetchone()
+                        if in_1h and in_1h["avg_tc"] is not None:
+                            past_in_tf = (float(in_1h["avg_tc"]) * 9.0 / 5.0) + 32.0
+                            in_temp_delta_1h_f = round(in_temp_f - past_in_tf, 1)
+
+                    cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
+                    in_spark_rows = self._conn.execute(
+                        f"""
+                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc
+                        FROM sensor_readings
+                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ik})
+                        GROUP BY SUBSTR(timestamp, 1, 13)
+                        ORDER BY hr ASC;
+                        """,
+                        [cutoff_spark, *indoor_temp_keys],
+                    ).fetchall()
+                    sparkline_in_24h_f = [
+                        round((float(sr["avg_tc"]) * 9.0 / 5.0) + 32.0, 1)
+                        for sr in in_spark_rows
+                        if sr["avg_tc"] is not None
+                    ]
+
+                # Today's Barometric High/Low
+                row_baro_td = self._conn.execute(
+                    """
+                    SELECT MIN(pressure_hpa) AS min_p, MAX(pressure_hpa) AS max_p
+                    FROM reference_weather_history
+                    WHERE timestamp >= ? AND pressure_hpa BETWEEN 870.0 AND 1085.0;
+                    """,
+                    (cutoff_today,),
+                ).fetchone()
+                if row_baro_td:
+                    if row_baro_td["min_p"] is not None:
+                        today_baro_low_inhg = round(float(row_baro_td["min_p"]) * HPA_TO_INHG, 2)
+                    if row_baro_td["max_p"] is not None:
+                        today_baro_high_inhg = round(float(row_baro_td["max_p"]) * HPA_TO_INHG, 2)
 
                 if outdoor_keys and mean_temp_f is not None:
                     placeholders = ",".join("?" for _ in outdoor_keys)
@@ -1847,6 +2621,12 @@ class WeatherDatabase:
                             temp_delta_3h_f = round(mean_temp_f - past_3h_tf, 1)
 
         rain_24h_in = round(rain_24h_mm / 25.4, 2)
+        rain_today_in = round(rain_today_mm / 25.4, 2)
+        rain_week_in = round(rain_week_mm / 25.4, 2)
+        rain_month_in = round(rain_month_mm / 25.4, 2)
+        rain_year_in = round(rain_year_mm / 25.4, 2)
+        rain_rate_in_h = round(rain_rate_mm_h / 25.4, 2)
+
         dew_spread_f = (
             round(mean_temp_f - dp_f, 1)
             if (mean_temp_f is not None and dp_f is not None)
@@ -1859,6 +2639,18 @@ class WeatherDatabase:
             wind_cardinal=wind_cardinal,
             rain_30m_mm=rain_30m_mm,
         )
+
+        def _trend_arrow(delta_val: Optional[float], threshold: float = 0.5) -> tuple[str, str]:
+            if delta_val is None:
+                return "→", "Steady"
+            if delta_val >= threshold:
+                return "↗", "Rising"
+            if delta_val <= -threshold:
+                return "↘", "Falling"
+            return "→", "Steady"
+
+        out_arrow, out_trend_word = _trend_arrow(temp_delta_1h_f, 0.5)
+        in_arrow, in_trend_word = _trend_arrow(in_temp_delta_1h_f, 0.3)
 
         local_hour = datetime.now().hour
         is_night = (
@@ -1918,7 +2710,7 @@ class WeatherDatabase:
                 b_tone = "info"
             trend_badges.append(
                 {
-                    "label": f"Baro {baro['pressure_inhg']:.2f} inHg ({baro['trend_label'].split(' ')[0]})",
+                    "label": f"{baro.get('trend_arrow', '→')} Baro {baro['pressure_inhg']:.2f} inHg ({baro['trend_label'].split(' ')[0]})",
                     "tone": b_tone,
                 }
             )
@@ -1926,24 +2718,24 @@ class WeatherDatabase:
         if temp_delta_1h_f is not None:
             if temp_delta_1h_f <= -1.5:
                 trend_badges.append(
-                    {"label": f"Falling {temp_delta_1h_f:+.1f}F/hr", "tone": "cool"}
+                    {"label": f"↘ Falling {temp_delta_1h_f:+.1f}°F/hr", "tone": "cool"}
                 )
-                nowcast_clauses.append(f"Rapid cooling ({temp_delta_1h_f:+.1f}F over the past hour)")
+                nowcast_clauses.append(f"Rapid cooling ({temp_delta_1h_f:+.1f}°F over the past hour)")
             elif temp_delta_1h_f >= 1.5:
                 trend_badges.append(
-                    {"label": f"Rising {temp_delta_1h_f:+.1f}F/hr", "tone": "warm"}
+                    {"label": f"↗ Rising {temp_delta_1h_f:+.1f}°F/hr", "tone": "warm"}
                 )
-                nowcast_clauses.append(f"Warming trend ({temp_delta_1h_f:+.1f}F over the past hour)")
+                nowcast_clauses.append(f"Warming trend ({temp_delta_1h_f:+.1f}°F over the past hour)")
             else:
                 trend_badges.append(
-                    {"label": f"Temp Steady ({temp_delta_1h_f:+.1f}F/hr)", "tone": "neutral"}
+                    {"label": f"→ Temp Steady ({temp_delta_1h_f:+.1f}°F/hr)", "tone": "neutral"}
                 )
 
         if rh_delta_1h is not None:
             if rh_delta_1h >= 4.0:
-                trend_badges.append({"label": f"Humidity Rising {rh_delta_1h:+.0f}%/hr", "tone": "info"})
+                trend_badges.append({"label": f"↗ Humidity Rising {rh_delta_1h:+.0f}%/hr", "tone": "info"})
             elif rh_delta_1h <= -4.0:
-                trend_badges.append({"label": f"Humidity Falling {rh_delta_1h:+.0f}%/hr", "tone": "neutral"})
+                trend_badges.append({"label": f"↘ Humidity Falling {rh_delta_1h:+.0f}%/hr", "tone": "neutral"})
 
         if wind_dir_1h_ago and wind_cardinal and wind_dir_1h_ago != wind_cardinal:
             trend_badges.append(
@@ -1952,7 +2744,7 @@ class WeatherDatabase:
 
         if dew_spread_f is not None:
             trend_badges.append(
-                {"label": f"Dew Spread {dew_spread_f:.1f}F", "tone": "info" if dew_spread_f <= 4.0 else "neutral"}
+                {"label": f"Dew Spread {dew_spread_f:.1f}°F", "tone": "info" if dew_spread_f <= 4.0 else "neutral"}
             )
 
         baro_forecast = baro.get("forecast_24h") or ""
@@ -1963,7 +2755,7 @@ class WeatherDatabase:
             )
         elif dew_spread_f is not None and dew_spread_f <= 3.5 and (mean_rh or 0) >= 85.0:
             nowcast_summary = (
-                f"Air is nearing saturation (Dew point spread narrowed to {dew_spread_f:.1f}F at {mean_rh:.0f}% RH) "
+                f"Air is nearing saturation (Dew point spread narrowed to {dew_spread_f:.1f}°F at {mean_rh:.0f}% RH) "
                 f"— high likelihood of surface condensation or mist. {baro_forecast}"
             )
         elif nowcast_clauses:
@@ -1971,7 +2763,7 @@ class WeatherDatabase:
         elif mean_temp_f is not None:
             nowcast_summary = (
                 f"Steady microclimate across {len(outdoor_sensors)} active outdoor station(s) "
-                f"(Dew spread {dew_spread_f if dew_spread_f is not None else '--'}F). {baro_forecast}"
+                f"(Dew spread {dew_spread_f if dew_spread_f is not None else '--'}°F). {baro_forecast}"
             )
         else:
             nowcast_summary = (
@@ -1979,50 +2771,105 @@ class WeatherDatabase:
                 f"to Outdoor (Trusted) to synthesize local microclimate telemetry. {baro_forecast}"
             )
 
+        outdoor_dict: dict[str, Any] = {
+            "sensor_count": len(outdoor_sensors),
+            "temp_f": mean_temp_f,
+            "temp_c": mean_temp_c,
+            "temp_min_f": min_temp_f,
+            "temp_max_f": max_temp_f,
+            "today_low_f": today_out_low_f if today_out_low_f is not None else min_temp_f,
+            "today_low_ts": today_out_low_ts,
+            "today_high_f": today_out_high_f if today_out_high_f is not None else max_temp_f,
+            "today_high_ts": today_out_high_ts,
+            "trend_arrow": out_arrow,
+            "trend_word": out_trend_word,
+            "sparkline_24h_f": sparkline_24h_f,
+            "humidity": mean_rh,
+            "today_rh_low": today_rh_low,
+            "today_rh_high": today_rh_high,
+            "dew_point_f": dp_f,
+            "dew_point_c": dp_c,
+            "dew_spread_f": dew_spread_f,
+            "feels_like_f": feels_like_f,
+            "feels_like_c": feels_like_c,
+            "pressure_hpa": baro.get("pressure_hpa"),
+            "pressure_inhg": baro.get("pressure_inhg"),
+            "today_baro_low_inhg": today_baro_low_inhg,
+            "today_baro_high_inhg": today_baro_high_inhg,
+            "wind_avg_mph": wind_avg_mph,
+            "wind_avg_mps": wind_avg_mps,
+            "wind_10m_avg_mph": wind_10m_avg_mph,
+            "wind_gust_mph": wind_gust_mph,
+            "wind_gust_mps": wind_gust_mps,
+            "today_peak_gust_mph": today_peak_gust_mph if today_peak_gust_mph is not None else wind_gust_mph,
+            "wind_dir_deg": wind_dir_deg,
+            "wind_cardinal": wind_cardinal,
+            "wind_15m_bearings": wind_15m_bearings,
+            "rain_24h_in": rain_24h_in,
+            "rain_24h_mm": round(rain_24h_mm, 1),
+            "rain_today_in": rain_today_in,
+            "rain_today_mm": round(rain_today_mm, 1),
+            "rain_rate_in_h": rain_rate_in_h,
+            "rain_rate_mm_h": round(rain_rate_mm_h, 1),
+            "rain_week_in": rain_week_in,
+            "rain_month_in": rain_month_in,
+            "rain_year_in": rain_year_in,
+            "uv_index": uv_val,
+            "lux": lux_val,
+            "temp_delta_1h_f": temp_delta_1h_f,
+            "temp_delta_3h_f": temp_delta_3h_f,
+            "rh_delta_1h": rh_delta_1h,
+        }
+
+        nowcast_trajectory = ClimatologyEngine.compute_short_term_nowcast(
+            outdoor=outdoor_dict,
+            baro=baro,
+            extremes_today={
+                "temp_low_f": outdoor_dict["today_low_f"],
+                "temp_high_f": outdoor_dict["today_high_f"],
+            },
+        )
+
         return {
             "generated_at": format_utc_z(now_utc),
+            "station_name": self.get_setting("station_name", DEFAULT_SYSTEM_SETTINGS["station_name"]),
             "coordinates": coords,
+            "units": {
+                "temp_unit": self.get_setting("temp_unit", "F"),
+                "wind_unit": self.get_setting("wind_unit", "mph"),
+                "pressure_unit": self.get_setting("pressure_unit", "inHg"),
+                "rain_unit": self.get_setting("rain_unit", "in"),
+            },
             "condition": {
                 "code": condition_code,
                 "label": condition_label,
                 "is_night": is_night,
                 "nowcast_summary": nowcast_summary,
                 "trend_badges": trend_badges,
+                "trajectory": nowcast_trajectory,
             },
             "barometer": baro,
-            "outdoor": {
-                "sensor_count": len(outdoor_sensors),
-                "temp_f": mean_temp_f,
-                "temp_c": mean_temp_c,
-                "temp_min_f": min_temp_f,
-                "temp_max_f": max_temp_f,
-                "humidity": mean_rh,
-                "dew_point_f": dp_f,
-                "dew_point_c": dp_c,
-                "dew_spread_f": dew_spread_f,
-                "feels_like_f": feels_like_f,
-                "feels_like_c": feels_like_c,
-                "pressure_hpa": baro.get("pressure_hpa"),
-                "pressure_inhg": baro.get("pressure_inhg"),
-                "wind_avg_mph": wind_avg_mph,
-                "wind_avg_mps": wind_avg_mps,
-                "wind_gust_mph": wind_gust_mph,
-                "wind_gust_mps": wind_gust_mps,
-                "wind_dir_deg": wind_dir_deg,
-                "wind_cardinal": wind_cardinal,
-                "rain_24h_in": rain_24h_in,
-                "rain_24h_mm": round(rain_24h_mm, 1),
-                "uv_index": uv_val,
-                "lux": lux_val,
-                "temp_delta_1h_f": temp_delta_1h_f,
-                "temp_delta_3h_f": temp_delta_3h_f,
-                "rh_delta_1h": rh_delta_1h,
-            },
+            "outdoor": outdoor_dict,
             "indoor": {
                 "sensor_count": len(indoor_sensors),
                 "temp_f": in_temp_f,
                 "temp_c": in_temp_c,
                 "humidity": in_humidity,
+                "today_low_f": today_in_low_f,
+                "today_low_ts": today_in_low_ts,
+                "today_high_f": today_in_high_f,
+                "today_high_ts": today_in_high_ts,
+                "trend_arrow": in_arrow,
+                "trend_word": in_trend_word,
+                "temp_delta_1h_f": in_temp_delta_1h_f,
+                "sparkline_24h_f": sparkline_in_24h_f,
+            },
+            "rain_records": {
+                "today_in": rain_today_in,
+                "rate_in_h": rain_rate_in_h,
+                "week_in": rain_week_in,
+                "month_in": rain_month_in,
+                "year_in": rain_year_in,
             },
         }
 

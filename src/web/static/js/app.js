@@ -1,10 +1,12 @@
 /**
- * SkyScry v0.0.9 — 4-View Frontend Controller
- * - View 1: Main Overview Dashboard with High-Clarity Animated SVG Weather Icons,
- *           Animated SVG Wind Compass Rose, Barometric Pressure (inHg/hPa) + 24h Forecast
- * - View 2: Multi-Section Time-Bucketed Historical Charts with Multi-Checkbox Filter Dropdown
+ * SkyScry v0.0.10 — 6-View Frontend Controller
+ * - View 1: Overview Dashboard with AcuRite & Weather-Display (grahamsbeach.htm) SVG Gauges,
+ *           24h Sparklines, High/Low Extremes, Trend Arrows, Multi-Factor Nowcast & Mini Live Radar
+ * - View 2: Multi-Section Historical Charts + Climatology & Seasonal Insights Engine
  * - View 3: Dedicated Sensors Manager with Opt-In Trust, In-Place DOM Patching, & Metric Masking
- * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export
+ * - View 4: Raw SQLite Telemetry Log Explorer with CSV/JSON Export (bounded <= 2000)
+ * - View 5: Live Animated NEXRAD / RainViewer Weather Radar & Official NWS 7-Day Forecast
+ * - View 6: Hardened Admin Settings (First-Run Password Setup, Auto-Lock, NWS & Units Config)
  */
 
 (function () {
@@ -16,57 +18,31 @@
   let sensorsCache = [];
   let currentIconCode = "";
   let logsLoadedOnce = false;
-  let authRequired = false;
-  let readOnlyPublic = false;
+  let climatologyLoadedOnce = false;
+  let nwsLoadedOnce = false;
+  let settingsLoadedOnce = false;
 
-  function getStoredAdminPin() {
-    try {
-      return sessionStorage.getItem("skyscry_admin_pin") || "";
-    } catch (_) {
-      return "";
-    }
-  }
+  // Security & Auth state
+  let authState = {
+    password_configured: true,
+    unlocked: false,
+    timeout_minutes: 15,
+  };
+  let pendingUnlockCallback = null;
+  let setupModalShown = false;
 
-  function setStoredAdminPin(pin) {
-    try {
-      if (pin) {
-        sessionStorage.setItem("skyscry_admin_pin", pin);
-      } else {
-        sessionStorage.removeItem("skyscry_admin_pin");
-      }
-    } catch (_) {}
-  }
-
-  async function authorizedWriteFetch(url, options) {
-    const opts = Object.assign({}, options);
-    opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
-
-    let pin = getStoredAdminPin();
-    if (authRequired && !pin) {
-      const entered = window.prompt("Admin PIN required to modify SkyScry settings:");
-      if (entered === null) {
-        throw new Error("Action canceled (Admin PIN required).");
-      }
-      pin = entered.trim();
-      setStoredAdminPin(pin);
-    }
-    if (pin) {
-      opts.headers["X-Admin-Pin"] = pin;
-    }
-
-    let res = await fetch(url, opts);
-    if (res.status === 401) {
-      setStoredAdminPin("");
-      const retryPin = window.prompt("Invalid or missing Admin PIN. Please enter the Admin PIN:");
-      if (retryPin === null) {
-        throw new Error("Unauthorized: Valid Admin PIN required.");
-      }
-      setStoredAdminPin(retryPin.trim());
-      opts.headers["X-Admin-Pin"] = retryPin.trim();
-      res = await fetch(url, opts);
-    }
-    return res;
-  }
+  // User display units & station coordinates
+  let userSettings = {
+    station_name: "SkyScry Weather Station",
+    latitude: 38.627,
+    longitude: -90.1994,
+    elevation_m: 142.0,
+    radar_zoom: 8,
+    temp_unit: "F",
+    wind_unit: "mph",
+    pressure_unit: "inHg",
+    rain_unit: "in",
+  };
 
   const charts = {
     temp: null,
@@ -75,10 +51,27 @@
     rain: null,
   };
 
+  // Leaflet Radar Maps State
+  let miniRadarMap = null;
+  let miniStationMarker = null;
+  let miniRadarTileLayer = null;
+
+  let fullRadarMap = null;
+  let fullStationMarker = null;
+  let fullActiveTileLayer = null;
+  let rainViewerData = null;
+  let radarFrames = [];
+  let currentFrameIdx = 0;
+  let radarLayerMode = "radar"; // "radar" | "satellite" | "nexrad"
+  let radarTimer = null;
+  let radarPlaying = true;
+
   // Header & Banners DOM
   const elGitCommit = document.getElementById("stat-git-commit");
   const elRtl433Ver = document.getElementById("stat-rtl433-ver");
   const elSdrStatus = document.getElementById("stat-sdr-status");
+  const elBtnAuthPill = document.getElementById("btn-auth-pill");
+  const elBtnLockNow = document.getElementById("btn-lock-now");
   const elSensorCount = document.getElementById("stat-sensor-count");
   const elBaroHeader = document.getElementById("stat-baro-header");
   const elReadingCount = document.getElementById("stat-reading-count");
@@ -88,48 +81,108 @@
   const elLastSync = document.getElementById("stat-last-sync");
   const elErrorBanner = document.getElementById("sdr-error-banner");
   const elToastBanner = document.getElementById("maintenance-toast");
+  const elNwsAlertBanner = document.getElementById("nws-alert-banner");
+
   const elBtnRefresh = document.getElementById("btn-refresh-now");
   const elBtnTriggerUpdate = document.getElementById("btn-trigger-update");
   const elBtnSyncRef = document.getElementById("btn-sync-reference");
   const elBtnPurgeOutliers = document.getElementById("btn-purge-outliers");
 
   // View 1: Overview DOM
+  const elOvStationEyebrow = document.getElementById("ov-station-eyebrow");
   const elHeroIcon = document.getElementById("hero-weather-icon");
   const elOvConditionLabel = document.getElementById("ov-condition-label");
   const elOvOutTempF = document.getElementById("ov-out-temp-f");
   const elOvOutTempC = document.getElementById("ov-out-temp-c");
+  const elOvOutTrendArrow = document.getElementById("ov-out-trend-arrow");
+  const elOvOutLowPill = document.getElementById("ov-out-low-pill");
+  const elOvOutHighPill = document.getElementById("ov-out-high-pill");
+  const elOvOutSparkline = document.getElementById("ov-out-sparkline-svg");
   const elOvOutSpread = document.getElementById("ov-out-spread");
   const elOvTrendBadges = document.getElementById("ov-trend-badges");
   const elOvNowcastText = document.getElementById("ov-nowcast-text");
+  const elOvNowcastConfidence = document.getElementById("ov-nowcast-confidence");
+  const elOvEstHigh = document.getElementById("ov-est-high");
+  const elOvEstLow = document.getElementById("ov-est-low");
+  const elOvPrecipProb = document.getElementById("ov-precip-prob");
+
+  // NWS Corroboration Strip (View 1)
+  const elOvNwsSummaryBadge = document.getElementById("ov-nws-summary-badge");
+  const elOvNwsStationBadge = document.getElementById("ov-nws-station-badge");
+  const elBtnOpenRadarView = document.getElementById("btn-open-radar-view");
+  const elBtnExpandRadar = document.getElementById("btn-expand-radar");
+  const elMiniRadarTimestamp = document.getElementById("mini-radar-timestamp");
+  const elMiniRadarCoords = document.getElementById("mini-radar-coords");
+
+  // Indoor Card DOM
   const elOvInCount = document.getElementById("ov-in-count");
   const elOvInTemp = document.getElementById("ov-in-temp");
   const elOvInTempC = document.getElementById("ov-in-temp-c");
+  const elOvInTrendArrow = document.getElementById("ov-in-trend-arrow");
+  const elOvInExtremes = document.getElementById("ov-in-extremes");
   const elOvInRh = document.getElementById("ov-in-rh");
   const elOvInComfort = document.getElementById("ov-in-comfort");
+  const elOvInSparkline = document.getElementById("ov-in-sparkline-svg");
+
+  // Deltas DOM
   const elOvDelta1hTemp = document.getElementById("ov-delta-1h-temp");
   const elOvDelta3hTemp = document.getElementById("ov-delta-3h-temp");
   const elOvDelta3hBaro = document.getElementById("ov-delta-3h-baro");
   const elOvDewSpread = document.getElementById("ov-dew-spread");
 
-  // Wind Compass & KPI Tiles DOM
+  // AcuRite Wind Gauge DOM
   const elOvWindSpeed = document.getElementById("ov-wind-speed");
   const elOvWindGust = document.getElementById("ov-wind-gust");
   const elOvWindBearing = document.getElementById("ov-wind-bearing");
   const elCompassNeedle = document.getElementById("compass-needle-group");
-  const elCompassPulseRing = document.getElementById("compass-pulse-ring");
+  const elWindGlowRing = document.getElementById("wind-speed-glow-ring");
+  const elWindVarianceWedge = document.getElementById("wind-variance-wedge");
+  const elWindDialCardinal = document.getElementById("wind-dial-cardinal");
+  const elWindDialSpeed = document.getElementById("wind-dial-speed");
+  const elWindFlankAvg = document.getElementById("wind-flank-avg");
+  const elWindFlankPeak = document.getElementById("wind-flank-peak");
 
+  // Barometer Tower DOM
   const elOvBaroInhg = document.getElementById("ov-baro-inhg");
+  const elOvBaroTrendArrow = document.getElementById("ov-baro-trend-arrow");
   const elOvBaroHpa = document.getElementById("ov-baro-hpa");
+  const elOvBaroExtremes = document.getElementById("ov-baro-extremes");
   const elOvBaroSource = document.getElementById("ov-baro-source");
+  const elBaroMercuryFill = document.getElementById("baro-mercury-fill");
+  const elBaroTowerPointer = document.getElementById("baro-tower-pointer");
 
-  const elOvOutRh = document.getElementById("ov-out-rh");
-  const elOvOutDp = document.getElementById("ov-out-dp");
-  const elOvFeelsInline = document.getElementById("ov-feels-inline");
+  // Rain Cylinder & Records DOM
   const elOvRain24h = document.getElementById("ov-rain-24h");
   const elOvRainMm = document.getElementById("ov-rain-mm");
-  const elOvUvInline = document.getElementById("ov-uv-inline");
+  const elRainRecRate = document.getElementById("rain-rec-rate");
+  const elRainRecWeek = document.getElementById("rain-rec-week");
+  const elRainRecMonth = document.getElementById("rain-rec-month");
+  const elRainRecYear = document.getElementById("rain-rec-year");
+  const elRainCylinderFill = document.getElementById("rain-cylinder-fill");
+  const elRainCylinderMeniscus = document.getElementById("rain-cylinder-meniscus");
 
-  // View 2: Charts DOM & Multi-Checkbox Filter Dropdown
+  // Outdoor Humidity & UV Arc DOM
+  const elOvOutRh = document.getElementById("ov-out-rh");
+  const elOvOutRhExtremes = document.getElementById("ov-out-rh-extremes");
+  const elOvOutDp = document.getElementById("ov-out-dp");
+  const elOvFeelsInline = document.getElementById("ov-feels-inline");
+  const elOvRhComfortBadge = document.getElementById("ov-rh-comfort-badge");
+  const elRhGaugeArc = document.getElementById("rh-gauge-arc");
+  const elOvUvInline = document.getElementById("ov-uv-inline");
+  const elUvBarFill = document.getElementById("uv-bar-fill");
+
+  // View 2: Charts & Climatology DOM
+  const elClimAnomalyBadge = document.getElementById("clim-anomaly-badge");
+  const elClimTrajectoryNarrative = document.getElementById("clim-trajectory-narrative");
+  const elClim7dMean = document.getElementById("clim-7d-mean");
+  const elClim7dSwing = document.getElementById("clim-7d-swing");
+  const elClim30dMean = document.getElementById("clim-30d-mean");
+  const elClimBaroVol = document.getElementById("clim-baro-vol");
+  const elClimHddCdd = document.getElementById("clim-hdd-cdd");
+  const elClimStreak = document.getElementById("clim-streak");
+  const elClimRain30d = document.getElementById("clim-rain-30d");
+  const elClimRecordsTbody = document.getElementById("clim-records-tbody");
+
   const elChartHours = document.getElementById("chart-hours-select");
   const elChartBucket = document.getElementById("chart-bucket-select");
   const elChartToggleEnsemble = document.getElementById("chart-toggle-ensemble");
@@ -160,7 +213,50 @@
   const elLogSummary = document.getElementById("log-record-summary");
   const elLogTableBody = document.getElementById("log-table-body");
 
-  // Modal DOM
+  // View 5: Radar & NWS DOM
+  const elRadarStationSubtitle = document.getElementById("radar-station-subtitle");
+  const elBtnLayerRadar = document.getElementById("btn-layer-radar");
+  const elBtnLayerSatellite = document.getElementById("btn-layer-satellite");
+  const elBtnLayerNexrad = document.getElementById("btn-layer-nexrad");
+  const elBtnRadarPlay = document.getElementById("btn-radar-play");
+  const elRadarFrameSlider = document.getElementById("radar-frame-slider");
+  const elRadarFrameTime = document.getElementById("radar-frame-time");
+  const elBtnRefreshNws = document.getElementById("btn-refresh-nws");
+  const elNwsCorroborationTbody = document.getElementById("nws-corroboration-tbody");
+  const elNwsWfoBadge = document.getElementById("nws-wfo-badge");
+  const elNwsForecastGrid = document.getElementById("nws-forecast-grid");
+
+  // View 6: Settings DOM
+  const elSettingsLockStateBadge = document.getElementById("settings-lock-state-badge");
+  const elFormChangePassword = document.getElementById("form-change-password");
+  const elSetCurrentPassword = document.getElementById("set-current-password");
+  const elSetNewPassword = document.getElementById("set-new-password");
+  const elSetConfirmPassword = document.getElementById("set-confirm-password");
+  const elSetTimeoutMinutes = document.getElementById("set-timeout-minutes");
+  const elBtnSettingsLockSession = document.getElementById("btn-settings-lock-session");
+
+  const elFormSettingsLocation = document.getElementById("form-settings-location");
+  const elSetStationName = document.getElementById("set-station-name");
+  const elSetLatitude = document.getElementById("set-latitude");
+  const elSetLongitude = document.getElementById("set-longitude");
+  const elSetElevation = document.getElementById("set-elevation");
+  const elSetRadarZoom = document.getElementById("set-radar-zoom");
+  const elSetNwsGridReadout = document.getElementById("set-nws-grid-readout");
+
+  const elFormSettingsHygiene = document.getElementById("form-settings-hygiene");
+  const elSetOutlierThreshold = document.getElementById("set-outlier-threshold");
+  const elSetDedupWindow = document.getElementById("set-dedup-window");
+  const elSetAutoExpunge = document.getElementById("set-auto-expunge");
+  const elSetAutoUpdate = document.getElementById("set-auto-update");
+  const elBtnVacuumDb = document.getElementById("btn-vacuum-db");
+
+  const elFormSettingsUnits = document.getElementById("form-settings-units");
+  const elSetTempUnit = document.getElementById("set-temp-unit");
+  const elSetWindUnit = document.getElementById("set-wind-unit");
+  const elSetPressureUnit = document.getElementById("set-pressure-unit");
+  const elSetRainUnit = document.getElementById("set-rain-unit");
+
+  // Modals DOM (Sensor Config, First-Run Setup, Admin Unlock)
   const elModalBackdrop = document.getElementById("sensor-modal-backdrop");
   const elModalForm = document.getElementById("sensor-config-form");
   const elModalSubtitle = document.getElementById("modal-subtitle");
@@ -176,13 +272,30 @@
   const elBtnClearAlias = document.getElementById("btn-clear-alias");
   const elBtnMarkAppliance = document.getElementById("btn-mark-appliance");
 
+  const elSetupBackdrop = document.getElementById("setup-password-backdrop");
+  const elSetupForm = document.getElementById("setup-password-form");
+  const elSetupPassInput = document.getElementById("setup-pass-input");
+  const elSetupPassConfirm = document.getElementById("setup-pass-confirm");
+  const elSetupTimeoutSelect = document.getElementById("setup-timeout-select");
+  const elSetupPassFeedback = document.getElementById("setup-pass-feedback");
+
+  const elUnlockBackdrop = document.getElementById("unlock-modal-backdrop");
+  const elUnlockForm = document.getElementById("unlock-password-form");
+  const elUnlockPassInput = document.getElementById("unlock-pass-input");
+  const elUnlockFeedback = document.getElementById("unlock-pass-feedback");
+  const elBtnCloseUnlock = document.getElementById("btn-close-unlock");
+  const elBtnCancelUnlock = document.getElementById("btn-cancel-unlock");
+
+  // ==========================================================================
+  // UTILITIES & UNIT FORMATTERS
+  // ==========================================================================
   function showToast(msg) {
     if (!elToastBanner) return;
     elToastBanner.textContent = msg;
     elToastBanner.classList.remove("hidden");
     setTimeout(() => {
       if (elToastBanner) elToastBanner.classList.add("hidden");
-    }, 4500);
+    }, 4800);
   }
 
   function escapeHtml(str) {
@@ -232,7 +345,6 @@
     return dt.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
     });
   }
 
@@ -247,9 +359,290 @@
     return `${secs}s`;
   }
 
+  function formatTempPrimary(tempF, tempC) {
+    if (tempF === null || tempF === undefined) return `--.-&deg;${userSettings.temp_unit}`;
+    if (userSettings.temp_unit === "C") {
+      const c = tempC !== null && tempC !== undefined ? Number(tempC) : ((Number(tempF) - 32) * 5) / 9;
+      return `${c.toFixed(1)}&deg;C`;
+    }
+    return `${Number(tempF).toFixed(1)}&deg;F`;
+  }
+
+  function formatTempSecondary(tempF, tempC) {
+    if (tempF === null || tempF === undefined) return `(--.-&deg;)`;
+    if (userSettings.temp_unit === "C") {
+      return `(${Number(tempF).toFixed(1)}&deg;F)`;
+    }
+    const c = tempC !== null && tempC !== undefined ? Number(tempC) : ((Number(tempF) - 32) * 5) / 9;
+    return `(${c.toFixed(1)}&deg;C)`;
+  }
+
+  function formatWindSpeed(mph) {
+    if (mph === null || mph === undefined) return `0.0 ${userSettings.wind_unit}`;
+    const v = Number(mph);
+    if (userSettings.wind_unit === "m/s") return `${(v * 0.44704).toFixed(1)} m/s`;
+    if (userSettings.wind_unit === "knots") return `${(v * 0.868976).toFixed(1)} kts`;
+    return `${v.toFixed(1)} mph`;
+  }
+
+  // ==========================================================================
+  // SECURITY, FIRST-RUN PASSWORD SETUP & SESSION LOCK/UNLOCK FLOW
+  // ==========================================================================
+  function updateAuthHeaderUi() {
+    if (!elBtnAuthPill) return;
+    if (authState.unlocked) {
+      elBtnAuthPill.textContent = "UNLOCKED (ADMIN)";
+      elBtnAuthPill.className = "status-pill status-unlocked";
+      if (elBtnLockNow) elBtnLockNow.classList.remove("hidden");
+      if (elSettingsLockStateBadge) {
+        elSettingsLockStateBadge.textContent = `Session Unlocked (Auto-Lock: ${authState.timeout_minutes}m)`;
+        elSettingsLockStateBadge.className = "badge badge-batt-ok";
+      }
+    } else {
+      elBtnAuthPill.textContent = "LOCKED (READ-ONLY)";
+      elBtnAuthPill.className = "status-pill status-locked";
+      if (elBtnLockNow) elBtnLockNow.classList.add("hidden");
+      if (elSettingsLockStateBadge) {
+        elSettingsLockStateBadge.textContent = "Locked (Read-Only)";
+        elSettingsLockStateBadge.className = "badge badge-expunged";
+      }
+    }
+
+    if (!authState.password_configured && !setupModalShown && elSetupBackdrop) {
+      setupModalShown = true;
+      elSetupBackdrop.classList.remove("hidden");
+      if (elSetupPassInput) elSetupPassInput.focus();
+    }
+  }
+
+  function requireUnlockedOrPrompt(actionCallback) {
+    if (!authState.password_configured) {
+      if (elSetupBackdrop) elSetupBackdrop.classList.remove("hidden");
+      return;
+    }
+    if (authState.unlocked) {
+      actionCallback();
+      return;
+    }
+    pendingUnlockCallback = actionCallback;
+    if (elUnlockFeedback) elUnlockFeedback.classList.add("hidden");
+    if (elUnlockPassInput) elUnlockPassInput.value = "";
+    if (elUnlockBackdrop) {
+      elUnlockBackdrop.classList.remove("hidden");
+      if (elUnlockPassInput) elUnlockPassInput.focus();
+    }
+  }
+
+  function closeUnlockModal() {
+    if (elUnlockBackdrop) elUnlockBackdrop.classList.add("hidden");
+    pendingUnlockCallback = null;
+  }
+
+  async function authorizedWriteFetch(url, options) {
+    const opts = Object.assign({}, options);
+    opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    const res = await fetch(url, opts);
+    if (res.status === 401 || res.status === 403) {
+      authState.unlocked = false;
+      updateAuthHeaderUi();
+      let errMsg = "Session locked. Please unlock Admin Controls.";
+      try {
+        const errData = await res.json();
+        if (errData && errData.error) errMsg = errData.error;
+      } catch (_) {}
+      throw new Error(errMsg);
+    }
+    return res;
+  }
+
+  async function handleFirstRunPasswordSetup(evt) {
+    evt.preventDefault();
+    const p1 = elSetupPassInput ? elSetupPassInput.value : "";
+    const p2 = elSetupPassConfirm ? elSetupPassConfirm.value : "";
+    const timeoutMin = elSetupTimeoutSelect ? Number(elSetupTimeoutSelect.value || 15) : 15;
+
+    if (p1.length < 8) {
+      if (elSetupPassFeedback) {
+        elSetupPassFeedback.textContent = "Password must be at least 8 characters.";
+        elSetupPassFeedback.classList.remove("hidden");
+      }
+      return;
+    }
+    if (p1 !== p2) {
+      if (elSetupPassFeedback) {
+        elSetupPassFeedback.textContent = "Passwords do not match.";
+        elSetupPassFeedback.classList.remove("hidden");
+      }
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/auth/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password: p1,
+          confirm_password: p2,
+          inactivity_timeout_minutes: timeoutMin,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      authState = data.auth || { password_configured: true, unlocked: true, timeout_minutes: timeoutMin };
+      updateAuthHeaderUi();
+      if (elSetupBackdrop) elSetupBackdrop.classList.add("hidden");
+      showToast("Admin Security Password created & encrypted in SQLite.");
+    } catch (err) {
+      if (elSetupPassFeedback) {
+        elSetupPassFeedback.textContent = err.message || "Failed to configure password.";
+        elSetupPassFeedback.classList.remove("hidden");
+      }
+    }
+  }
+
+  async function handleUnlockSubmit(evt) {
+    evt.preventDefault();
+    const password = elUnlockPassInput ? elUnlockPassInput.value : "";
+    if (!password) return;
+
+    try {
+      const res = await fetch("/api/auth/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      authState = data.auth || { password_configured: true, unlocked: true, timeout_minutes: 15 };
+      updateAuthHeaderUi();
+      const cb = pendingUnlockCallback;
+      closeUnlockModal();
+      showToast("Admin Session Unlocked.");
+      if (typeof cb === "function") cb();
+    } catch (err) {
+      if (elUnlockFeedback) {
+        elUnlockFeedback.textContent = err.message || "Invalid admin password.";
+        elUnlockFeedback.classList.remove("hidden");
+      }
+    }
+  }
+
+  async function handleLockNowClick() {
+    try {
+      const res = await fetch("/api/auth/lock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      authState = (data && data.auth) || { password_configured: true, unlocked: false, timeout_minutes: 15 };
+      updateAuthHeaderUi();
+      if (activeTab === "settings") {
+        switchTab("overview");
+      }
+      showToast("Admin Session Locked (Read-Only Public Mode active).");
+    } catch (err) {
+      console.error("Lock error:", err);
+    }
+  }
+
+  // ==========================================================================
+  // SVG SPARKLINES, TREND ARROWS & ACURITE / WEATHER-DISPLAY GAUGE HELPERS
+  // ==========================================================================
+  function applyTrendArrowBadge(el, arrowStr) {
+    if (!el) return;
+    const arrow = arrowStr || "→";
+    if (arrow === "↗") {
+      el.textContent = "↗ Rising";
+      el.className = "trend-arrow-badge rising";
+    } else if (arrow === "↘") {
+      el.textContent = "↘ Falling";
+      el.className = "trend-arrow-badge falling";
+    } else {
+      el.textContent = "→ Steady";
+      el.className = "trend-arrow-badge steady";
+    }
+  }
+
+  function renderSvgSparkline(svgEl, points, strokeColor, fillId) {
+    if (!svgEl) return;
+    if (!Array.isArray(points) || points.length < 2) {
+      svgEl.innerHTML = "";
+      return;
+    }
+    const vals = points.map((p) => Number(p.v)).filter((v) => !isNaN(v));
+    if (vals.length < 2) {
+      svgEl.innerHTML = "";
+      return;
+    }
+    const minV = Math.min(...vals);
+    const maxV = Math.max(...vals);
+    const span = Math.max(0.5, maxV - minV);
+    const w = 400;
+    const h = 70;
+    const padY = 8;
+
+    const coords = vals.map((v, idx) => {
+      const x = (idx / (vals.length - 1)) * w;
+      const y = h - padY - ((v - minV) / span) * (h - padY * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+
+    const polylinePoints = coords.join(" ");
+    const areaPoints = `0,${h} ${polylinePoints} ${w},${h}`;
+
+    svgEl.innerHTML = `
+      <defs>
+        <linearGradient id="${fillId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${strokeColor}" stop-opacity="0.42" />
+          <stop offset="100%" stop-color="${strokeColor}" stop-opacity="0.0" />
+        </linearGradient>
+      </defs>
+      <polygon points="${areaPoints}" fill="url(#${fillId})" />
+      <polyline points="${polylinePoints}" fill="none" stroke="${strokeColor}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+    `;
+  }
+
+  function describeSvgSector(cx, cy, r, startDeg, endDeg) {
+    const startRad = ((startDeg - 90) * Math.PI) / 180.0;
+    const endRad = ((endDeg - 90) * Math.PI) / 180.0;
+    const x1 = cx + r * Math.cos(startRad);
+    const y1 = cy + r * Math.sin(startRad);
+    const x2 = cx + r * Math.cos(endRad);
+    const y2 = cy + r * Math.sin(endRad);
+    let diff = ((endDeg - startDeg) % 360 + 360) % 360;
+    const largeArc = diff > 180 ? 1 : 0;
+    return `M ${cx} ${cy} L ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(1)} ${y2.toFixed(1)} Z`;
+  }
+
+  function updateWindVarianceWedge(bearings, centerDeg) {
+    if (!elWindVarianceWedge) return;
+    if (!Array.isArray(bearings) || bearings.length < 2) {
+      const d = Number(centerDeg || 0);
+      elWindVarianceWedge.setAttribute("d", describeSvgSector(70, 70, 50, d - 12, d + 12));
+      return;
+    }
+    const offsets = bearings
+      .map((b) => {
+        let delta = ((Number(b) - centerDeg + 540) % 360) - 180;
+        return delta;
+      })
+      .filter((d) => !isNaN(d));
+
+    const minOff = Math.max(-75, Math.min(-8, Math.min(...offsets)));
+    const maxOff = Math.min(75, Math.max(8, Math.max(...offsets)));
+    elWindVarianceWedge.setAttribute(
+      "d",
+      describeSvgSector(70, 70, 50, centerDeg + minOff, centerDeg + maxOff)
+    );
+  }
+
   // ==========================================================================
   // HIGH-CLARITY ANIMATED WEATHER CONDITION SVG LIBRARY
-  // (Warm-gold visible crescent moon, crisp 4-point diamond stars, translucent clouds)
   // ==========================================================================
   function getAnimatedWeatherSvg(code) {
     switch (code) {
@@ -289,11 +682,9 @@
                 <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#FBBF24" flood-opacity="0.45" />
               </filter>
             </defs>
-            <!-- Crisp 4-point diamond stars -->
             <path class="wx-diamond-star-1" d="M24 20 L26 25 L31 27 L26 29 L24 34 L22 29 L17 27 L22 25 Z" fill="#FDE047" />
             <path class="wx-diamond-star-2" d="M84 22 L85.5 26 L89.5 27.5 L85.5 29 L84 33 L82.5 29 L78.5 27.5 L82.5 26 Z" fill="#E0F2FE" />
             <path class="wx-diamond-star-1" d="M22 68 L23.2 71 L26.2 72.2 L23.2 73.4 L22 76.4 L20.8 73.4 L17.8 72.2 L20.8 71 Z" fill="#BAE6FD" />
-            <!-- High-contrast warm gold crescent moon -->
             <path filter="url(#moonGlow)"
                   d="M66 18 C46 20 32 36 32 56 C32 76 48 91 68 91 C78 91 87 87 93 80 C77 82 62 70 62 52 C62 37 70 25 66 18 Z"
                   fill="url(#goldMoon)" stroke="#FDE047" stroke-width="1.5" />
@@ -312,20 +703,11 @@
                 <stop offset="0%" stop-color="#CBD5E1" stop-opacity="0.94" />
                 <stop offset="100%" stop-color="#64748B" stop-opacity="0.94" />
               </linearGradient>
-              <filter id="moonGlow2" x="-20%" y="-20%" width="140%" height="140%">
-                <feDropShadow dx="0" dy="0" stdDeviation="3.5" flood-color="#FBBF24" flood-opacity="0.45" />
-              </filter>
             </defs>
-            <!-- Crisp 4-point diamond stars in upper-left sky -->
             <path class="wx-diamond-star-1" d="M22 18 L23.8 22.5 L28.3 24.3 L23.8 26.1 L22 30.6 L20.2 26.1 L15.7 24.3 L20.2 22.5 Z" fill="#FDE047" />
             <path class="wx-diamond-star-2" d="M42 12 L43.2 15 L46.2 16.2 L43.2 17.4 L42 20.4 L40.8 17.4 L37.8 16.2 L40.8 15 Z" fill="#E0F2FE" />
-
-            <!-- Large warm-gold Crescent Moon positioned high in upper-right so >70% is clearly visible -->
-            <path filter="url(#moonGlow2)"
-                  d="M75 11 C59 13 48 26 48 42 C48 58 61 70 77 70 C85 70 92 67 97 61 C84 62 72 52 72 38 C72 26 78 17 75 11 Z"
+            <path d="M75 11 C59 13 48 26 48 42 C48 58 61 70 77 70 C85 70 92 67 97 61 C84 62 72 52 72 38 C72 26 78 17 75 11 Z"
                   fill="url(#goldMoonCloud)" stroke="#FDE047" stroke-width="1.4" />
-
-            <!-- Softly drifting foreground cloud positioned lower-left -->
             <g class="wx-cloud-body">
               <path d="M24 84 H74 C82 84 88 78 88 70 C88 63 82 57 75 57 C73 46 63 39 51 39 C38 39 29 48 27 60 C20 61 14 67 14 74 C14 80 18 84 24 84 Z"
                     fill="url(#slateCloud)" stroke="#E2E8F0" stroke-width="1.4" />
@@ -419,7 +801,7 @@
   }
 
   // ==========================================================================
-  // API FETCHERS & VIEW UPDATERS
+  // API FETCHERS & VIEW 1 OVERVIEW DASHBOARD UPDATER
   // ==========================================================================
   async function fetchStatus() {
     const res = await fetch("/api/status");
@@ -445,8 +827,11 @@
     if (elUptime) {
       elUptime.textContent = formatDuration(data.uptime_seconds);
     }
-    authRequired = Boolean(data.auth_required);
-    readOnlyPublic = Boolean(data.read_only_public);
+
+    if (data.auth) {
+      authState = data.auth;
+      updateAuthHeaderUi();
+    }
 
     if (elGitCommit) {
       elGitCommit.textContent = data.git_commit ? `git:${data.git_commit}` : "git:local";
@@ -476,6 +861,19 @@
     const out = data.outdoor || {};
     const ind = data.indoor || {};
     const baro = data.barometer || {};
+    const rainRec = data.rain_records || {};
+    const nowcast = data.nowcast || {};
+    const settings = data.settings || {};
+
+    if (settings.station_name) {
+      userSettings = Object.assign(userSettings, settings);
+      if (elOvStationEyebrow) {
+        elOvStationEyebrow.textContent = `${settings.station_name.toUpperCase()} — OUTDOOR ENSEMBLE`;
+      }
+      if (elMiniRadarCoords && settings.latitude && settings.longitude) {
+        elMiniRadarCoords.textContent = `${Number(settings.latitude).toFixed(3)}, ${Number(settings.longitude).toFixed(3)}`;
+      }
+    }
 
     if (elHeroIcon && cond.code && cond.code !== currentIconCode) {
       currentIconCode = cond.code;
@@ -486,17 +884,30 @@
       elOvConditionLabel.textContent = cond.label || "Monitoring Active";
     }
     if (elOvOutTempF) {
-      elOvOutTempF.innerHTML =
-        out.temp_f !== null && out.temp_f !== undefined
-          ? `${Number(out.temp_f).toFixed(1)}&deg;F`
-          : `--.-&deg;F`;
+      elOvOutTempF.innerHTML = formatTempPrimary(out.temp_f, out.temp_c);
     }
     if (elOvOutTempC) {
-      elOvOutTempC.innerHTML =
-        out.temp_c !== null && out.temp_c !== undefined
-          ? `(${Number(out.temp_c).toFixed(1)}&deg;C)`
-          : `(--.-&deg;C)`;
+      elOvOutTempC.innerHTML = formatTempSecondary(out.temp_f, out.temp_c);
     }
+    applyTrendArrowBadge(elOvOutTrendArrow, out.temp_trend_arrow);
+
+    // Outdoor High / Low Pills
+    const outExt = out.temp_extremes || {};
+    if (elOvOutLowPill) {
+      elOvOutLowPill.innerHTML =
+        outExt.low !== null && outExt.low !== undefined
+          ? `Low: ${Number(outExt.low).toFixed(1)}&deg;F (${escapeHtml(outExt.low_time || "--")})`
+          : `Low: --.-&deg;F (--)`;
+    }
+    if (elOvOutHighPill) {
+      elOvOutHighPill.innerHTML =
+        outExt.high !== null && outExt.high !== undefined
+          ? `High: ${Number(outExt.high).toFixed(1)}&deg;F (${escapeHtml(outExt.high_time || "--")})`
+          : `High: --.-&deg;F (--)`;
+    }
+
+    // 24h Sparkline on Hero Card
+    renderSvgSparkline(elOvOutSparkline, out.sparkline_24h, "#38bdf8", "heroSparkGrad");
 
     if (elOvOutSpread) {
       if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
@@ -519,21 +930,48 @@
     if (elOvNowcastText) {
       elOvNowcastText.textContent = cond.nowcast_summary || "";
     }
+    if (elOvNowcastConfidence && nowcast.confidence_pct) {
+      elOvNowcastConfidence.textContent = `Confidence: ${nowcast.confidence_pct}%`;
+    }
+    if (elOvEstHigh) {
+      elOvEstHigh.innerHTML =
+        nowcast.est_daytime_high_f !== null && nowcast.est_daytime_high_f !== undefined
+          ? `Est. High: ${Number(nowcast.est_daytime_high_f).toFixed(1)}&deg;F`
+          : `Est. High: --`;
+    }
+    if (elOvEstLow) {
+      elOvEstLow.innerHTML =
+        nowcast.est_overnight_low_f !== null && nowcast.est_overnight_low_f !== undefined
+          ? `Est. Low: ${Number(nowcast.est_overnight_low_f).toFixed(1)}&deg;F`
+          : `Est. Low: --`;
+    }
+    if (elOvPrecipProb) {
+      elOvPrecipProb.textContent =
+        nowcast.precip_prob_pct !== null && nowcast.precip_prob_pct !== undefined
+          ? `Precip Prob: ${nowcast.precip_prob_pct}%`
+          : `Precip Prob: --%`;
+    }
 
-    // Indoor card
+    // Indoor Card + Sparkline + Extremes
     if (elOvInCount) elOvInCount.textContent = `${ind.sensor_count ?? 0} station(s)`;
     if (elOvInTemp) {
-      elOvInTemp.innerHTML =
-        ind.temp_f !== null && ind.temp_f !== undefined
-          ? `${Number(ind.temp_f).toFixed(1)}&deg;F`
-          : `--.-&deg;F`;
+      elOvInTemp.innerHTML = formatTempPrimary(ind.temp_f, ind.temp_c);
     }
     if (elOvInTempC) {
-      elOvInTempC.innerHTML =
-        ind.temp_c !== null && ind.temp_c !== undefined
-          ? `${Number(ind.temp_c).toFixed(1)}&deg;C`
-          : `--.-&deg;C`;
+      elOvInTempC.innerHTML = formatTempSecondary(ind.temp_f, ind.temp_c);
     }
+    applyTrendArrowBadge(elOvInTrendArrow, ind.temp_trend_arrow);
+
+    const inExt = ind.temp_extremes || {};
+    if (elOvInExtremes) {
+      if (inExt.low !== null && inExt.high !== null && inExt.low !== undefined) {
+        elOvInExtremes.innerHTML = `L: ${Number(inExt.low).toFixed(1)}&deg;F | H: ${Number(inExt.high).toFixed(1)}&deg;F`;
+      } else {
+        elOvInExtremes.textContent = `Low: -- | High: --`;
+      }
+    }
+    renderSvgSparkline(elOvInSparkline, ind.sparkline_24h, "#60a5fa", "indoorSparkGrad");
+
     if (elOvInRh) {
       elOvInRh.textContent =
         ind.humidity !== null && ind.humidity !== undefined
@@ -576,62 +1014,126 @@
           : "--";
     }
 
-    // Animated Wind Speed & Compass Rose Card
-    const windMph = out.wind_avg_mph !== null && out.wind_avg_mph !== undefined ? Number(out.wind_avg_mph) : 0;
-    const windCard = out.wind_cardinal || "--";
-    const windDeg = out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
+    // AcuRite Radial Wind Gauge Card
+    const windMph =
+      out.wind_avg_mph !== null && out.wind_avg_mph !== undefined ? Number(out.wind_avg_mph) : 0;
+    const wind10mAvg =
+      out.wind_10m_avg_mph !== null && out.wind_10m_avg_mph !== undefined
+        ? Number(out.wind_10m_avg_mph)
+        : windMph;
+    const windPeakToday =
+      out.wind_peak_today_mph !== null && out.wind_peak_today_mph !== undefined
+        ? Number(out.wind_peak_today_mph)
+        : Number(out.wind_gust_mph || 0);
+    const windCard = out.wind_cardinal || "N";
+    const windDeg =
+      out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
 
     if (elOvWindSpeed) {
-      elOvWindSpeed.textContent =
-        out.wind_avg_mph !== null && out.wind_avg_mph !== undefined
-          ? `${windMph.toFixed(1)} mph ${windCard !== "--" ? windCard : ""}`
-          : `0.0 mph`;
+      elOvWindSpeed.textContent = `${formatWindSpeed(windMph)} ${windCard}`;
     }
     if (elOvWindGust) {
-      elOvWindGust.textContent =
-        out.wind_gust_mph !== null && out.wind_gust_mph !== undefined
-          ? `Peak Gust: ${Number(out.wind_gust_mph).toFixed(1)} mph (${Number(out.wind_gust_mps || 0).toFixed(1)} m/s)`
-          : `Peak Gust: 0.0 mph`;
+      elOvWindGust.textContent = `Peak Gust: ${formatWindSpeed(windPeakToday)}${out.wind_peak_today_time ? " (" + out.wind_peak_today_time + ")" : ""}`;
     }
     if (elOvWindBearing) {
-      elOvWindBearing.textContent =
-        out.wind_dir_deg !== null && out.wind_dir_deg !== undefined
-          ? `Bearing: ${windDeg.toFixed(0)} deg (${windCard})`
-          : `Bearing: -- deg`;
+      elOvWindBearing.textContent = `Bearing: ${windDeg.toFixed(0)}° (${windCard})`;
     }
+    if (elWindDialCardinal) elWindDialCardinal.textContent = windCard;
+    if (elWindDialSpeed) elWindDialSpeed.textContent = `${windMph.toFixed(1)} mph`;
+    if (elWindFlankAvg) elWindFlankAvg.textContent = `Avg: ${wind10mAvg.toFixed(1)}`;
+    if (elWindFlankPeak) elWindFlankPeak.textContent = `Peak: ${windPeakToday.toFixed(1)}`;
 
     if (elCompassNeedle) {
       elCompassNeedle.style.transform = `rotate(${windDeg}deg)`;
     }
-    if (elCompassPulseRing) {
-      elCompassPulseRing.classList.toggle("compass-active-pulse", windMph > 0.5);
+    if (elWindGlowRing) {
+      let ringColor = "#38bdf8";
+      if (windMph >= 25) ringColor = "#ef4444";
+      else if (windMph >= 15) ringColor = "#f59e0b";
+      else if (windMph >= 5) ringColor = "#10b981";
+      elWindGlowRing.setAttribute("stroke", ringColor);
     }
+    updateWindVarianceWedge(out.wind_15m_bearings, windDeg);
 
-    // Barometric Pressure Card (inHg & hPa)
+    // Vertical Barometer Tower Gauge (29.20 inHg bottom [y=124] to 30.50 inHg top [y=10])
     if (baro.pressure_inhg !== null && baro.pressure_inhg !== undefined) {
-      const inhgStr = `${Number(baro.pressure_inhg).toFixed(2)} inHg`;
-      if (elOvBaroInhg) elOvBaroInhg.textContent = inhgStr;
-      if (elBaroHeader) elBaroHeader.textContent = inhgStr;
+      const pInhg = Number(baro.pressure_inhg);
+      const pHpa = Number(baro.pressure_hpa || pInhg * 33.8639);
+      const primaryBaroStr =
+        userSettings.pressure_unit === "hPa"
+          ? `${pHpa.toFixed(1)} hPa`
+          : `${pInhg.toFixed(2)} inHg`;
+
+      if (elOvBaroInhg) elOvBaroInhg.textContent = primaryBaroStr;
+      if (elBaroHeader) elBaroHeader.textContent = primaryBaroStr;
+      applyTrendArrowBadge(elOvBaroTrendArrow, baro.trend_arrow);
+
       if (elOvBaroHpa) {
-        elOvBaroHpa.textContent = `${Number(baro.pressure_hpa).toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
+        elOvBaroHpa.textContent = `${pHpa.toFixed(1)} hPa | ${baro.trend_label || "Steady"}`;
+      }
+      const bExt = baro.extremes || {};
+      if (elOvBaroExtremes && bExt.low !== null && bExt.high !== null && bExt.low !== undefined) {
+        elOvBaroExtremes.textContent = `Today L: ${Number(bExt.low).toFixed(2)} | H: ${Number(bExt.high).toFixed(2)} inHg`;
       }
       if (elOvBaroSource) {
         elOvBaroSource.textContent =
           baro.source === "rf_sensor"
             ? "Source: Local 433 MHz Barometer"
-            : "Source: Regional Open-Meteo Barometer";
+            : "Source: Regional Reference Barometer";
       }
-    } else {
-      if (elOvBaroInhg) elOvBaroInhg.textContent = "--.-- inHg";
-      if (elOvBaroHpa) elOvBaroHpa.textContent = "Awaiting barometric sync...";
+
+      // Scale 29.20 -> 30.50 inHg into SVG y=[124..10], height=[0..114]
+      const clampedP = Math.max(29.2, Math.min(30.5, pInhg));
+      const ratio = (clampedP - 29.2) / (30.5 - 29.2);
+      const fillH = Math.round(ratio * 114);
+      const fillY = 124 - fillH;
+      if (elBaroMercuryFill) {
+        elBaroMercuryFill.setAttribute("y", String(fillY));
+        elBaroMercuryFill.setAttribute("height", String(fillH));
+      }
+      if (elBaroTowerPointer) {
+        elBaroTowerPointer.setAttribute("transform", `translate(0, ${fillY})`);
+      }
     }
 
-    // Outdoor Humidity & Dew Point + Feels Like
+    // Animated Graduated Rain Cylinder + AcuRite Rain Records
+    const todayRainIn = Number(rainRec.today_in ?? out.rain_24h_in ?? 0);
+    const todayRainMm = Number(rainRec.today_mm ?? out.rain_24h_mm ?? 0);
+    if (elOvRain24h) {
+      elOvRain24h.textContent =
+        userSettings.rain_unit === "mm"
+          ? `${todayRainMm.toFixed(1)} mm`
+          : `${todayRainIn.toFixed(2)} in`;
+    }
+    if (elOvRainMm) {
+      elOvRainMm.textContent = `${todayRainMm.toFixed(1)} mm today`;
+    }
+    if (elRainRecRate) elRainRecRate.textContent = `${Number(rainRec.rate_in_h || 0).toFixed(2)} in/hr`;
+    if (elRainRecWeek) elRainRecWeek.textContent = `${Number(rainRec.week_in || 0).toFixed(2)} in`;
+    if (elRainRecMonth) elRainRecMonth.textContent = `${Number(rainRec.month_in || 0).toFixed(2)} in`;
+    if (elRainRecYear) elRainRecYear.textContent = `${Number(rainRec.year_in || 0).toFixed(2)} in`;
+
+    // Scale 0.00" -> 2.00" into SVG y=[124..12], height=[0..112]
+    const clampedRain = Math.max(0, Math.min(2.0, todayRainIn));
+    const rainRatio = clampedRain / 2.0;
+    const rainFillH = Math.round(rainRatio * 112);
+    const rainFillY = 124 - rainFillH;
+    if (elRainCylinderFill) {
+      elRainCylinderFill.setAttribute("y", String(rainFillY));
+      elRainCylinderFill.setAttribute("height", String(rainFillH));
+    }
+    if (elRainCylinderMeniscus) {
+      elRainCylinderMeniscus.setAttribute("cy", String(rainFillY));
+    }
+
+    // Outdoor Humidity Semi-Circular Comfort Gauge + Solar/UV Arc
+    const outRh = out.humidity !== null && out.humidity !== undefined ? Number(out.humidity) : null;
     if (elOvOutRh) {
-      elOvOutRh.textContent =
-        out.humidity !== null && out.humidity !== undefined
-          ? `${Number(out.humidity).toFixed(0)}%`
-          : `--%`;
+      elOvOutRh.textContent = outRh !== null ? `${outRh.toFixed(0)}%` : `--%`;
+    }
+    const rhExt = out.humidity_extremes || {};
+    if (elOvOutRhExtremes && rhExt.low !== null && rhExt.high !== null && rhExt.low !== undefined) {
+      elOvOutRhExtremes.textContent = `Low: ${Number(rhExt.low).toFixed(0)}% | High: ${Number(rhExt.high).toFixed(0)}%`;
     }
     if (elOvOutDp) {
       elOvOutDp.innerHTML =
@@ -645,15 +1147,528 @@
           ? `Feels Like: ${Number(out.feels_like_f).toFixed(1)}&deg;F (${Number(out.feels_like_c).toFixed(1)}&deg;C)`
           : `Feels Like: --`;
     }
+    if (outRh !== null) {
+      const arcTotal = 141.3;
+      const offset = arcTotal * (1 - Math.max(0, Math.min(100, outRh)) / 100);
+      if (elRhGaugeArc) elRhGaugeArc.setAttribute("stroke-dashoffset", offset.toFixed(1));
+      if (elOvRhComfortBadge) {
+        let label = "OPTIMAL";
+        if (outRh < 30) label = "DRY";
+        else if (outRh <= 60) label = "OPTIMAL";
+        else if (outRh <= 85) label = "HUMID";
+        else label = "SATURATED";
+        elOvRhComfortBadge.textContent = label;
+      }
+    }
 
-    // Rain & UV
-    if (elOvRain24h) elOvRain24h.textContent = `${Number(out.rain_24h_in || 0).toFixed(2)} in`;
-    if (elOvRainMm) elOvRainMm.textContent = `${Number(out.rain_24h_mm || 0).toFixed(1)} mm over last 24 hours`;
-    const uvStr =
-      out.uv_index !== null && out.uv_index !== undefined ? `UV ${Number(out.uv_index).toFixed(1)}` : "UV 0.0";
+    const uvVal = out.uv_index !== null && out.uv_index !== undefined ? Number(out.uv_index) : 0;
     const luxStr =
       out.lux !== null && out.lux !== undefined ? `${Number(out.lux).toLocaleString()} lux` : "-- lux";
-    if (elOvUvInline) elOvUvInline.textContent = `Solar: ${uvStr} | ${luxStr}`;
+    if (elOvUvInline) elOvUvInline.textContent = `UV ${uvVal.toFixed(1)} | ${luxStr}`;
+    if (elUvBarFill) {
+      const uvPct = Math.max(2, Math.min(100, (uvVal / 11) * 100));
+      elUvBarFill.style.width = `${uvPct.toFixed(0)}%`;
+    }
+  }
+
+  // ==========================================================================
+  // NWS CORROBORATION, ACTIVE ALERTS & LIVE RADAR (LEAFLET + RAINVIEWER)
+  // ==========================================================================
+  async function fetchNwsSummary(forceRefresh) {
+    const url = forceRefresh ? "/api/nws?force=true" : "/api/nws";
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    nwsLoadedOnce = true;
+
+    const st = data.station || {};
+    const obs = data.observation || {};
+    const deltas = data.corroboration || {};
+    const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+    const forecast = Array.isArray(data.forecast) ? data.forecast : [];
+
+    // Active NWS Alert Banner at top of dashboard
+    if (elNwsAlertBanner) {
+      if (alerts.length > 0) {
+        const topAlert = alerts[0];
+        elNwsAlertBanner.innerHTML = `
+          <div>
+            <strong>⚠️ NWS ACTIVE ALERT (${escapeHtml(topAlert.severity || "Advisory")}):</strong>
+            ${escapeHtml(topAlert.headline || topAlert.event)}
+          </div>
+          <span class="badge badge-batt-low">${alerts.length} ACTIVE</span>
+        `;
+        elNwsAlertBanner.classList.remove("hidden");
+      } else {
+        elNwsAlertBanner.classList.add("hidden");
+      }
+    }
+
+    // Overview Dashboard Corroboration Strip
+    if (elOvNwsStationBadge) {
+      elOvNwsStationBadge.textContent = st.station_id
+        ? `NWS: ${st.station_id} (${st.wfo || "WFO"})`
+        : "NWS: Baseline";
+    }
+
+    if (elOvNwsSummaryBadge) {
+      const localT =
+        deltas.local_temp_f !== undefined && deltas.local_temp_f !== null
+          ? `${Number(deltas.local_temp_f).toFixed(1)}°F`
+          : "--";
+      const nwsT =
+        obs.temp_f !== undefined && obs.temp_f !== null ? `${Number(obs.temp_f).toFixed(1)}°F` : "--";
+      const dTemp =
+        deltas.temp_delta_f !== undefined && deltas.temp_delta_f !== null
+          ? `${deltas.temp_delta_f >= 0 ? "+" : ""}${Number(deltas.temp_delta_f).toFixed(1)}°F`
+          : "--";
+      elOvNwsSummaryBadge.textContent = `Local Ensemble: ${localT} | NWS Official (${st.station_id || "Station"}): ${nwsT} | Microclimate Delta: ${dTemp} (${obs.text_description || "Synced"})`;
+    }
+
+    // View 5 Corroboration Table
+    if (elNwsCorroborationTbody) {
+      const fmtVal = (v, unit, d) =>
+        v !== null && v !== undefined ? `${Number(v).toFixed(d)}${unit}` : "--";
+      const fmtDelta = (v, unit, d) =>
+        v !== null && v !== undefined
+          ? `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(d)}${unit}`
+          : "--";
+
+      elNwsCorroborationTbody.innerHTML = `
+        <tr>
+          <td><strong>Outdoor Temperature</strong></td>
+          <td class="mono">${fmtVal(deltas.local_temp_f, "°F", 1)}</td>
+          <td class="mono">${fmtVal(obs.temp_f, "°F", 1)}</td>
+          <td class="mono">${fmtDelta(deltas.temp_delta_f, "°F", 1)}</td>
+          <td><span class="badge badge-batt-ok">${escapeHtml(deltas.status || "Corroborated")}</span></td>
+        </tr>
+        <tr>
+          <td><strong>Relative Humidity</strong></td>
+          <td class="mono">${fmtVal(deltas.local_rh, "%", 0)}</td>
+          <td class="mono">${fmtVal(obs.humidity, "%", 0)}</td>
+          <td class="mono">${fmtDelta(deltas.humidity_delta_pct, "%", 1)}</td>
+          <td><span class="badge">Hyperlocal RH</span></td>
+        </tr>
+        <tr>
+          <td><strong>Barometric Pressure</strong></td>
+          <td class="mono">${fmtVal(deltas.local_baro_inhg, " inHg", 2)}</td>
+          <td class="mono">${fmtVal(obs.pressure_inhg, " inHg", 2)}</td>
+          <td class="mono">${fmtDelta(deltas.pressure_delta_inhg, " inHg", 2)}</td>
+          <td><span class="badge">Sea-Level Calibrated</span></td>
+        </tr>
+        <tr>
+          <td><strong>Sustained Wind Speed</strong></td>
+          <td class="mono">${fmtVal(deltas.local_wind_mph, " mph", 1)}</td>
+          <td class="mono">${fmtVal(obs.wind_speed_mph, " mph", 1)} (${escapeHtml(obs.wind_cardinal || "--")})</td>
+          <td class="mono">${fmtDelta(deltas.wind_delta_mph, " mph", 1)}</td>
+          <td><span class="badge">Anemometer vs ASOS</span></td>
+        </tr>
+      `;
+    }
+
+    if (elNwsWfoBadge) {
+      elNwsWfoBadge.textContent = st.wfo
+        ? `WFO: ${st.wfo} (${st.grid_x},${st.grid_y}) | Station: ${st.station_id}`
+        : `WFO: api.weather.gov`;
+    }
+
+    // View 5 7-Day Forecast Cards
+    if (elNwsForecastGrid) {
+      if (forecast.length === 0) {
+        elNwsForecastGrid.innerHTML = `<div class="text-muted">Official NWS 7-day forecast currently unavailable or offline.</div>`;
+      } else {
+        elNwsForecastGrid.innerHTML = forecast
+          .slice(0, 12)
+          .map((p) => {
+            const popBadge =
+              p.pop_pct !== null && p.pop_pct !== undefined && p.pop_pct > 0
+                ? `<span class="badge badge-indoor">PoP ${p.pop_pct}%</span>`
+                : "";
+            return `
+              <div class="nws-period-tile">
+                <div class="nws-period-header">
+                  <span class="nws-period-name">${escapeHtml(p.name)}</span>
+                  <span class="nws-period-temp ${p.is_daytime ? "daytime" : ""}">${p.temperature ?? "--"}&deg;${escapeHtml(p.temperature_unit || "F")}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span class="nws-period-short">${escapeHtml(p.short_forecast || "")}</span>
+                  ${popBadge}
+                </div>
+                <span class="mono text-muted" style="font-size:11px;">Wind: ${escapeHtml(p.wind_speed || "--")} ${escapeHtml(p.wind_direction || "")}</span>
+                <p class="nws-period-detail">${escapeHtml(p.detailed_forecast || "")}</p>
+              </div>
+            `;
+          })
+          .join("");
+      }
+    }
+  }
+
+  function createCrosshairIcon() {
+    if (typeof L === "undefined") return null;
+    return L.divIcon({
+      className: "station-marker-pin",
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    });
+  }
+
+  async function initAndRefreshRadarMaps() {
+    if (typeof L === "undefined") return;
+    const lat = Number(userSettings.latitude || 38.627);
+    const lon = Number(userSettings.longitude || -90.1994);
+    const zoom = Number(userSettings.radar_zoom || 8);
+
+    // 1. Mini Radar on Overview Dashboard
+    const miniContainer = document.getElementById("mini-radar-map");
+    if (miniContainer && !miniRadarMap) {
+      miniRadarMap = L.map("mini-radar-map", {
+        center: [lat, lon],
+        zoom: Math.max(5, zoom - 1),
+        zoomControl: false,
+        attributionControl: false,
+      });
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        maxZoom: 18,
+        subdomains: "abcd",
+      }).addTo(miniRadarMap);
+      miniStationMarker = L.marker([lat, lon], { icon: createCrosshairIcon() })
+        .addTo(miniRadarMap)
+        .bindTooltip(userSettings.station_name || "SkyScry Station");
+    } else if (miniRadarMap && miniStationMarker) {
+      miniStationMarker.setLatLng([lat, lon]);
+    }
+
+    // 2. Full Radar on View 5
+    const fullContainer = document.getElementById("full-radar-map");
+    if (fullContainer && !fullRadarMap && activeTab === "radar") {
+      fullRadarMap = L.map("full-radar-map", {
+        center: [lat, lon],
+        zoom: zoom,
+      });
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        maxZoom: 18,
+        subdomains: "abcd",
+        attribution: "&copy; CARTO &amp; RainViewer / NOAA NEXRAD",
+      }).addTo(fullRadarMap);
+      fullStationMarker = L.marker([lat, lon], { icon: createCrosshairIcon() })
+        .addTo(fullRadarMap)
+        .bindPopup(`<strong>${escapeHtml(userSettings.station_name)}</strong><br/>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+    } else if (fullRadarMap && fullStationMarker) {
+      fullStationMarker.setLatLng([lat, lon]);
+    }
+
+    if (elRadarStationSubtitle) {
+      elRadarStationSubtitle.textContent = `Centered on ${userSettings.station_name} (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+    }
+
+    // Fetch RainViewer timeline JSON if not loaded recently
+    try {
+      const rvRes = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+      if (rvRes.ok) {
+        rainViewerData = await rvRes.json();
+        updateRadarFrameList();
+        showRadarFrame(radarFrames.length - 1);
+      }
+    } catch (err) {
+      // Fallback to NOAA IEM NEXRAD tile layer if RainViewer is unreachable
+      applyNexradTileFallback();
+    }
+  }
+
+  function updateRadarFrameList() {
+    if (!rainViewerData) return;
+    if (radarLayerMode === "satellite" && rainViewerData.satellite && Array.isArray(rainViewerData.satellite.infrared)) {
+      radarFrames = rainViewerData.satellite.infrared;
+    } else if (rainViewerData.radar && Array.isArray(rainViewerData.radar.past)) {
+      const past = rainViewerData.radar.past || [];
+      const nowcast = rainViewerData.radar.nowcast || [];
+      radarFrames = past.concat(nowcast);
+    } else {
+      radarFrames = [];
+    }
+
+    if (elRadarFrameSlider && radarFrames.length > 0) {
+      elRadarFrameSlider.max = String(radarFrames.length - 1);
+      elRadarFrameSlider.value = String(radarFrames.length - 1);
+    }
+  }
+
+  function applyNexradTileFallback() {
+    const nexradUrl = "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png";
+    if (miniRadarMap) {
+      if (miniRadarTileLayer) miniRadarMap.removeLayer(miniRadarTileLayer);
+      miniRadarTileLayer = L.tileLayer(nexradUrl, { opacity: 0.68 }).addTo(miniRadarMap);
+    }
+    if (fullRadarMap) {
+      if (fullActiveTileLayer) fullRadarMap.removeLayer(fullActiveTileLayer);
+      fullActiveTileLayer = L.tileLayer(nexradUrl, { opacity: 0.72 }).addTo(fullRadarMap);
+    }
+    if (elMiniRadarTimestamp) elMiniRadarTimestamp.textContent = "NOAA NEXRAD Live";
+    if (elRadarFrameTime) elRadarFrameTime.textContent = "NOAA NEXRAD Base Reflectivity";
+  }
+
+  function showRadarFrame(idx) {
+    if (radarLayerMode === "nexrad") {
+      applyNexradTileFallback();
+      return;
+    }
+    if (!rainViewerData || radarFrames.length === 0) {
+      applyNexradTileFallback();
+      return;
+    }
+
+    currentFrameIdx = Math.max(0, Math.min(radarFrames.length - 1, idx));
+    const frame = radarFrames[currentFrameIdx];
+    if (!frame || !frame.path) return;
+
+    const host = rainViewerData.host || "https://tilecache.rainviewer.com";
+    const tileUrl =
+      radarLayerMode === "satellite"
+        ? `${host}${frame.path}/256/{z}/{x}/{y}/0/0_0.png`
+        : `${host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+
+    // Update Mini Radar with latest frame
+    if (miniRadarMap && currentFrameIdx === radarFrames.length - 1) {
+      if (miniRadarTileLayer) miniRadarMap.removeLayer(miniRadarTileLayer);
+      miniRadarTileLayer = L.tileLayer(tileUrl, { opacity: 0.72, maxZoom: 18 }).addTo(miniRadarMap);
+    }
+
+    // Update Full Radar with scrubbed frame
+    if (fullRadarMap) {
+      if (fullActiveTileLayer) fullRadarMap.removeLayer(fullActiveTileLayer);
+      fullActiveTileLayer = L.tileLayer(tileUrl, { opacity: 0.75, maxZoom: 18 }).addTo(fullRadarMap);
+    }
+
+    const frameDate = frame.time ? new Date(frame.time * 1000) : new Date();
+    const timeLabel = frameDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (elRadarFrameTime) elRadarFrameTime.textContent = timeLabel;
+    if (elMiniRadarTimestamp && currentFrameIdx === radarFrames.length - 1) {
+      elMiniRadarTimestamp.textContent = `Radar: ${timeLabel}`;
+    }
+    if (elRadarFrameSlider) elRadarFrameSlider.value = String(currentFrameIdx);
+  }
+
+  function startRadarLoop() {
+    stopRadarLoop();
+    if (!radarPlaying) return;
+    radarTimer = setInterval(() => {
+      if (activeTab !== "radar" || radarFrames.length === 0 || radarLayerMode === "nexrad") return;
+      const nextIdx = (currentFrameIdx + 1) % radarFrames.length;
+      showRadarFrame(nextIdx);
+    }, 950);
+  }
+
+  function stopRadarLoop() {
+    if (radarTimer) {
+      clearInterval(radarTimer);
+      radarTimer = null;
+    }
+  }
+
+  // ==========================================================================
+  // VIEW 2 EXPANSION: CLIMATOLOGY & SEASONAL INSIGHTS FETCHER
+  // ==========================================================================
+  async function fetchClimatology() {
+    const res = await fetch("/api/climatology");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    climatologyLoadedOnce = true;
+
+    const traj = data.seasonal_trajectory || {};
+    const w7 = data.window_7d || {};
+    const w30 = data.window_30d || {};
+    const rec = data.records_table || {};
+
+    if (elClimTrajectoryNarrative) {
+      elClimTrajectoryNarrative.textContent =
+        traj.narrative || "Accumulating daily telemetry rollups for seasonal trajectory analysis.";
+    }
+    if (elClimAnomalyBadge) {
+      if (traj.anomaly_7d_vs_30d_f !== null && traj.anomaly_7d_vs_30d_f !== undefined) {
+        const d = Number(traj.anomaly_7d_vs_30d_f);
+        elClimAnomalyBadge.textContent = `7d vs 30d Anomaly: ${d >= 0 ? "+" : ""}${d.toFixed(1)}°F`;
+      } else {
+        elClimAnomalyBadge.textContent = "Seasonal Baseline Active";
+      }
+    }
+
+    if (elClim7dMean) {
+      elClim7dMean.innerHTML =
+        w7.mean_temp_f !== null && w7.mean_temp_f !== undefined
+          ? `${Number(w7.mean_temp_f).toFixed(1)}&deg;F`
+          : `--.-&deg;F`;
+    }
+    if (elClim7dSwing) {
+      elClim7dSwing.innerHTML =
+        w7.avg_diurnal_swing_f !== null && w7.avg_diurnal_swing_f !== undefined
+          ? `Avg Diurnal Swing: ${Number(w7.avg_diurnal_swing_f).toFixed(1)}&deg;F`
+          : `Avg Diurnal Swing: --`;
+    }
+    if (elClim30dMean) {
+      elClim30dMean.innerHTML =
+        w30.mean_temp_f !== null && w30.mean_temp_f !== undefined
+          ? `${Number(w30.mean_temp_f).toFixed(1)}&deg;F`
+          : `--.-&deg;F`;
+    }
+    if (elClimBaroVol) {
+      elClimBaroVol.textContent =
+        w30.baro_volatility_inhg !== null && w30.baro_volatility_inhg !== undefined
+          ? `Baro Volatility: ±${Number(w30.baro_volatility_inhg).toFixed(2)} inHg`
+          : `Baro Volatility: --`;
+    }
+    if (elClimHddCdd) {
+      elClimHddCdd.textContent = `${Number(w30.hdd_total || 0).toFixed(0)} HDD / ${Number(w30.cdd_total || 0).toFixed(0)} CDD`;
+    }
+    if (elClimStreak) {
+      if ((w30.current_wet_streak_days || 0) > 0) {
+        elClimStreak.textContent = `${w30.current_wet_streak_days} Wet Day(s)`;
+      } else {
+        elClimStreak.textContent = `${w30.current_dry_streak_days || 0} Dry Day(s)`;
+      }
+    }
+    if (elClimRain30d) {
+      elClimRain30d.textContent = `30d Rain: ${Number(w30.rain_total_in || 0).toFixed(2)} in`;
+    }
+
+    if (elClimRecordsTbody) {
+      const periods = [
+        { key: "today", label: "Today (Since Midnight)" },
+        { key: "week", label: "Past 7 Days" },
+        { key: "month", label: "Current Month (MTD)" },
+        { key: "year", label: "Current Year (YTD)" },
+        { key: "all_time", label: "All-Time Station Record" },
+      ];
+      const fv = (v, u, d) => (v !== null && v !== undefined ? `${Number(v).toFixed(d)}${u}` : "--");
+      elClimRecordsTbody.innerHTML = periods
+        .map((p) => {
+          const r = rec[p.key] || {};
+          return `
+            <tr>
+              <td><strong>${escapeHtml(p.label)}</strong></td>
+              <td class="mono">${fv(r.temp_high_f, "°F", 1)}</td>
+              <td class="mono">${fv(r.temp_low_f, "°F", 1)}</td>
+              <td class="mono">${fv(r.humidity_high, "%", 0)} / ${fv(r.humidity_low, "%", 0)}</td>
+              <td class="mono">${fv(r.wind_gust_max_mph, " mph", 1)}</td>
+              <td class="mono">${fv(r.pressure_high_inhg, "", 2)} / ${fv(r.pressure_low_inhg, " inHg", 2)}</td>
+              <td class="mono">${fv(r.rain_total_in, " in", 2)}</td>
+            </tr>
+          `;
+        })
+        .join("");
+    }
+  }
+
+  // ==========================================================================
+  // VIEW 6: DEDICATED SETTINGS TAB LOAD & SAVE HANDLERS
+  // ==========================================================================
+  async function loadSettingsIntoForms() {
+    const res = await fetch("/api/settings");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const s = data.settings || {};
+    userSettings = Object.assign(userSettings, s);
+    settingsLoadedOnce = true;
+
+    if (elSetTimeoutMinutes && s.inactivity_timeout_minutes) {
+      elSetTimeoutMinutes.value = String(s.inactivity_timeout_minutes);
+    }
+    if (elSetStationName) elSetStationName.value = s.station_name || "";
+    if (elSetLatitude && s.latitude !== undefined) elSetLatitude.value = String(s.latitude);
+    if (elSetLongitude && s.longitude !== undefined) elSetLongitude.value = String(s.longitude);
+    if (elSetElevation && s.elevation_m !== undefined) elSetElevation.value = String(s.elevation_m);
+    if (elSetRadarZoom && s.radar_zoom !== undefined) elSetRadarZoom.value = String(s.radar_zoom);
+    if (elSetNwsGridReadout) {
+      elSetNwsGridReadout.textContent = s.nws_office
+        ? `Resolved NWS Grid: WFO ${s.nws_office} (${s.nws_grid_x},${s.nws_grid_y})`
+        : `NWS Grid resolves automatically from Latitude & Longitude.`;
+    }
+
+    if (elSetOutlierThreshold && s.outlier_threshold_f !== undefined) {
+      elSetOutlierThreshold.value = String(s.outlier_threshold_f);
+    }
+    if (elSetDedupWindow && s.dedup_window_seconds !== undefined) {
+      elSetDedupWindow.value = String(s.dedup_window_seconds);
+    }
+    if (elSetAutoExpunge) elSetAutoExpunge.checked = Boolean(s.auto_expunge_enabled);
+    if (elSetAutoUpdate) elSetAutoUpdate.checked = Boolean(s.auto_update_enabled);
+
+    if (elSetTempUnit && s.temp_unit) elSetTempUnit.value = s.temp_unit;
+    if (elSetWindUnit && s.wind_unit) elSetWindUnit.value = s.wind_unit;
+    if (elSetPressureUnit && s.pressure_unit) elSetPressureUnit.value = s.pressure_unit;
+    if (elSetRainUnit && s.rain_unit) elSetRainUnit.value = s.rain_unit;
+  }
+
+  async function saveSettingsPayload(payload, successMsg) {
+    requireUnlockedOrPrompt(async () => {
+      try {
+        const res = await authorizedWriteFetch("/api/settings", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        userSettings = Object.assign(userSettings, data.settings || {});
+        showToast(successMsg || "Settings saved to encrypted SQLite table.");
+        await refreshAll(true);
+      } catch (err) {
+        showToast(err.message || "Failed to save settings.");
+      }
+    });
+  }
+
+  async function handleChangePasswordSubmit(evt) {
+    evt.preventDefault();
+    requireUnlockedOrPrompt(async () => {
+      const current_password = elSetCurrentPassword ? elSetCurrentPassword.value : "";
+      const new_password = elSetNewPassword ? elSetNewPassword.value : "";
+      const confirm_password = elSetConfirmPassword ? elSetConfirmPassword.value : "";
+      const inactivity_timeout_minutes = elSetTimeoutMinutes
+        ? Number(elSetTimeoutMinutes.value || 15)
+        : 15;
+
+      try {
+        if (new_password) {
+          const res = await authorizedWriteFetch("/api/auth/change-password", {
+            method: "POST",
+            body: JSON.stringify({ current_password, new_password, confirm_password }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          if (elSetCurrentPassword) elSetCurrentPassword.value = "";
+          if (elSetNewPassword) elSetNewPassword.value = "";
+          if (elSetConfirmPassword) elSetConfirmPassword.value = "";
+        }
+        await saveSettingsPayload(
+          { inactivity_timeout_minutes },
+          "Security settings & password updated."
+        );
+      } catch (err) {
+        showToast(err.message || "Failed to update security settings.");
+      }
+    });
+  }
+
+  async function handleVacuumDatabaseClick() {
+    requireUnlockedOrPrompt(async () => {
+      if (elBtnVacuumDb) elBtnVacuumDb.disabled = true;
+      try {
+        const res = await authorizedWriteFetch("/api/maintenance/vacuum", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(
+          `SQLite VACUUM & ANALYZE Complete: ${data.before_mb} MB -> ${data.after_mb} MB (Reclaimed ${data.reclaimed_mb} MB)`
+        );
+        await fetchStatus();
+      } catch (err) {
+        showToast(err.message || "Database vacuum failed.");
+      } finally {
+        if (elBtnVacuumDb) elBtnVacuumDb.disabled = false;
+      }
+    });
   }
 
   // ==========================================================================
@@ -720,7 +1735,9 @@
     `;
 
     const btn = article.querySelector('[data-slot="btn-config"]');
-    btn.addEventListener("click", () => openSensorModal(sensorKey));
+    btn.addEventListener("click", () => {
+      requireUnlockedOrPrompt(() => openSensorModal(sensorKey));
+    });
     return article;
   }
 
@@ -744,7 +1761,6 @@
     const slotSub = cardEl.querySelector('[data-slot="subtitle"]');
     if (slotSub.textContent !== subtitleText) slotSub.textContent = subtitleText;
 
-    // Badges
     const locType = (sensor.location_type || "unassigned").toLowerCase();
     let locBadgeClass = "badge";
     if (locType === "indoor") locBadgeClass += " badge-indoor";
@@ -769,7 +1785,6 @@
     const slotBadges = cardEl.querySelector('[data-slot="badges"]');
     if (slotBadges.innerHTML !== badgesHtml) slotBadges.innerHTML = badgesHtml;
 
-    // Primary Temp & RH
     const slotTemp = cardEl.querySelector('[data-slot="temp"]');
     let tempHtml = `<span class="text-muted">Temp Hidden</span>`;
     if (!hidden.has("temperature")) {
@@ -792,9 +1807,13 @@
     }
     if (slotRh.textContent !== rhText) slotRh.textContent = rhText;
 
-    // Secondary metrics
     const secondaryItems = [];
-    if (!hidden.has("temperature") && !hidden.has("humidity") && r.dew_point_f !== null && r.dew_point_f !== undefined) {
+    if (
+      !hidden.has("temperature") &&
+      !hidden.has("humidity") &&
+      r.dew_point_f !== null &&
+      r.dew_point_f !== undefined
+    ) {
       secondaryItems.push({
         label: "Dew Point",
         val: `${Number(r.dew_point_f).toFixed(1)}F (${Number(r.dew_point_c).toFixed(1)}C)`,
@@ -819,7 +1838,8 @@
     }
     if (!hidden.has("uv_light") && (r.uv_index !== null || r.lux !== null)) {
       const parts = [];
-      if (r.uv_index !== null && r.uv_index !== undefined) parts.push(`UV ${Number(r.uv_index).toFixed(1)}`);
+      if (r.uv_index !== null && r.uv_index !== undefined)
+        parts.push(`UV ${Number(r.uv_index).toFixed(1)}`);
       if (r.lux !== null && r.lux !== undefined) parts.push(`${Number(r.lux).toFixed(0)} lux`);
       secondaryItems.push({ label: "Solar / Light", val: parts.join(" | ") });
     }
@@ -837,7 +1857,6 @@
     if (slotSec.innerHTML !== secHtml) slotSec.innerHTML = secHtml;
     slotSec.classList.toggle("hidden", secondaryItems.length === 0);
 
-    // RF Signal Quality & Packet Count
     const slotRf = cardEl.querySelector('[data-slot="rf-signal"]');
     const barsHtml = buildSignalBarsHtml(sensor.signal_bars || 0, sensor.signal_quality);
     const rfParts = [];
@@ -860,7 +1879,6 @@
     const pktText = `${Number(sensor.packet_count || 0).toLocaleString()} pkts`;
     if (slotPkt.textContent !== pktText) slotPkt.textContent = pktText;
 
-    // Battery lifecycle
     const slotBattDays = cardEl.querySelector('[data-slot="batt-days"]');
     const daysText =
       sensor.days_on_current_battery !== null && sensor.days_on_current_battery !== undefined
@@ -888,11 +1906,7 @@
     );
 
     if (elSensorEmpty) {
-      if (visibleSensors.length === 0) {
-        elSensorEmpty.classList.remove("hidden");
-      } else {
-        elSensorEmpty.classList.add("hidden");
-      }
+      elSensorEmpty.classList.toggle("hidden", visibleSensors.length > 0);
     }
 
     const visibleKeys = new Set(visibleSensors.map((s) => s.sensor_key));
@@ -930,7 +1944,7 @@
   }, 1000);
 
   // ==========================================================================
-  // VIEW 2: MULTI-SECTION HISTORICAL CHARTS (SMOOTHED & IN-PLACE UPDATED)
+  // VIEW 2: MULTI-SECTION HISTORICAL CHARTS
   // ==========================================================================
   const SENSOR_COLORS = [
     "#38bdf8",
@@ -1002,30 +2016,19 @@
     }
 
     const parts = [];
-    if (outChecked && inChecked) {
-      parts.push("Outdoor + Indoor");
-    } else if (outChecked) {
-      parts.push("Outdoor (Trusted)");
-    } else if (inChecked) {
-      parts.push("Indoor (Trusted)");
-    }
+    if (outChecked && inChecked) parts.push("Outdoor + Indoor");
+    else if (outChecked) parts.push("Outdoor (Trusted)");
+    else if (inChecked) parts.push("Indoor (Trusted)");
 
-    if (refChecked) {
-      parts.push("Reference");
-    }
+    if (refChecked) parts.push("Reference");
 
-    if (sensorCheckboxes.length > 0 && checkedSensors.length > 0 && checkedSensors.length < sensorCheckboxes.length) {
+    if (
+      sensorCheckboxes.length > 0 &&
+      checkedSensors.length > 0 &&
+      checkedSensors.length < sensorCheckboxes.length
+    ) {
       parts.push(`${checkedSensors.length} Station(s)`);
-    } else if (!outChecked && !inChecked && checkedSensors.length > 0) {
-      parts.push(`${checkedSensors.length} Streams Selected`);
     }
-
-    const totalStreams = (outChecked ? 1 : 0) + (inChecked ? 1 : 0) + (refChecked ? 1 : 0);
-    if (totalStreams === 3 && checkedSensors.length === sensorCheckboxes.length) {
-      elFilterSummary.textContent = "3 Streams Selected";
-      return;
-    }
-
     elFilterSummary.textContent = parts.length > 0 ? parts.join(" + ") : "Outdoor (Trusted)";
   }
 
@@ -1056,14 +2059,17 @@
       });
     } else {
       trustedStations.forEach((s) => {
-        if (s.location_type === "indoor" && !includeIndoor && !uncheckedSensorKeys.has(s.sensor_key)) {
-          // By default indoor stations follow the indoor category checkbox unless explicitly checked
+        if (
+          s.location_type === "indoor" &&
+          !includeIndoor &&
+          !uncheckedSensorKeys.has(s.sensor_key)
+        ) {
           uncheckedSensorKeys.add(s.sensor_key);
         }
       });
     }
 
-    const html = trustedStations
+    elFilterSensorList.innerHTML = trustedStations
       .map((s) => {
         const isChecked = !uncheckedSensorKeys.has(s.sensor_key);
         const locTag = s.location_type === "indoor" ? "IN" : "OUT";
@@ -1075,7 +2081,6 @@
       })
       .join("");
 
-    elFilterSensorList.innerHTML = html;
     elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]').forEach((cb) => {
       cb.addEventListener("change", () => {
         if (cb.checked) {
@@ -1111,7 +2116,9 @@
     });
 
     if (elFilterSensorList) {
-      const allCbs = Array.from(elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]'));
+      const allCbs = Array.from(
+        elFilterSensorList.querySelectorAll('input[name="chart_sensor_cb"]')
+      );
       if (allCbs.length > 0) {
         const activeKeys = allCbs.filter((cb) => cb.checked).map((cb) => cb.value);
         if (activeKeys.length < allCbs.length) {
@@ -1125,9 +2132,7 @@
     const data = await res.json();
 
     const includeDate = Number(hours) > 24;
-    const labels = (data.timestamps || []).map((iso) =>
-      formatLocalShortTime(iso, includeDate)
-    );
+    const labels = (data.timestamps || []).map((iso) => formatLocalShortTime(iso, includeDate));
     const seriesList = Array.isArray(data.series) ? data.series : [];
     const ensemble = data.ensemble || {};
     const reference = data.reference || {};
@@ -1158,7 +2163,7 @@
     }
     if (Array.isArray(reference.temp_f) && reference.temp_f.some((v) => v !== null)) {
       tempDatasets.push({
-        label: "Regional Reference Baseline (Open-Meteo)",
+        label: "Regional Reference Baseline",
         data: reference.temp_f,
         borderColor: "#94a3b8",
         backgroundColor: "rgba(148, 163, 184, 0.1)",
@@ -1174,7 +2179,11 @@
     }
 
     const rhDatasets = [];
-    if (showEnsemble && Array.isArray(ensemble.humidity) && ensemble.humidity.some((v) => v !== null)) {
+    if (
+      showEnsemble &&
+      Array.isArray(ensemble.humidity) &&
+      ensemble.humidity.some((v) => v !== null)
+    ) {
       rhDatasets.push({
         label: "Outdoor Average (Ensemble Mean)",
         data: ensemble.humidity,
@@ -1192,7 +2201,7 @@
     }
     if (Array.isArray(reference.humidity) && reference.humidity.some((v) => v !== null)) {
       rhDatasets.push({
-        label: "Regional Reference Baseline (Open-Meteo)",
+        label: "Regional Reference Baseline",
         data: reference.humidity,
         borderColor: "#94a3b8",
         backgroundColor: "rgba(148, 163, 184, 0.1)",
@@ -1208,7 +2217,10 @@
     }
 
     const windDatasets = [];
-    if (Array.isArray(reference.wind_avg_mph) && reference.wind_avg_mph.some((v) => v !== null)) {
+    if (
+      Array.isArray(reference.wind_avg_mph) &&
+      reference.wind_avg_mph.some((v) => v !== null)
+    ) {
       windDatasets.push({
         label: "Regional Reference Wind (mph)",
         data: reference.wind_avg_mph,
@@ -1227,7 +2239,6 @@
 
     seriesList.forEach((s, idx) => {
       const color = SENSOR_COLORS[idx % SENSOR_COLORS.length];
-
       if (s.has_temp) {
         tempDatasets.push({
           label: s.display_name,
@@ -1243,7 +2254,6 @@
           order: 1,
         });
       }
-
       if (s.has_humidity) {
         rhDatasets.push({
           label: s.display_name,
@@ -1259,7 +2269,6 @@
           order: 1,
         });
       }
-
       if (s.has_wind) {
         windDatasets.push({
           label: `${s.display_name} (Avg mph)`,
@@ -1289,7 +2298,6 @@
           });
         }
       }
-
       if (s.has_rain) {
         rainDatasets.push({
           label: `${s.display_name} (Rain in)`,
@@ -1372,7 +2380,7 @@
     const rows = Array.isArray(data.readings) ? data.readings : [];
 
     if (elLogSummary) {
-      elLogSummary.textContent = `${rows.length} records loaded`;
+      elLogSummary.textContent = `${rows.length} records loaded (max 2000)`;
     }
     logsLoadedOnce = true;
 
@@ -1392,8 +2400,10 @@
             ? `${Number(r.temp_f).toFixed(1)}F / ${Number(r.temp_c).toFixed(1)}C`
             : "--";
         const rhDpParts = [];
-        if (r.humidity !== null && r.humidity !== undefined) rhDpParts.push(`${Number(r.humidity).toFixed(0)}%`);
-        if (r.dew_point_f !== null && r.dew_point_f !== undefined) rhDpParts.push(`DP ${Number(r.dew_point_f).toFixed(1)}F`);
+        if (r.humidity !== null && r.humidity !== undefined)
+          rhDpParts.push(`${Number(r.humidity).toFixed(0)}%`);
+        if (r.dew_point_f !== null && r.dew_point_f !== undefined)
+          rhDpParts.push(`DP ${Number(r.dew_point_f).toFixed(1)}F`);
         const rhCell = rhDpParts.length > 0 ? rhDpParts.join(" | ") : "--";
 
         let windCell = "--";
@@ -1433,7 +2443,7 @@
   }
 
   // ==========================================================================
-  // SENSOR CONFIGURATION MODAL & MAINTENANCE ACTIONS
+  // SENSOR CONFIGURATION MODAL & ADMIN-GATED MAINTENANCE ACTIONS
   // ==========================================================================
   function openSensorModal(sensorKey) {
     const sensor = sensorsCache.find((s) => s.sensor_key === sensorKey);
@@ -1444,7 +2454,8 @@
       elModalSubtitle.textContent = `${sensor.model} #${sensor.sensor_id} (Key: ${sensor.sensor_key})`;
     }
     if (elModalAlias) elModalAlias.value = sensor.alias || "";
-    const curLoc = sensor.location_type === "unassigned" ? "ignore" : (sensor.location_type || "ignore");
+    const curLoc =
+      sensor.location_type === "unassigned" ? "ignore" : sensor.location_type || "ignore";
     if (elModalLocation) elModalLocation.value = curLoc;
     if (elModalTrusted) elModalTrusted.checked = Boolean(sensor.is_trusted);
     if (elModalBattReset) elModalBattReset.checked = false;
@@ -1471,9 +2482,7 @@
 
     const hiddenMetrics = [];
     document.querySelectorAll('input[name="vis_metric"]').forEach((cb) => {
-      if (!cb.checked) {
-        hiddenMetrics.push(cb.value);
-      }
+      if (!cb.checked) hiddenMetrics.push(cb.value);
     });
 
     const payload = {
@@ -1490,14 +2499,7 @@
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const contentType = res.headers.get("content-type") || "";
-      let data = {};
-      if (contentType.includes("application/json")) {
-        data = await res.json();
-      } else {
-        const rawText = await res.text();
-        throw new Error(`Server returned HTTP ${res.status}: ${rawText.slice(0, 120)}`);
-      }
+      const data = await res.json();
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
@@ -1513,78 +2515,116 @@
     }
   }
 
-  async function handlePurgeOutliersClick() {
-    if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = true;
-    try {
-      const res = await authorizedWriteFetch("/api/maintenance/purge-outliers", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      showToast(
-        `Outlier Purge Complete: Expunged ${data.deleted_readings} skewed reading(s) and ${data.deleted_sensors} phantom sensor(s).`
-      );
-      await refreshAll(true);
-    } catch (err) {
-      showToast(err.message || "Failed to purge outliers.");
-      console.error("Failed to purge outliers:", err);
-    } finally {
-      if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = false;
-    }
+  function handlePurgeOutliersClick() {
+    requireUnlockedOrPrompt(async () => {
+      if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = true;
+      try {
+        const res = await authorizedWriteFetch("/api/maintenance/purge-outliers", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(
+          `Outlier Purge Complete: Expunged ${data.deleted_readings} skewed reading(s) and ${data.deleted_sensors} phantom sensor(s).`
+        );
+        await refreshAll(true);
+      } catch (err) {
+        showToast(err.message || "Failed to purge outliers.");
+      } finally {
+        if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = false;
+      }
+    });
   }
 
-  async function handleTriggerUpdateClick() {
-    if (!elBtnTriggerUpdate) return;
-    elBtnTriggerUpdate.disabled = true;
-    elBtnTriggerUpdate.textContent = "Checking...";
-    try {
-      const res = await authorizedWriteFetch("/api/trigger-update", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const gitUpd = data.git && data.git.updated;
-      const rtlUpd = data.rtl433 && data.rtl433.updated;
-      const cur = data.current || {};
-      showToast(
-        `Update Check Complete: SkyScry v${cur.version || "--"} (git:${cur.git_commit || "local"})${gitUpd ? " [PULLED NEW COMMIT]" : " [Up to Date]"} | rtl_433: ${cur.rtl433_version || "ready"}${rtlUpd ? " [UPDATED]" : ""}`
-      );
-      await refreshAll(true);
-    } catch (err) {
-      showToast(err.message || "Update check failed.");
-      console.error("Update check failed:", err);
-    } finally {
-      elBtnTriggerUpdate.disabled = false;
-      elBtnTriggerUpdate.textContent = "Check & Apply Updates";
-    }
+  function handleTriggerUpdateClick() {
+    requireUnlockedOrPrompt(async () => {
+      if (!elBtnTriggerUpdate) return;
+      elBtnTriggerUpdate.disabled = true;
+      elBtnTriggerUpdate.textContent = "Checking...";
+      try {
+        const res = await authorizedWriteFetch("/api/trigger-update", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const gitUpd = data.git && data.git.updated;
+        const rtlUpd = data.rtl433 && data.rtl433.updated;
+        const cur = data.current || {};
+        showToast(
+          `Update Check Complete: SkyScry v${cur.version || "--"} (git:${cur.git_commit || "local"})${gitUpd ? " [PULLED NEW COMMIT]" : " [Up to Date]"} | rtl_433: ${cur.rtl433_version || "ready"}${rtlUpd ? " [UPDATED]" : ""}`
+        );
+        await refreshAll(true);
+      } catch (err) {
+        showToast(err.message || "Update check failed.");
+      } finally {
+        elBtnTriggerUpdate.disabled = false;
+        elBtnTriggerUpdate.textContent = "Check & Apply Updates";
+      }
+    });
   }
 
-  async function handleSyncReferenceClick() {
-    if (elBtnSyncRef) elBtnSyncRef.disabled = true;
-    try {
-      const res = await authorizedWriteFetch("/api/maintenance/sync-reference", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      showToast(
-        `Synced ${data.synced_records} regional records (${data.latitude}, ${data.longitude}) — Barometer: ${data.latest_pressure_inhg} inHg (${data.latest_pressure_hpa} hPa)`
-      );
-      await refreshAll(true);
-    } catch (err) {
-      showToast(err.message || "Failed to sync regional barometer.");
-      console.error("Failed to sync regional barometer:", err);
-    } finally {
-      if (elBtnSyncRef) elBtnSyncRef.disabled = false;
-    }
+  function handleSyncReferenceClick() {
+    requireUnlockedOrPrompt(async () => {
+      if (elBtnSyncRef) elBtnSyncRef.disabled = true;
+      try {
+        const res = await authorizedWriteFetch("/api/maintenance/sync-reference", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(
+          `Synced ${data.synced_records} regional records (${data.latitude}, ${data.longitude}) — Barometer: ${data.latest_pressure_inhg} inHg`
+        );
+        await fetchNwsSummary(true);
+        await refreshAll(true);
+      } catch (err) {
+        showToast(err.message || "Failed to sync regional barometer.");
+      } finally {
+        if (elBtnSyncRef) elBtnSyncRef.disabled = false;
+      }
+    });
   }
 
   // ==========================================================================
-  // POLLING & EVENT BINDINGS (ISOLATED SUB-TASKS FOR CRASH-PROOF SYNC)
+  // NAVIGATION & POLLING ORCHESTRATION
   // ==========================================================================
+  function switchTab(tabName) {
+    if (tabName === "settings" && !authState.unlocked) {
+      requireUnlockedOrPrompt(() => switchTab("settings"));
+      return;
+    }
+
+    document.querySelectorAll(".tab-btn").forEach((b) => {
+      b.classList.toggle("active", b.getAttribute("data-tab") === tabName);
+    });
+    document.querySelectorAll(".view-panel").forEach((p) => {
+      p.classList.toggle("active", p.id === `view-${tabName}`);
+    });
+    activeTab = tabName;
+
+    if (activeTab === "overview") {
+      setTimeout(() => {
+        if (miniRadarMap) miniRadarMap.invalidateSize();
+      }, 100);
+    } else if (activeTab === "charts") {
+      fetchAndUpdateCharts().catch((err) => console.error("Charts load error:", err));
+      fetchClimatology().catch((err) => console.error("Climatology load error:", err));
+    } else if (activeTab === "logs" && !logsLoadedOnce) {
+      loadLogExplorerTable().catch((err) => console.error("Logs load error:", err));
+    } else if (activeTab === "radar") {
+      initAndRefreshRadarMaps().then(() => {
+        if (fullRadarMap) fullRadarMap.invalidateSize();
+        startRadarLoop();
+      });
+      fetchNwsSummary(false).catch((err) => console.error("NWS load error:", err));
+    } else if (activeTab === "settings") {
+      loadSettingsIntoForms().catch((err) => console.error("Settings load error:", err));
+    }
+  }
+
   async function refreshAll(forceActiveViewRefresh) {
     if (elSyncDot) elSyncDot.classList.add("syncing");
     try {
@@ -1594,26 +2634,24 @@
         fetchSensors().catch((err) => console.error("SkyScry sensors fetch error:", err)),
       ]);
 
+      if (!nwsLoadedOnce || forceActiveViewRefresh) {
+        fetchNwsSummary(false).catch((err) => console.error("SkyScry NWS fetch error:", err));
+      }
+
       if (activeTab === "charts" || forceActiveViewRefresh) {
-        try {
-          await fetchAndUpdateCharts();
-        } catch (err) {
-          console.error("SkyScry charts fetch error:", err);
+        fetchAndUpdateCharts().catch((err) => console.error("SkyScry charts error:", err));
+        if (!climatologyLoadedOnce || forceActiveViewRefresh) {
+          fetchClimatology().catch((err) => console.error("SkyScry climatology error:", err));
         }
       }
-      if ((activeTab === "logs" && !logsLoadedOnce) || forceActiveViewRefresh) {
-        try {
-          await loadLogExplorerTable();
-        } catch (err) {
-          console.error("SkyScry logs fetch error:", err);
-        }
+      if ((activeTab === "logs" && !logsLoadedOnce) || (activeTab === "logs" && forceActiveViewRefresh)) {
+        loadLogExplorerTable().catch((err) => console.error("SkyScry logs error:", err));
       }
+
       const now = new Date();
       if (elLastSync) {
         elLastSync.textContent = now.toTimeString().split(" ")[0];
       }
-    } catch (err) {
-      console.error("SkyScry telemetry sync error:", err);
     } finally {
       setTimeout(() => {
         if (elSyncDot) elSyncDot.classList.remove("syncing");
@@ -1624,54 +2662,56 @@
   function initEventListenersAndStart() {
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-        document.querySelectorAll(".view-panel").forEach((p) => p.classList.remove("active"));
-
-        btn.classList.add("active");
-        activeTab = btn.getAttribute("data-tab") || "overview";
-        const targetPanel = document.getElementById(`view-${activeTab}`);
-        if (targetPanel) targetPanel.classList.add("active");
-
-        if (activeTab === "charts") {
-          fetchAndUpdateCharts().catch((err) => console.error("Charts load error:", err));
-        } else if (activeTab === "logs" && !logsLoadedOnce) {
-          loadLogExplorerTable().catch((err) => console.error("Logs load error:", err));
-        }
+        const target = btn.getAttribute("data-tab") || "overview";
+        switchTab(target);
       });
     });
 
-    if (elToggleIgnored) {
-      elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
+    if (elBtnOpenRadarView) {
+      elBtnOpenRadarView.addEventListener("click", () => switchTab("radar"));
     }
-    if (elBtnRefresh) {
-      elBtnRefresh.addEventListener("click", () => refreshAll(true));
-    }
-    if (elBtnTriggerUpdate) {
-      elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
-    }
-    if (elBtnPurgeOutliers) {
-      elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
-    }
-    if (elBtnSyncRef) {
-      elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
+    if (elBtnExpandRadar) {
+      elBtnExpandRadar.addEventListener("click", () => switchTab("radar"));
     }
 
-    if (elChartHours) {
-      elChartHours.addEventListener("change", () => {
-        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
+    // Security & Auth bindings
+    if (elBtnAuthPill) {
+      elBtnAuthPill.addEventListener("click", () => {
+        if (authState.unlocked) {
+          switchTab("settings");
+        } else {
+          requireUnlockedOrPrompt(() => {});
+        }
       });
     }
-    if (elChartBucket) {
-      elChartBucket.addEventListener("change", () => {
-        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
-      });
+    if (elBtnLockNow) {
+      elBtnLockNow.addEventListener("click", handleLockNowClick);
     }
+    if (elBtnSettingsLockSession) {
+      elBtnSettingsLockSession.addEventListener("click", handleLockNowClick);
+    }
+    if (elSetupForm) {
+      elSetupForm.addEventListener("submit", handleFirstRunPasswordSetup);
+    }
+    if (elUnlockForm) {
+      elUnlockForm.addEventListener("submit", handleUnlockSubmit);
+    }
+    if (elBtnCloseUnlock) elBtnCloseUnlock.addEventListener("click", closeUnlockModal);
+    if (elBtnCancelUnlock) elBtnCancelUnlock.addEventListener("click", closeUnlockModal);
+
+    // Toolbar buttons
+    if (elToggleIgnored) elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
+    if (elBtnRefresh) elBtnRefresh.addEventListener("click", () => refreshAll(true));
+    if (elBtnTriggerUpdate) elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
+    if (elBtnPurgeOutliers) elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
+    if (elBtnSyncRef) elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
+
+    // View 2 Chart controls
+    if (elChartHours) elChartHours.addEventListener("change", () => fetchAndUpdateCharts());
+    if (elChartBucket) elChartBucket.addEventListener("change", () => fetchAndUpdateCharts());
     if (elChartToggleEnsemble) {
-      elChartToggleEnsemble.addEventListener("change", () => {
-        fetchAndUpdateCharts().catch((err) => console.error("Charts update error:", err));
-      });
+      elChartToggleEnsemble.addEventListener("change", () => fetchAndUpdateCharts());
     }
-
     if (elFilterBtn && elFilterMenu) {
       elFilterBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
@@ -1685,16 +2725,110 @@
         }
       });
     }
-
     [elFilterLocOutdoor, elFilterLocIndoor, elFilterLocReference].forEach((cb) => {
       if (cb) {
         cb.addEventListener("change", () => {
           populateChartSensorCheckboxes(true);
-          fetchAndUpdateCharts().catch((err) => console.error("Charts filter error:", err));
+          fetchAndUpdateCharts();
         });
       }
     });
 
+    // View 5 Radar Layer & Timeline controls
+    const setLayerBtnActive = (mode) => {
+      radarLayerMode = mode;
+      if (elBtnLayerRadar) elBtnLayerRadar.classList.toggle("active", mode === "radar");
+      if (elBtnLayerSatellite) elBtnLayerSatellite.classList.toggle("active", mode === "satellite");
+      if (elBtnLayerNexrad) elBtnLayerNexrad.classList.toggle("active", mode === "nexrad");
+      updateRadarFrameList();
+      showRadarFrame(radarFrames.length - 1);
+    };
+    if (elBtnLayerRadar) {
+      elBtnLayerRadar.addEventListener("click", () => setLayerBtnActive("radar"));
+    }
+    if (elBtnLayerSatellite) {
+      elBtnLayerSatellite.addEventListener("click", () => setLayerBtnActive("satellite"));
+    }
+    if (elBtnLayerNexrad) {
+      elBtnLayerNexrad.addEventListener("click", () => setLayerBtnActive("nexrad"));
+    }
+    if (elBtnRadarPlay) {
+      elBtnRadarPlay.addEventListener("click", () => {
+        radarPlaying = !radarPlaying;
+        elBtnRadarPlay.textContent = radarPlaying ? "⏸ Pause Loop" : "▶ Play Loop";
+        if (radarPlaying) startRadarLoop();
+        else stopRadarLoop();
+      });
+    }
+    if (elRadarFrameSlider) {
+      elRadarFrameSlider.addEventListener("input", () => {
+        radarPlaying = false;
+        if (elBtnRadarPlay) elBtnRadarPlay.textContent = "▶ Play Loop";
+        stopRadarLoop();
+        showRadarFrame(Number(elRadarFrameSlider.value || 0));
+      });
+    }
+    if (elBtnRefreshNws) {
+      elBtnRefreshNws.addEventListener("click", () => {
+        fetchNwsSummary(true).then(() => showToast("Refreshed Official NWS Forecast & Observations."));
+      });
+    }
+
+    // View 6 Settings forms
+    if (elFormChangePassword) {
+      elFormChangePassword.addEventListener("submit", handleChangePasswordSubmit);
+    }
+    if (elFormSettingsLocation) {
+      elFormSettingsLocation.addEventListener("submit", (evt) => {
+        evt.preventDefault();
+        saveSettingsPayload(
+          {
+            station_name: elSetStationName ? elSetStationName.value.trim() : "",
+            latitude: elSetLatitude ? Number(elSetLatitude.value) : 38.627,
+            longitude: elSetLongitude ? Number(elSetLongitude.value) : -90.1994,
+            elevation_m: elSetElevation ? Number(elSetElevation.value) : 142.0,
+            radar_zoom: elSetRadarZoom ? Number(elSetRadarZoom.value) : 8,
+          },
+          "Location & NWS coordinates saved."
+        ).then(() => {
+          fetchNwsSummary(true);
+          initAndRefreshRadarMaps();
+        });
+      });
+    }
+    if (elFormSettingsHygiene) {
+      elFormSettingsHygiene.addEventListener("submit", (evt) => {
+        evt.preventDefault();
+        saveSettingsPayload(
+          {
+            outlier_threshold_f: elSetOutlierThreshold ? Number(elSetOutlierThreshold.value) : 25.0,
+            dedup_window_seconds: elSetDedupWindow ? Number(elSetDedupWindow.value) : 4,
+            auto_expunge_enabled: elSetAutoExpunge ? elSetAutoExpunge.checked : true,
+            auto_update_enabled: elSetAutoUpdate ? elSetAutoUpdate.checked : true,
+          },
+          "Ingestion & Data Hygiene thresholds saved."
+        );
+      });
+    }
+    if (elBtnVacuumDb) {
+      elBtnVacuumDb.addEventListener("click", handleVacuumDatabaseClick);
+    }
+    if (elFormSettingsUnits) {
+      elFormSettingsUnits.addEventListener("submit", (evt) => {
+        evt.preventDefault();
+        saveSettingsPayload(
+          {
+            temp_unit: elSetTempUnit ? elSetTempUnit.value : "F",
+            wind_unit: elSetWindUnit ? elSetWindUnit.value : "mph",
+            pressure_unit: elSetPressureUnit ? elSetPressureUnit.value : "inHg",
+            rain_unit: elSetRainUnit ? elSetRainUnit.value : "in",
+          },
+          "Display & Units preferences saved."
+        );
+      });
+    }
+
+    // View 3 Sensor Config modal
     if (elModalLocation && elModalTrusted) {
       elModalLocation.addEventListener("change", () => {
         if (elModalLocation.value === "outdoor" || elModalLocation.value === "indoor") {
@@ -1704,11 +2838,40 @@
         }
       });
     }
-
-    if (elBtnRunLogQuery) {
-      elBtnRunLogQuery.addEventListener("click", () => {
-        loadLogExplorerTable().catch((err) => console.error("Logs query error:", err));
+    if (elBtnCloseModal) elBtnCloseModal.addEventListener("click", closeSensorModal);
+    if (elBtnCancelModal) elBtnCancelModal.addEventListener("click", closeSensorModal);
+    if (elBtnClearAlias && elModalAlias) {
+      elBtnClearAlias.addEventListener("click", () => {
+        elModalAlias.value = "";
+        elModalAlias.focus();
       });
+    }
+    if (
+      elBtnMarkAppliance &&
+      elModalLocation &&
+      elModalTrusted &&
+      elModalPurgeOutliers &&
+      elModalForm
+    ) {
+      elBtnMarkAppliance.addEventListener("click", () => {
+        elModalLocation.value = "ignore";
+        elModalTrusted.checked = false;
+        elModalPurgeOutliers.checked = true;
+        elModalForm.requestSubmit();
+      });
+    }
+    if (elModalBackdrop) {
+      elModalBackdrop.addEventListener("click", (evt) => {
+        if (evt.target === elModalBackdrop) closeSensorModal();
+      });
+    }
+    if (elModalForm) {
+      elModalForm.addEventListener("submit", handleSaveSensorModal);
+    }
+
+    // View 4 Logs Explorer
+    if (elBtnRunLogQuery) {
+      elBtnRunLogQuery.addEventListener("click", () => loadLogExplorerTable());
     }
     if (elBtnExportCsv) {
       elBtnExportCsv.addEventListener("click", () => {
@@ -1732,36 +2895,13 @@
       });
     }
 
-    if (elBtnCloseModal) elBtnCloseModal.addEventListener("click", closeSensorModal);
-    if (elBtnCancelModal) elBtnCancelModal.addEventListener("click", closeSensorModal);
-    if (elBtnClearAlias && elModalAlias) {
-      elBtnClearAlias.addEventListener("click", () => {
-        elModalAlias.value = "";
-        elModalAlias.focus();
-      });
-    }
-    if (elBtnMarkAppliance && elModalLocation && elModalTrusted && elModalPurgeOutliers && elModalForm) {
-      elBtnMarkAppliance.addEventListener("click", () => {
-        elModalLocation.value = "ignore";
-        elModalTrusted.checked = false;
-        elModalPurgeOutliers.checked = true;
-        elModalForm.requestSubmit();
-      });
-    }
-    if (elModalBackdrop) {
-      elModalBackdrop.addEventListener("click", (evt) => {
-        if (evt.target === elModalBackdrop) closeSensorModal();
-      });
-    }
-    if (elModalForm) {
-      elModalForm.addEventListener("submit", handleSaveSensorModal);
-    }
-
-    // Initial render
+    // Initial startup
     if (elHeroIcon) {
       elHeroIcon.innerHTML = getAnimatedWeatherSvg("partly-cloudy-day");
     }
-    refreshAll(false);
+    refreshAll(false).then(() => {
+      initAndRefreshRadarMaps();
+    });
     setInterval(() => refreshAll(false), POLL_INTERVAL_MS);
   }
 

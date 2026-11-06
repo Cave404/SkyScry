@@ -1,14 +1,13 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.9)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.10)."""
 
 from __future__ import annotations
 
 import csv
-import hmac
 import io
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from flask import Flask, Response, jsonify, render_template, request
@@ -16,9 +15,17 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src import __version__
+from src.analytics.climatology import ClimatologyEngine
 from src.db import VALID_HIDDEN_METRICS, VALID_LOCATION_TYPES, WeatherDatabase, format_utc_z
+from src.ingest.nws_service import NWSWeatherService
 from src.ingest.reference_weather import ReferenceWeatherService
 from src.ingest.sdr_stream import SDRStream
+from src.security import (
+    SecurityManager,
+    hash_admin_password,
+    require_admin_auth,
+    verify_admin_password,
+)
 from src.updater import get_full_update_status, trigger_manual_update
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,7 @@ def create_app(
     db: WeatherDatabase,
     sdr_stream: Optional[SDRStream] = None,
     ref_service: Optional[ReferenceWeatherService] = None,
+    nws_service: Optional[NWSWeatherService] = None,
     status_provider: Optional[Callable[[], dict[str, Any]]] = None,
     admin_pin: Optional[str] = None,
     read_only_public: Optional[bool] = None,
@@ -63,13 +71,26 @@ def create_app(
     app.config["JSON_SORT_KEYS"] = False
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
+    eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
+    security_mgr = SecurityManager(db=db, fallback_pin=eff_pin, read_only_public=eff_ro)
+
+    # Persistent 32-byte cryptographic secret_signing_key for Flask HttpOnly, SameSite='Lax' session tokens
+    app.secret_key = security_mgr.ensure_secret_signing_key()
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
     # Wrap WSGI app with ProxyFix so Cloudflare Tunnel (cloudflared) and reverse
     # proxies pass accurate client IPs (X-Forwarded-For), HTTPS scheme, and host.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # type: ignore[method-assign]
 
     reference_svc = ref_service or ReferenceWeatherService(db=db)
+    nws_svc = nws_service or NWSWeatherService(db=db)
+    climatology_engine = ClimatologyEngine(db=db)
     start_monotonic = time.monotonic()
     started_at_iso = format_utc_z(datetime.now(timezone.utc))
+
+    admin_guard = require_admin_auth(security_mgr)
 
     # Global JSON error handlers so `/api/*` endpoints NEVER return an HTML `<!doctype html>` page
     @app.errorhandler(HTTPException)
@@ -100,49 +121,199 @@ def create_app(
             500,
         )
 
-    def _require_write_auth(body: Optional[dict[str, Any]] = None) -> Optional[tuple[Response, int]]:
-        """Verify ADMIN_PIN or READ_ONLY_PUBLIC policy before allowing write/maintenance actions."""
-        eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
+    @app.route("/", methods=["GET"])
+    def index() -> str:
+        """Render the 6-view SkyScry v0.0.10 WebUI application."""
+        return render_template("index.html", version=__version__)
 
-        if eff_pin:
-            candidate = (
-                request.headers.get("X-Admin-Pin")
-                or (str(body.get("admin_pin")) if isinstance(body, dict) and body.get("admin_pin") is not None else None)
-                or request.args.get("admin_pin")
-                or ""
-            ).strip()
-            if not candidate or not hmac.compare_digest(candidate, eff_pin):
-                return (
-                    jsonify(
-                        {
-                            "ok": False,
-                            "error": "Admin PIN required to perform this action.",
-                            "auth_required": True,
-                        }
-                    ),
-                    401,
-                )
-            return None
+    # ==========================================================================
+    # AUTHENTICATION & HARDENED SECURITY ENDPOINTS
+    # ==========================================================================
+    @app.route("/api/auth/status", methods=["GET"])
+    def api_auth_status() -> Response:
+        """Return first-run password setup status, current unlock state, and inactivity timeout."""
+        return jsonify(security_mgr.get_auth_status())
 
-        if eff_ro:
+    @app.route("/api/auth/setup", methods=["POST"])
+    def api_auth_setup() -> tuple[Response, int] | Response:
+        """First-run Admin Security Password creation (`password_configured` transitions False -> True permanently)."""
+        if security_mgr.is_password_configured():
             return (
                 jsonify(
                     {
                         "ok": False,
-                        "error": "Public Read-Only mode is active (READ_ONLY_PUBLIC=true). Write actions are disabled.",
-                        "read_only": True,
+                        "error": "Admin password is already configured. Unlock Admin controls to change it in Settings.",
                     }
                 ),
                 403,
             )
 
-        return None
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "Request body must be a JSON object."}), 400
 
-    @app.route("/", methods=["GET"])
-    def index() -> str:
-        """Render the 4-view SkyScry WebUI application."""
-        return render_template("index.html", version=__version__)
+        new_pw = str(body.get("password") or "").strip()
+        confirm_pw = str(body.get("confirm_password") or new_pw).strip()
+        if len(new_pw) < 6:
+            return jsonify({"ok": False, "error": "Admin password must be at least 6 characters long."}), 400
+        if new_pw != confirm_pw:
+            return jsonify({"ok": False, "error": "Passwords do not match."}), 400
 
+        pw_hash = hash_admin_password(new_pw)
+        db.set_setting("admin_password_hash", pw_hash)
+        security_mgr.unlock_session()
+        logger.info("First-run Admin Security Password created and encrypted in system_settings.")
+        return jsonify(
+            {
+                "ok": True,
+                "message": "Admin Security Password created and session unlocked.",
+                **security_mgr.get_auth_status(),
+            }
+        )
+
+    @app.route("/api/auth/unlock", methods=["POST"])
+    def api_auth_unlock() -> tuple[Response, int] | Response:
+        """Verify admin password with IP brute-force rate limiting and unlock session."""
+        client_ip = request.remote_addr or "unknown"
+        allowed, retry_after = security_mgr.rate_limiter.check_allowed(client_ip)
+        if not allowed:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"Too many failed unlock attempts. Locked out for {retry_after}s.",
+                        "retry_after_seconds": retry_after,
+                    }
+                ),
+                429,
+            )
+
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "Request body must be a JSON object."}), 400
+
+        candidate = str(body.get("password") or body.get("admin_pin") or "").strip()
+        if not candidate:
+            return jsonify({"ok": False, "error": "Please enter the Admin Password."}), 400
+
+        stored_hash = db.get_setting("admin_password_hash")
+        valid = False
+        if stored_hash and verify_admin_password(candidate, stored_hash):
+            valid = True
+        elif not stored_hash and eff_pin and candidate == eff_pin:
+            valid = True
+
+        if not valid:
+            rem, lock_sec = security_mgr.rate_limiter.record_failure(client_ip)
+            logger.warning("Failed Admin unlock attempt from IP %s (remaining=%d)", client_ip, rem)
+            if lock_sec > 0:
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": f"Maximum failed attempts reached. Temporarily locked out for {lock_sec}s.",
+                            "retry_after_seconds": lock_sec,
+                        }
+                    ),
+                    429,
+                )
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"Invalid Admin Password ({rem} attempt(s) remaining before lockout).",
+                    }
+                ),
+                401,
+            )
+
+        security_mgr.rate_limiter.record_success(client_ip)
+        security_mgr.unlock_session()
+        return jsonify(
+            {
+                "ok": True,
+                "message": "Admin controls unlocked.",
+                **security_mgr.get_auth_status(),
+            }
+        )
+
+    @app.route("/api/auth/lock", methods=["POST"])
+    def api_auth_lock() -> Response:
+        """Immediately lock the current Admin session (Read-Only mode)."""
+        security_mgr.lock_session()
+        return jsonify(
+            {
+                "ok": True,
+                "message": "Admin session locked (Read-Only).",
+                **security_mgr.get_auth_status(),
+            }
+        )
+
+    @app.route("/api/auth/change-password", methods=["POST"])
+    @admin_guard
+    def api_auth_change_password() -> tuple[Response, int] | Response:
+        """Change the encrypted Admin Security Password from the Settings tab."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "Request body must be a JSON object."}), 400
+
+        current_pw = str(body.get("current_password") or "").strip()
+        new_pw = str(body.get("new_password") or "").strip()
+        confirm_pw = str(body.get("confirm_password") or new_pw).strip()
+
+        stored_hash = db.get_setting("admin_password_hash")
+        if stored_hash and not verify_admin_password(current_pw, stored_hash):
+            return jsonify({"ok": False, "error": "Current Admin Password is incorrect."}), 401
+
+        if len(new_pw) < 6:
+            return jsonify({"ok": False, "error": "New password must be at least 6 characters long."}), 400
+        if new_pw != confirm_pw:
+            return jsonify({"ok": False, "error": "New passwords do not match."}), 400
+
+        db.set_setting("admin_password_hash", hash_admin_password(new_pw))
+        security_mgr.touch_admin_session()
+        logger.info("Admin Security Password updated via Settings.")
+        return jsonify({"ok": True, "message": "Admin password updated successfully."})
+
+    # ==========================================================================
+    # DEDICATED SETTINGS ENDPOINTS
+    # ==========================================================================
+    @app.route("/api/settings", methods=["GET"])
+    def api_get_settings() -> Response:
+        """Return non-secret station, location, unit, and data-hygiene settings."""
+        return jsonify(
+            {
+                "ok": True,
+                "settings": db.get_public_settings(),
+                "auth": security_mgr.get_auth_status(),
+            }
+        )
+
+    @app.route("/api/settings", methods=["POST", "PATCH"])
+    @admin_guard
+    def api_update_settings() -> tuple[Response, int] | Response:
+        """Update station, location, unit, timeout, and data-hygiene settings (requires Admin auth)."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "Request body must be a valid JSON object."}), 400
+
+        try:
+            updated = db.update_public_settings(body)
+            nws_svc.invalidate_cache()
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "System settings saved to SQLite.",
+                    "settings": updated,
+                    "auth": security_mgr.get_auth_status(),
+                }
+            )
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    # ==========================================================================
+    # CORE STATUS, OVERVIEW, NWS, & CLIMATOLOGY ENDPOINTS
+    # ==========================================================================
     @app.route("/api/status", methods=["GET"])
     def api_status() -> Response:
         """Return daemon uptime, SDR stream status, database size, security state, and packet totals."""
@@ -150,7 +321,8 @@ def create_app(
         db_stats = db.get_db_stats()
         coords = db.get_location_coordinates()
         update_info = get_full_update_status()
-        eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
+        auth_state = security_mgr.get_auth_status()
+        pub_settings = db.get_public_settings()
 
         sdr_status = "disconnected"
         last_error: Optional[str] = None
@@ -166,6 +338,7 @@ def create_app(
         payload: dict[str, Any] = {
             "ok": True,
             "version": __version__,
+            "station_name": pub_settings.get("station_name"),
             "git_commit": update_info.get("git_commit"),
             "rtl433_version": update_info.get("rtl433_version"),
             "started_at": started_at_iso,
@@ -174,8 +347,15 @@ def create_app(
             "sdr_frequency": frequency,
             "sdr_last_error": extra_status.get("sdr_last_error", last_error),
             "coordinates": coords,
-            "auth_required": bool(eff_pin),
-            "read_only_public": bool(eff_ro and not eff_pin),
+            "units": {
+                "temp_unit": pub_settings.get("temp_unit", "F"),
+                "wind_unit": pub_settings.get("wind_unit", "mph"),
+                "pressure_unit": pub_settings.get("pressure_unit", "inHg"),
+                "rain_unit": pub_settings.get("rain_unit", "in"),
+            },
+            "auth": auth_state,
+            "auth_required": not auth_state["unlocked"],
+            "read_only_public": not auth_state["unlocked"],
             "database_path": db_stats["database_path"],
             "database_size_mb": db_stats["database_size_mb"],
             "database_size_bytes": db_stats["database_size_bytes"],
@@ -193,21 +373,32 @@ def create_app(
         return jsonify({"ok": True, **get_full_update_status()})
 
     @app.route("/api/trigger-update", methods=["POST"])
+    @admin_guard
     def api_trigger_update() -> tuple[Response, int] | Response:
         """Check GitHub for new SkyScry commits, upgrade pip dependencies, and check `rtl_433` releases."""
-        body = request.get_json(silent=True) or {}
-        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
-        if auth_err is not None:
-            return auth_err
         db.checkpoint_wal()
         result = trigger_manual_update()
         return jsonify({"ok": True, **result})
 
     @app.route("/api/overview", methods=["GET"])
     def api_overview() -> Response:
-        """Return synthesized outdoor/indoor ensemble weather, barometer (`inHg`), and local nowcast."""
+        """Return synthesized outdoor/indoor ensemble weather, daily extremes, rain records, and nowcast."""
         overview = db.get_weather_overview()
         return jsonify(overview)
+
+    @app.route("/api/nws", methods=["GET"])
+    def api_nws() -> Response:
+        """Return cached official US National Weather Service baseline corroboration, active alerts, and 7-day forecast."""
+        force = request.args.get("refresh", "").strip().lower() in ("1", "true", "yes")
+        local_ov = db.get_weather_overview()
+        nws_payload = nws_svc.fetch_nws_corroboration(local_overview=local_ov, force_refresh=force)
+        return jsonify(nws_payload)
+
+    @app.route("/api/climatology", methods=["GET"])
+    def api_climatology() -> Response:
+        """Return weekly/monthly degree days, seasonal trajectory anomaly narrative, and Weather-Display Records Summary Table."""
+        report = climatology_engine.get_climatology_report()
+        return jsonify(report)
 
     @app.route("/api/charts", methods=["GET"])
     def api_charts() -> tuple[Response, int] | Response:
@@ -258,19 +449,16 @@ def create_app(
         return jsonify({"ok": True, "count": len(sensors), "sensors": sensors})
 
     @app.route("/api/sensors/<path:sensor_key>", methods=["POST", "PATCH"])
+    @admin_guard
     def api_update_sensor(sensor_key: str) -> tuple[Response, int] | Response:
         """Update user metadata (`alias`, `location_type`, `is_trusted`, `hidden_metrics`, `mark_battery_replaced`, `purge_sensor_outliers`)."""
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             return jsonify({"ok": False, "error": "Request body must be a valid JSON object."}), 400
 
-        auth_err = _require_write_auth(body)
-        if auth_err is not None:
-            return auth_err
-
         alias_arg: Optional[str] = None
         if "alias" in body:
-            alias_arg = "" if body["alias"] is None else str(body["alias"])
+            alias_arg = "" if body["alias"] is None else str(body["alias"])[:80]
 
         location_arg: Optional[str] = None
         if "location_type" in body and body["location_type"] is not None:
@@ -357,25 +545,28 @@ def create_app(
         return jsonify({"ok": True, "sensor": updated})
 
     @app.route("/api/maintenance/purge-outliers", methods=["POST"])
+    @admin_guard
     def api_purge_outliers() -> tuple[Response, int] | Response:
         """Purge skewed/corrupted historical readings, TPMS packets, and appliance probes from SQLite."""
         body = request.get_json(silent=True) or {}
-        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
-        if auth_err is not None:
-            return auth_err
         sensor_key = body.get("sensor_key") if isinstance(body, dict) else None
         result = db.expunge_skewed_history(
             target_sensor_key=str(sensor_key).strip() if sensor_key else None
         )
         return jsonify({"ok": True, "status": "ok", **result})
 
+    @app.route("/api/maintenance/vacuum", methods=["POST"])
+    @admin_guard
+    def api_vacuum_database() -> tuple[Response, int] | Response:
+        """Checkpoint WAL, optimize indexes, and VACUUM SQLite database."""
+        result = db.vacuum_database()
+        return jsonify({"ok": True, "status": "ok", **result})
+
     @app.route("/api/maintenance/sync-reference", methods=["POST"])
+    @admin_guard
     def api_sync_reference() -> tuple[Response, int] | Response:
         """Sync past 48 hours of regional barometric pressure (`inHg`/`hPa`) & weather history via Open-Meteo."""
         body = request.get_json(silent=True) or {}
-        auth_err = _require_write_auth(body if isinstance(body, dict) else None)
-        if auth_err is not None:
-            return auth_err
         lat: Optional[float] = None
         lon: Optional[float] = None
         if isinstance(body, dict) and "latitude" in body and "longitude" in body:
@@ -391,6 +582,7 @@ def create_app(
                 longitude=lon,
                 past_hours=48,
             )
+            nws_svc.invalidate_cache()
             return jsonify({"ok": True, "status": "ok", **sync_result})
         except Exception as exc:
             logger.warning("Open-Meteo regional sync failed: %s", exc)
@@ -398,12 +590,12 @@ def create_app(
 
     @app.route("/api/readings", methods=["GET"])
     def api_readings() -> tuple[Response, int] | Response:
-        """Query historical time-series telemetry with optional sensor_key, hours, limit, and CSV/JSON export."""
+        """Query historical time-series telemetry with optional sensor_key, hours, limit (max 2000), and CSV/JSON export."""
         sensor_key = request.args.get("sensor_key")
         export_fmt = request.args.get("format", "json").strip().lower()
         try:
             hours = float(request.args.get("hours", "24"))
-            limit = int(request.args.get("limit", "250"))
+            limit = min(2000, max(1, int(request.args.get("limit", "250"))))
         except ValueError:
             return jsonify({"ok": False, "error": "Query parameters 'hours' and 'limit' must be numeric."}), 400
 

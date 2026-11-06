@@ -1,16 +1,30 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.9-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.10-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-**SkyScry** is an open-source, cross-platform **433.92 MHz microclimate telemetry and weather ingestion daemon** with a hosted 4-view dark-mode WebUI, turnkey **TrueNAS SCALE & Cloudflare Tunnel (`cloudflared`)** Docker stack, automated startup bootstrapper & GitHub self-updater, barometric pressure (`inHg`/`hPa`) & 48-hour regional backfill engine, automated RF outlier expunger, REST API, and SQLite Write-Ahead Logging (`WAL`) storage engine.
+**SkyScry** is an open-source, cross-platform **433.92 MHz microclimate telemetry and weather ingestion daemon** with a hosted 6-view dark-mode WebUI, AcuRite & Weather-Display (`grahamsbeach.htm`) inspired interactive SVG hardware gauges, US National Weather Service (`api.weather.gov`) official corroboration & animated Doppler radar, long-term seasonal/climatology analytics, hardened first-run encrypted Admin Password security, and turnkey **TrueNAS SCALE & Cloudflare Tunnel (`cloudflared`)** Docker deployment.
 
 It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations via an RTL-SDR dongle and `rtl_433 -M time:utc -M level`, filters out non-meteorological RF chatter and kitchen/appliance probes, deduplicates redundant multi-frame RF bursts using a sliding window, normalizes all measurements into standardized SI units (with computed imperial, barometric `inHg`, dew point, apparent temperature, and 16-point compass properties), and auto-registers discovered stations in a persistent SQLite device registry.
 
 ---
 
-## Key Features (`v0.0.9`)
+## Key Features (`v0.0.10`)
+
+- **Hardened Security Lockdown, Encrypted First-Run Password & Settings Tab (`v0.0.10`):**
+  - **Encrypted `system_settings` Table:** Stores all instance-specific configuration (`admin_password_hash`, 32-byte `secret_signing_key`, `inactivity_timeout_minutes`, `station_name`, coordinates, units, and NWS grid metadata) in `data/skyscry.db` with a **Zero-PII Guarantee** (zero secrets or personal coordinates in git-tracked files).
+  - **First-Run Password Setup & Auto-Lock:** Prompts to create an encrypted Admin Password (`scrypt` / `PBKDF2-HMAC-SHA256`) on first launch, protects all mutating endpoints with `@require_admin_auth`, enforces an IP brute-force rate limiter (`5 attempts / 5m`), and auto-locks admin sessions after configurable inactivity (`5m–60m`).
+  - **Dedicated `6. Settings 🔒` View:** Configure Security & Access Control, Station Coordinates & NWS Baseline, Ingestion & Data Hygiene (`VACUUM`), and Display Units (`°F`/`°C`, `mph`/`m/s`/`knots`, `inHg`/`hPa`, `in`/`mm`).
+- **AcuRite & Weather-Display (`grahamsbeach.htm`) Interactive SVG Gauges (`v0.0.10`):**
+  - **Daily High/Low Extremes, Timestamps & 24h Sparklines:** Live `↗ Rising`, `→ Steady`, `↘ Falling` trend badges, High/Low timestamp pills, and 24-hour background SVG sparklines on the Outdoor Hero and Indoor Summary cards.
+  - **AcuRite Radial Wind & Gust Dial:** 16-point compass markers, speed-scaled glow ring, 15-minute directional variance wedge, rotating needle, and `Avg (10m)` / `Peak (Today)` flanks.
+  - **Vertical Barometer Mercury Tower (`29.20–30.50 inHg`), Animated Rain Cylinder (`0.0"–2.0"`) + Rain Records (`Rate`, `Week`, `Month`, `Year`), and Semi-Circular Humidity Comfort + Solar/UV Gauges.**
+- **National Weather Service (`api.weather.gov`) Corroboration & Live Radar (`v0.0.10`):**
+  - Resolves `/points/{lat},{lon}` to pull nearest official NWS station observations, active weather alerts (`/alerts/active`), and the 7-day official gridpoint forecast with 15-minute caching.
+  - Includes an at-a-glance **Mini Live Radar Card** on the Overview Dashboard and a dedicated **`5. Radar & NWS Forecast`** view with animated RainViewer / NOAA NEXRAD Doppler radar, timeline scrubber, dBZ reflectivity scale, and hyperlocal microclimate delta table.
+- **Upgraded Nowcast & Long-Term Seasonal / Climatology Engine (`v0.0.10`):**
+  - Multi-factor 1–24h nowcast combining 3h/6h barometric velocity, dew point depression, wind backing/veering, solar attenuation, and NWS PoP, plus `daily_summaries` rollups, HDD/CDD degree days, wet/dry streaks, and a Weather-Display Records Summary Table (`Today`, `Week`, `Month`, `Year`, `All-Time`).
 
 - **Opt-In Sensor Trust & TPMS / Soil / Barometer Gate (`v0.0.8+`):**
   - **Opt-In Trust Model:** All newly discovered 433.92 MHz sensors default strictly to `location_type = 'ignore'` and `is_trusted = 0`. Only sensors explicitly configured by the user as **Outdoor** or **Indoor** in the WebUI participate in dashboard weather synthesis and historical charts.
@@ -65,15 +79,20 @@ SkyScry/
 ├── config/
 │   └── config.example.yaml         # Documented configuration template (no hardcoded sensor names)
 ├── src/
-│   ├── __init__.py                 # Package version (__version__ = "0.0.8")
+│   ├── __init__.py                 # Package version (__version__ = "0.0.10")
+│   ├── security.py                 # Encrypted password hashing, brute-force limiter, & session auto-lock
 │   ├── updater.py                  # Stdlib-only startup bootstrapper, Git/pip updater, & rtl_433 downloader
 │   ├── config.py                   # YAML/env loader & cross-platform rtl_433 binary resolver
 │   ├── models.py                   # NormalizedReading dataclass with SI & imperial properties
-│   ├── db.py                       # SQLite WAL engine (`sensors`, `sensor_readings`, `reference_weather`)
+│   ├── db.py                       # SQLite WAL engine (`sensors`, `sensor_readings`, `system_settings`, `daily_summaries`)
+│   ├── analytics/
+│   │   ├── __init__.py
+│   │   └── climatology.py          # Multi-factor 24h nowcast & seasonal/climatology insights engine
 │   ├── ingest/
 │   │   ├── __init__.py
 │   │   ├── sdr_stream.py           # Non-blocking queued subprocess lifecycle manager for rtl_433
-│   │   └── reference_weather.py    # Open-Meteo barometric pressure & 48h regional weather backfill
+│   │   ├── reference_weather.py    # Open-Meteo barometric pressure & 48h regional weather backfill
+│   │   └── nws_service.py          # Official US National Weather Service (`api.weather.gov`) client & cache
 │   ├── pipeline/
 │   │   ├── __init__.py
 │   │   └── normalizer.py           # JSON validation, unit conversion, outlier filter, & burst deduplication
@@ -135,7 +154,11 @@ python run.py --open-browser
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns daemon version (`0.0.8`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth_required`/`read_only_public` flags, active/total sensors, and total stored packets. |
+| `GET` | `/api/status` | Returns daemon version (`0.0.10`), Git commit hash, `rtl_433` version, uptime, SDR stream status, SQLite WAL size in MB, `auth` lock status, active/total sensors, and total stored packets. |
+| `GET/POST` | `/api/auth/*` | First-run admin password setup (`/api/auth/setup`), session unlock (`/api/auth/unlock`), manual lock (`/api/auth/lock`), and password rotation (`/api/auth/change-password`). |
+| `GET/POST` | `/api/settings` | Reads or updates persistent instance settings in SQLite (`system_settings` table). |
+| `GET` | `/api/nws` | Returns official US National Weather Service (`api.weather.gov`) observations, active alerts, 7-day gridpoint forecast, and hyperlocal corroboration deltas. |
+| `GET` | `/api/climatology` | Returns 7d/30d climatology rollups, HDD/CDD degree days, wet/dry streaks, seasonal trajectory narrative, and Weather-Display records table. |
 | `GET` | `/api/update-status` | Returns Git commit/branch status, `rtl_433` binary version & path, and last dependency check timestamp. |
 | `POST` | `/api/trigger-update` | Manually triggers Git pull, `pip install --upgrade -r requirements.txt`, and `rtl_433` Windows binary check from the WebUI (protected by `ADMIN_PIN` if set). |
 | `GET` | `/api/overview` | Returns synthesized outdoor/indoor ensemble metrics, barometric pressure (`inHg`/`hPa`), 24h barometric forecast, animated weather condition code, and 1h/3h trends. |

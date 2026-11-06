@@ -184,6 +184,89 @@ code {
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
+.status-locked {
+  color: #fbbf24;
+  background-color: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  cursor: pointer;
+}
+
+.status-unlocked {
+  color: #34d399;
+  background-color: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  cursor: pointer;
+}
+
+.btn-lock-quick {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-lock-quick:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+.nws-alert-banner {
+  background: linear-gradient(90deg, rgba(220, 38, 38, 0.25) 0%, rgba(245, 158, 11, 0.18) 100%);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.55);
+  color: #fef2f2;
+  padding: 10px 24px;
+  font-size: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.nws-corroboration-strip {
+  background: linear-gradient(90deg, rgba(30, 41, 59, 0.85) 0%, rgba(15, 23, 42, 0.9) 100%);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid #38bdf8;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.corrob-left,
+.corrob-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.corrob-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background-color: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.corrob-text {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
 .alert-banner {
   background-color: var(--status-err-bg);
   border-bottom: 1px solid rgba(239, 68, 68, 0.4);
@@ -345,12 +428,290 @@ code {
 }
 
 .hero-weather-card {
+  position: relative;
+  overflow: hidden;
   background: linear-gradient(145deg, #131f36 0%, #0e1626 100%);
   border: 1px solid #2a3c5e;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   gap: 20px;
+}
+
+.hero-sparkline-bg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 110px;
+  pointer-events: none;
+  opacity: 0.35;
+  z-index: 0;
+}
+
+.hero-main,
+.hero-nowcast-box {
+  position: relative;
+  z-index: 1;
+}
+
+.extremes-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.extreme-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: rgba(15, 23, 42, 0.78);
+}
+
+.extreme-pill.low {
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.38);
+}
+
+.extreme-pill.high {
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.4);
+}
+
+.trend-arrow-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.trend-arrow-badge.rising {
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.4);
+  background-color: rgba(251, 146, 60, 0.14);
+}
+
+.trend-arrow-badge.falling {
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.4);
+  background-color: rgba(59, 130, 246, 0.14);
+}
+
+.trend-arrow-badge.steady {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.35);
+  background-color: rgba(16, 185, 129, 0.12);
+}
+
+.nowcast-trajectory-bar {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(51, 65, 85, 0.65);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #93c5fd;
+}
+
+.indoor-card-with-spark {
+  position: relative;
+  overflow: hidden;
+}
+
+.indoor-sparkline-bg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  pointer-events: none;
+  opacity: 0.32;
+}
+
+.mini-radar-card {
+  padding: 14px;
+}
+
+.mini-radar-map {
+  height: 175px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: #090d16;
+  overflow: hidden;
+}
+
+.mini-radar-footer {
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* AcuRite & Weather-Display Gauge Cards */
+.acurite-wind-wrap {
+  width: 138px;
+  height: 144px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.acurite-wind-Wrap-svg {
+  width: 126px;
+  height: 126px;
+}
+
+.wind-bottom-flank {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.baro-tower-layout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 100%;
+}
+
+.baro-metrics-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.baro-tower-wrap {
+  width: 68px;
+  height: 132px;
+  flex-shrink: 0;
+}
+
+.baro-tower-svg {
+  width: 68px;
+  height: 132px;
+  overflow: visible;
+}
+
+.rain-gauge-layout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 100%;
+}
+
+.rain-metrics-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.acurite-rain-table {
+  margin-top: 6px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.rain-rec-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-secondary);
+}
+
+.rain-cylinder-wrap {
+  width: 58px;
+  height: 132px;
+  flex-shrink: 0;
+}
+
+.rain-cylinder-svg {
+  width: 58px;
+  height: 132px;
+  overflow: visible;
+}
+
+.humidity-uv-layout {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  height: 100%;
+}
+
+.semi-gauge-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.semi-gauge-wrap {
+  width: 106px;
+  height: 64px;
+  flex-shrink: 0;
+}
+
+.semi-gauge-svg {
+  width: 106px;
+  height: 64px;
+  overflow: visible;
+}
+
+.uv-solar-strip {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.uv-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+
+.uv-bar-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(30, 41, 59, 0.9);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.uv-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981 0%, #f59e0b 55%, #ef4444 85%, #a855f7 100%);
+  border-radius: 3px;
+  transition: width 0.5s ease;
 }
 
 .hero-main {
@@ -1219,6 +1580,271 @@ input[type="text"]:focus {
 .modal-footer-right {
   display: flex;
   gap: 8px;
+}
+
+/* ==========================================================================
+   VIEW 2 EXPANSION: CLIMATOLOGY & SEASONAL INSIGHTS PANEL
+   ========================================================================== */
+.climatology-panel {
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.climatology-narrative {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid #10b981;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.clim-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 960px) {
+  .clim-summary-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.clim-stat-box {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.clim-val {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.clim-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.records-summary-table th,
+.records-summary-table td {
+  padding: 8px 11px;
+}
+
+/* ==========================================================================
+   VIEW 5: RADAR & NWS FORECAST
+   ========================================================================== */
+.radar-view-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.radar-main-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.radar-layer-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.radar-layer-toggles .btn.active {
+  background-color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #ffffff;
+}
+
+.full-radar-map {
+  height: 480px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: #090d16;
+  overflow: hidden;
+}
+
+.radar-scrubber-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.scrubber-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 240px;
+}
+
+#radar-frame-slider {
+  flex: 1;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.dbz-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dbz-scale {
+  display: inline-flex;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.dbz-chip {
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.nws-corroboration-card {
+  margin-bottom: 18px;
+}
+
+.nws-forecast-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nws-forecast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.nws-period-tile {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nws-period-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.nws-period-name {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--text-primary);
+}
+
+.nws-period-temp {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 800;
+  color: #38bdf8;
+}
+
+.nws-period-temp.daytime {
+  color: #fbbf24;
+}
+
+.nws-period-short {
+  font-size: 12px;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.nws-period-detail {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+/* ==========================================================================
+   VIEW 6: DEDICATED SETTINGS TAB
+   ========================================================================== */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 980px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 4px 0;
+}
+
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+input[type="number"],
+input[type="password"] {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+  width: 100%;
+}
+
+input[type="number"]:focus,
+input[type="password"]:focus {
+  border-color: var(--border-highlight);
+}
+
+.station-marker-pin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: #38bdf8;
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 0 12px #38bdf8;
 }
 
 .hidden {
