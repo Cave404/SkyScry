@@ -273,12 +273,14 @@ class ClimatologyEngine:
                 if r.get("pressure_range_inhg") is not None
             ]
 
+            swing_val = round(sum(swings) / len(swings), 1) if swings else None
             return {
                 "days_count": len(rows),
                 "mean_temp_f": round(sum(means) / len(means), 1) if means else None,
                 "high_temp_f": round(max(highs), 1) if highs else None,
                 "low_temp_f": round(min(lows), 1) if lows else None,
-                "diurnal_swing_avg_f": round(sum(swings) / len(swings), 1) if swings else None,
+                "diurnal_swing_avg_f": swing_val,
+                "avg_diurnal_swing_f": swing_val,
                 "hdd_total": round(hdd, 1),
                 "cdd_total": round(cdd, 1),
                 "rain_total_in": round(rain_in, 2),
@@ -305,6 +307,9 @@ class ClimatologyEngine:
                     break
                 current_dry_streak += 1
 
+        monthly_stats["current_dry_streak_days"] = current_dry_streak
+        monthly_stats["current_wet_streak_days"] = current_wet_streak
+
         # Seasonal Trajectory & Anomaly Estimator narrative
         mean_7d = weekly_stats.get("mean_temp_f")
         mean_30d = monthly_stats.get("mean_temp_f")
@@ -312,10 +317,13 @@ class ClimatologyEngine:
 
         anomaly_7d_f: Optional[float] = None
         anomaly_30d_f: Optional[float] = None
+        anomaly_7d_vs_30d_f: Optional[float] = None
         if mean_7d is not None:
             anomaly_7d_f = round(mean_7d - seasonal_baseline_f, 1)
         if mean_30d is not None:
             anomaly_30d_f = round(mean_30d - seasonal_baseline_f, 1)
+        if mean_7d is not None and mean_30d is not None:
+            anomaly_7d_vs_30d_f = round(mean_7d - mean_30d, 1)
 
         if anomaly_7d_f is not None:
             dir_word = "above" if anomaly_7d_f >= 0 else "below"
@@ -339,17 +347,46 @@ class ClimatologyEngine:
                 "7-day and 30-day climatological anomaly trajectories."
             )
 
+        learning_stats = self.db.get_telemetry_learning_stats()
+        learning_status = {
+            "total_packets": learning_stats.get("total_packets", 0),
+            "active_hours": learning_stats.get("active_hours", 0.0),
+            "active_days": learning_stats.get("active_days", 0.0),
+            "hdd_30d": monthly_stats.get("hdd_total", 0.0),
+            "cdd_30d": monthly_stats.get("cdd_total", 0.0),
+            "diurnal_swing_7d": weekly_stats.get("avg_diurnal_swing_f"),
+            "baro_volatility": weekly_stats.get("baro_volatility_inhg") or 0.12,
+            "status_label": "Active Telemetry Learning Engine: Synthesizing Local 433 MHz RF Bursts with 30-Day Baseline",
+        }
+
+        seasonal_trajectory = {
+            "narrative": trajectory_narrative,
+            "trajectory_narrative": trajectory_narrative,
+            "anomaly_7d_vs_30d_f": anomaly_7d_vs_30d_f,
+            "anomaly_7d_f": anomaly_7d_f,
+            "anomaly_30d_f": anomaly_30d_f,
+            "seasonal_baseline_f": seasonal_baseline_f,
+            "mean_7d_f": mean_7d,
+            "mean_30d_f": mean_30d,
+        }
+
         return {
             "ok": True,
             "generated_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "seasonal_baseline_f": seasonal_baseline_f,
             "anomaly_7d_f": anomaly_7d_f,
             "anomaly_30d_f": anomaly_30d_f,
+            "anomaly_7d_vs_30d_f": anomaly_7d_vs_30d_f,
             "current_dry_streak_days": current_dry_streak,
             "current_wet_streak_days": current_wet_streak,
             "trajectory_narrative": trajectory_narrative,
+            "seasonal_trajectory": seasonal_trajectory,
+            "window_7d": weekly_stats,
             "weekly": weekly_stats,
+            "window_30d": monthly_stats,
             "monthly": monthly_stats,
+            "records_table": records_table,
             "records": records_table,
+            "learning_status": learning_status,
             "daily_summaries": daily_rows[:30],
         }

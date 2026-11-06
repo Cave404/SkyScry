@@ -84,6 +84,7 @@ class NWSWeatherService:
         coords = self.db.get_location_coordinates(
             default_lat=self.default_lat,
             default_lon=self.default_lon,
+            auto_resolve=True,
         )
         return float(coords.get("latitude", 0.0)), float(coords.get("longitude", 0.0))
 
@@ -169,6 +170,7 @@ class NWSWeatherService:
             "station_name": station_name or station_id,
             "timestamp": obs_timestamp,
             "condition": condition_text,
+            "text_description": condition_text,
             "temp_c": round(temp_c, 1) if temp_c is not None else None,
             "temp_f": temp_f,
             "dew_point_c": round(dp_c, 1) if dp_c is not None else None,
@@ -177,12 +179,121 @@ class NWSWeatherService:
             "pressure_hpa": pressure_hpa,
             "pressure_inhg": pressure_inhg,
             "wind_mph": wind_mph,
+            "wind_speed_mph": wind_mph,
             "wind_mps": wind_mps,
             "wind_gust_mph": wind_gust_mph,
             "wind_dir_deg": round(wind_dir, 0) if wind_dir is not None else None,
             "wind_cardinal": wind_cardinal,
             "visibility_mi": vis_miles,
         }
+
+    def _fetch_open_meteo_forecast(self, lat: float, lon: float) -> list[dict[str, Any]]:
+        """Fallback 7-day daily forecast generated from Open-Meteo if NWS gridpoint is unavailable."""
+        try:
+            params = {
+                "latitude": f"{lat:.4f}",
+                "longitude": f"{lon:.4f}",
+                "daily": "weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,windspeed_10m_max,winddirection_10m_dominant",
+                "temperature_unit": "fahrenheit",
+                "windspeed_unit": "mph",
+                "timezone": "auto",
+            }
+            url = f"https://api.open-meteo.com/v1/forecast?{urllib.parse.urlencode(params)}"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "SkyScry/0.0.12 (https://github.com/Cave404/SkyScry)"},
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            daily = data.get("daily") or {}
+            times = daily.get("time") or []
+            wcodes = daily.get("weathercode") or []
+            t_max = daily.get("temperature_2m_max") or []
+            t_min = daily.get("temperature_2m_min") or []
+            pops = daily.get("precipitation_probability_max") or []
+            winds = daily.get("windspeed_10m_max") or []
+            wind_dirs = daily.get("winddirection_10m_dominant") or []
+
+            wcode_map = {
+                0: "Clear / Sunny",
+                1: "Mainly Sunny",
+                2: "Partly Cloudy",
+                3: "Overcast",
+                45: "Foggy",
+                48: "Rime Fog",
+                51: "Light Drizzle",
+                53: "Drizzle",
+                55: "Dense Drizzle",
+                56: "Freezing Drizzle",
+                57: "Dense Freezing Drizzle",
+                61: "Slight Rain",
+                63: "Moderate Rain",
+                65: "Heavy Rain",
+                66: "Freezing Rain",
+                67: "Heavy Freezing Rain",
+                71: "Slight Snow",
+                73: "Moderate Snow",
+                75: "Heavy Snow",
+                77: "Snow Grains",
+                80: "Rain Showers",
+                81: "Scattered Showers",
+                82: "Violent Rain Showers",
+                85: "Slight Snow Showers",
+                86: "Heavy Snow Showers",
+                95: "Thunderstorms",
+                96: "Thunderstorms w/ Hail",
+                99: "Severe Thunderstorms",
+            }
+
+            periods: list[dict[str, Any]] = []
+            for idx, date_str in enumerate(times[:7]):
+                code = wcodes[idx] if idx < len(wcodes) and wcodes[idx] is not None else 0
+                cond = wcode_map.get(int(code), "Partly Cloudy")
+                hi = round(float(t_max[idx]), 1) if idx < len(t_max) and t_max[idx] is not None else None
+                lo = round(float(t_min[idx]), 1) if idx < len(t_min) and t_min[idx] is not None else None
+                pop = int(round(float(pops[idx]))) if idx < len(pops) and pops[idx] is not None else 0
+                w_spd = round(float(winds[idx]), 1) if idx < len(winds) and winds[idx] is not None else None
+                w_dir_deg = wind_dirs[idx] if idx < len(wind_dirs) and wind_dirs[idx] is not None else None
+                w_card = _deg_to_cardinal(w_dir_deg) or ""
+
+                try:
+                    dt = datetime.fromisoformat(date_str)
+                    day_name = dt.strftime("%A")
+                    if idx == 0:
+                        day_name = "Today"
+                except Exception:
+                    day_name = f"Day {idx + 1}"
+
+                w_str = f"{w_spd} mph" if w_spd is not None else "--"
+                det_parts = [f"{cond} with high near {hi}°F and low near {lo}°F."]
+                if pop > 0:
+                    det_parts.append(f"Precipitation chance {pop}%.")
+                if w_spd:
+                    det_parts.append(f"Winds {w_card} up to {w_spd} mph.")
+
+                periods.append(
+                    {
+                        "number": idx + 1,
+                        "name": day_name,
+                        "is_daytime": True,
+                        "temp": hi,
+                        "temperature": hi,
+                        "temp_unit": "F",
+                        "temperature_unit": "F",
+                        "wind_speed": w_str,
+                        "wind_direction": w_card,
+                        "short_forecast": cond,
+                        "detailed_forecast": " ".join(det_parts),
+                        "pop_percent": pop,
+                        "pop_pct": pop,
+                        "icon": "",
+                    }
+                )
+            return periods
+        except Exception as exc:
+            logger.debug("Open-Meteo fallback forecast fetch warning: %s", exc)
+            return []
 
     def fetch_nws_corroboration(
         self,
@@ -333,19 +444,34 @@ class NWSWeatherService:
                             "name": str(p.get("name") or ""),
                             "is_daytime": bool(p.get("isDaytime", True)),
                             "temp": p.get("temperature"),
+                            "temperature": p.get("temperature"),
                             "temp_unit": str(p.get("temperatureUnit") or "F"),
+                            "temperature_unit": str(p.get("temperatureUnit") or "F"),
                             "wind_speed": str(p.get("windSpeed") or ""),
                             "wind_direction": str(p.get("windDirection") or ""),
                             "short_forecast": str(p.get("shortForecast") or ""),
                             "detailed_forecast": str(p.get("detailedForecast") or ""),
                             "pop_percent": int(round(pop_val)) if pop_val is not None else 0,
+                            "pop_pct": int(round(pop_val)) if pop_val is not None else 0,
                             "icon": str(p.get("icon") or ""),
                         }
                     )
             except Exception as exc:
                 logger.debug("NWS 7-day forecast fetch warning: %s", exc)
 
+        if not forecast_periods:
+            logger.info("NWS forecast empty or unavailable; fetching 7-day fallback from Open-Meteo...")
+            forecast_periods = self._fetch_open_meteo_forecast(lat, lon)
+
         corroboration = self._compute_corroboration_deltas(local_overview, observation)
+
+        station_info = {
+            "station_id": (observation or {}).get("station_id") or office_id or "NWS",
+            "station_name": (observation or {}).get("station_name") or city_state or f"{lat_str}, {lon_str}",
+            "wfo": office_id or None,
+            "grid_x": grid_x or None,
+            "grid_y": grid_y or None,
+        }
 
         result: dict[str, Any] = {
             "ok": True,
@@ -357,10 +483,12 @@ class NWSWeatherService:
             "grid_x": grid_x or None,
             "grid_y": grid_y or None,
             "radar_station": f"K{office_id}" if office_id and len(office_id) == 3 else None,
+            "station": station_info,
             "observation": observation,
             "corroboration": corroboration,
             "alerts": alerts_list,
             "forecast_periods": forecast_periods,
+            "forecast": forecast_periods,
         }
 
         with self._lock:
@@ -433,13 +561,20 @@ class NWSWeatherService:
             "nws_temp_f": nws_tf,
             "temp_delta_f": temp_delta_f,
             "local_humidity": local_rh,
+            "local_rh": local_rh,
             "nws_humidity": nws_rh,
+            "nws_rh": nws_rh,
             "humidity_delta": rh_delta,
+            "humidity_delta_pct": rh_delta,
             "local_pressure_inhg": local_baro,
+            "local_baro_inhg": local_baro,
             "nws_pressure_inhg": nws_baro,
+            "nws_baro_inhg": nws_baro,
             "pressure_delta_inhg": baro_delta_inhg,
             "local_wind_mph": local_wind,
             "nws_wind_mph": nws_wind,
+            "nws_wind_speed_mph": nws_wind,
             "wind_delta_mph": wind_delta_mph,
+            "status": "Corroborated",
             "summary_badge": badge_text,
         }

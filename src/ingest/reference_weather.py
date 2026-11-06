@@ -65,7 +65,10 @@ class ReferenceWeatherService:
             "latitude": f"{lat:.4f}",
             "longitude": f"{lon:.4f}",
             "current": "temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation",
+            "hourly": "temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation",
             "minutely_15": "temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation",
+            "past_days": "30",
+            "forecast_days": "1",
             "past_minutely_15": str(max(16, min(int(past_hours) * 4, 384))),
             "forecast_minutely_15": "4",
             "wind_speed_unit": "ms",
@@ -83,42 +86,40 @@ class ReferenceWeatherService:
             payload = json.loads(raw_body)
 
         now_epoch = int(datetime.now(timezone.utc).timestamp())
-        records: list[dict[str, Any]] = []
+        records_map: dict[str, dict[str, Any]] = {}
 
-        m15 = payload.get("minutely_15") or {}
-        times = m15.get("time") or []
-        temps = m15.get("temperature_2m") or []
-        rhs = m15.get("relative_humidity_2m") or []
-        p_msl = m15.get("pressure_msl") or []
-        p_surf = m15.get("surface_pressure") or []
-        w_spd = m15.get("wind_speed_10m") or []
-        w_dir = m15.get("wind_direction_10m") or []
-        w_gst = m15.get("wind_gusts_10m") or []
-        precip = m15.get("precipitation") or []
+        def _extract_series(blk: dict[str, Any]) -> None:
+            times = blk.get("time") or []
+            temps = blk.get("temperature_2m") or []
+            rhs = blk.get("relative_humidity_2m") or []
+            p_msl = blk.get("pressure_msl") or []
+            p_surf = blk.get("surface_pressure") or []
+            w_spd = blk.get("wind_speed_10m") or []
+            w_dir = blk.get("wind_direction_10m") or []
+            w_gst = blk.get("wind_gusts_10m") or []
+            precip = blk.get("precipitation") or []
 
-        for idx, t_str in enumerate(times):
-            if not t_str:
-                continue
-            cleaned = str(t_str).strip()
-            if not cleaned.endswith("Z") and "+" not in cleaned:
-                cleaned += ":00Z" if len(cleaned) == 16 else "Z"
-            try:
-                dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00")).astimezone(timezone.utc)
-            except ValueError:
-                continue
+            for idx, t_str in enumerate(times):
+                if not t_str:
+                    continue
+                cleaned = str(t_str).strip()
+                if not cleaned.endswith("Z") and "+" not in cleaned:
+                    cleaned += ":00Z" if len(cleaned) == 16 else "Z"
+                try:
+                    dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00")).astimezone(timezone.utc)
+                except ValueError:
+                    continue
 
-            # Only store historical/current observations up to current UTC time
-            if int(dt.timestamp()) > now_epoch + 300:
-                continue
+                if int(dt.timestamp()) > now_epoch + 300:
+                    continue
 
-            iso_z = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            press_val = (
-                p_msl[idx]
-                if idx < len(p_msl) and p_msl[idx] is not None
-                else (p_surf[idx] if idx < len(p_surf) else None)
-            )
-            records.append(
-                {
+                iso_z = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                press_val = (
+                    p_msl[idx]
+                    if idx < len(p_msl) and p_msl[idx] is not None
+                    else (p_surf[idx] if idx < len(p_surf) else None)
+                )
+                records_map[iso_z] = {
                     "timestamp": iso_z,
                     "pressure_hpa": float(press_val) if press_val is not None else None,
                     "surface_pressure_hpa": (
@@ -139,7 +140,16 @@ class ReferenceWeatherService:
                         float(precip[idx]) if idx < len(precip) and precip[idx] is not None else 0.0
                     ),
                 }
-            )
+
+        # 1. First extract 30 days of hourly observations
+        if isinstance(payload.get("hourly"), dict):
+            _extract_series(payload["hourly"])
+
+        # 2. Layer recent high-res 15-minute observations over hourly data
+        if isinstance(payload.get("minutely_15"), dict):
+            _extract_series(payload["minutely_15"])
+
+        records = sorted(records_map.values(), key=lambda r: str(r["timestamp"]))
 
         # Also capture exact `current` block if provided
         curr = payload.get("current") or {}
@@ -194,6 +204,11 @@ class ReferenceWeatherService:
             )
 
         upserted = self.db.upsert_reference_history(records)
+        try:
+            self.db.sync_daily_summaries(days_back=35)
+        except Exception as exc:
+            logger.debug("Automatic daily summaries sync warning after reference ingest: %s", exc)
+
         latest_press = records[-1]["pressure_hpa"] if records else None
         latest_inhg = round(latest_press * 0.029529983071445, 2) if latest_press else None
         logger.info(

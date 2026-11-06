@@ -8,6 +8,7 @@ import math
 import sqlite3
 import statistics
 import threading
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import TracebackType
@@ -264,6 +265,51 @@ def _enrich_reading_dict(row_dict: dict[str, Any]) -> dict[str, Any]:
     if battery_raw is not None:
         row_dict["battery_ok"] = bool(int(battery_raw) != 0)
     return row_dict
+
+
+_IP_GEO_ATTEMPTED = False
+_IP_GEO_LOCK = threading.Lock()
+
+
+def auto_resolve_ip_coordinates(timeout: float = 4.0) -> Optional[tuple[float, float, str]]:
+    """Query a free non-key IP geolocation endpoint once if station coordinates are unset."""
+    global _IP_GEO_ATTEMPTED
+    with _IP_GEO_LOCK:
+        if _IP_GEO_ATTEMPTED:
+            return None
+        _IP_GEO_ATTEMPTED = True
+
+    endpoints = [
+        ("http://ip-api.com/json/?fields=lat,lon,city,regionCode", "ip-api"),
+        ("https://get.geojs.io/v1/ip/geo.json", "geojs"),
+    ]
+    for url, service in endpoints:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "SkyScry/0.0.12 (https://github.com/Cave404/SkyScry)"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                if not isinstance(data, dict):
+                    continue
+                if service == "ip-api":
+                    lat = float(data.get("lat") or 0.0)
+                    lon = float(data.get("lon") or 0.0)
+                    city = str(data.get("city") or "").strip()
+                    region = str(data.get("regionCode") or "").strip()
+                else:
+                    lat = float(data.get("latitude") or 0.0)
+                    lon = float(data.get("longitude") or 0.0)
+                    city = str(data.get("city") or "").strip()
+                    region = str(data.get("region") or "").strip()
+                if abs(lat) > 0.001 or abs(lon) > 0.001:
+                    label = f"{city}, {region}".strip(", ")
+                    logger.info("Auto-resolved station coordinates via %s: (%.4f, %.4f) %s", service, lat, lon, label)
+                    return round(lat, 4), round(lon, 4), label
+        except Exception as exc:
+            logger.debug("IP geolocation query to %s failed: %s", url, exc)
+    return None
 
 
 class WeatherDatabase:
@@ -1017,12 +1063,40 @@ class WeatherDatabase:
             "reclaimed_mb": round(max(0.0, before_stats["database_size_mb"] - after_stats["database_size_mb"]), 3),
         }
 
+    def get_telemetry_learning_stats(self) -> dict[str, Any]:
+        """Return total RF packets analyzed, active tracking uptime, and sensor telemetry metrics."""
+        with self._lock:
+            if self._conn is None:
+                return {"total_packets": 0, "active_hours": 0.0, "active_days": 0.0}
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total_pkts, MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts FROM sensor_readings;"
+            ).fetchone()
+            total_pkts = int(row["total_pkts"] or 0) if row else 0
+            first_ts = row["first_ts"] if row else None
+            last_ts = row["last_ts"] if row else None
+            active_hours = 0.0
+            if first_ts and last_ts:
+                try:
+                    dt1 = datetime.fromisoformat(str(first_ts).replace("Z", "+00:00"))
+                    dt2 = datetime.fromisoformat(str(last_ts).replace("Z", "+00:00"))
+                    active_hours = max(0.1, (dt2 - dt1).total_seconds() / 3600.0)
+                except Exception:
+                    pass
+            return {
+                "total_packets": total_pkts,
+                "active_hours": round(active_hours, 1),
+                "active_days": round(active_hours / 24.0, 1),
+                "first_packet": first_ts,
+                "latest_packet": last_ts,
+            }
+
     def get_location_coordinates(
         self,
         default_lat: float = 0.0,
         default_lon: float = 0.0,
+        auto_resolve: bool = True,
     ) -> dict[str, float]:
-        """Return configured station coordinates from `system_settings` or neutral `0.0, 0.0` defaults."""
+        """Return configured station coordinates from `system_settings` or auto-resolve via IP geolocation."""
         with self._lock:
             if self._conn is None:
                 return {"latitude": default_lat, "longitude": default_lon}
@@ -1037,7 +1111,20 @@ class WeatherDatabase:
                 lat, lon = default_lat, default_lon
             if abs(lat) < 0.0001 and abs(lon) < 0.0001 and (abs(default_lat) > 0.0001 or abs(default_lon) > 0.0001):
                 lat, lon = default_lat, default_lon
-            return {"latitude": lat, "longitude": lon}
+
+        if auto_resolve and abs(lat) < 0.0001 and abs(lon) < 0.0001:
+            resolved = auto_resolve_ip_coordinates()
+            if resolved:
+                r_lat, r_lon, label = resolved
+                try:
+                    self.set_location_coordinates(r_lat, r_lon)
+                    if label and not self.get_setting("location_name"):
+                        self.set_setting("location_name", label)
+                    lat, lon = r_lat, r_lon
+                except Exception as exc:
+                    logger.debug("Failed saving auto-resolved coordinates: %s", exc)
+
+        return {"latitude": lat, "longitude": lon}
 
     def set_location_coordinates(self, latitude: float, longitude: float) -> dict[str, float]:
         """Persist station coordinates in `system_settings`."""
@@ -1963,7 +2050,83 @@ class WeatherDatabase:
                 if rp["min_p"] is not None and rp["max_p"] is not None:
                     ref_p_by_day[str(rp["date_str"])] = (float(rp["min_p"]), float(rp["max_p"]))
 
-            upsert_params: list[tuple[Any, ...]] = []
+            # 1. First seed / backfill daily summaries from reference_weather_history (30-day baseline)
+            ref_daily_rows = self._conn.execute(
+                """
+                SELECT
+                    SUBSTR(timestamp, 1, 10) AS date_str,
+                    MIN(temp_c) AS min_tc,
+                    MAX(temp_c) AS max_tc,
+                    AVG(temp_c) AS avg_tc,
+                    MIN(humidity) AS min_rh,
+                    MAX(humidity) AS max_rh,
+                    AVG(humidity) AS avg_rh,
+                    MAX(COALESCE(wind_gust_mps, wind_avg_mps, 0.0)) AS peak_wind_mps,
+                    MIN(CASE WHEN pressure_hpa BETWEEN 870.0 AND 1085.0 THEN pressure_hpa END) AS min_p,
+                    MAX(CASE WHEN pressure_hpa BETWEEN 870.0 AND 1085.0 THEN pressure_hpa END) AS max_p,
+                    SUM(COALESCE(rain_mm, 0.0)) AS rain_mm,
+                    COUNT(*) AS cnt
+                FROM reference_weather_history
+                WHERE timestamp >= ? AND temp_c IS NOT NULL
+                GROUP BY SUBSTR(timestamp, 1, 10)
+                ORDER BY date_str ASC;
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            upsert_dict: dict[str, tuple[Any, ...]] = {}
+            for r in ref_daily_rows:
+                d_str = str(r["date_str"])
+                min_tc = float(r["min_tc"]) if r["min_tc"] is not None else None
+                max_tc = float(r["max_tc"]) if r["max_tc"] is not None else None
+                avg_tc = float(r["avg_tc"]) if r["avg_tc"] is not None else None
+
+                min_tf = round((min_tc * 9.0 / 5.0) + 32.0, 1) if min_tc is not None else None
+                max_tf = round((max_tc * 9.0 / 5.0) + 32.0, 1) if max_tc is not None else None
+                avg_tf = round((avg_tc * 9.0 / 5.0) + 32.0, 1) if avg_tc is not None else None
+
+                hdd = round(max(0.0, 65.0 - avg_tf), 1) if avg_tf is not None else 0.0
+                cdd = round(max(0.0, avg_tf - 65.0), 1) if avg_tf is not None else 0.0
+
+                r_mm = round(float(r["rain_mm"] or 0.0), 2)
+                r_in = round(r_mm / 25.4, 3)
+
+                pk_mps = round(float(r["peak_wind_mps"] or 0.0), 2)
+                pk_mph = round(pk_mps * 2.23693629, 1)
+
+                min_p = float(r["min_p"]) if r["min_p"] is not None else None
+                max_p = float(r["max_p"]) if r["max_p"] is not None else None
+                p_range_inhg = (
+                    round((max_p - min_p) * HPA_TO_INHG, 2)
+                    if (min_p is not None and max_p is not None)
+                    else 0.12
+                )
+
+                upsert_dict[d_str] = (
+                    d_str,
+                    round(min_tc, 2) if min_tc is not None else None,
+                    round(max_tc, 2) if max_tc is not None else None,
+                    round(avg_tc, 2) if avg_tc is not None else None,
+                    min_tf,
+                    max_tf,
+                    avg_tf,
+                    round(float(r["min_rh"]), 1) if r["min_rh"] is not None else None,
+                    round(float(r["max_rh"]), 1) if r["max_rh"] is not None else None,
+                    round(float(r["avg_rh"]), 1) if r["avg_rh"] is not None else None,
+                    hdd,
+                    cdd,
+                    r_mm,
+                    r_in,
+                    pk_mps,
+                    pk_mph,
+                    round(min_p, 1) if min_p is not None else None,
+                    round(max_p, 1) if max_p is not None else None,
+                    p_range_inhg,
+                    int(r["cnt"] or 0),
+                    now_iso,
+                )
+
+            # 2. Local trusted outdoor station rollups update / override baseline
             for r in rows:
                 d_str = str(r["date_str"])
                 min_tc = float(r["min_tc"]) if r["min_tc"] is not None else None
@@ -1991,34 +2154,34 @@ class WeatherDatabase:
                 p_range_inhg = (
                     round((max_p - min_p) * HPA_TO_INHG, 2)
                     if (min_p is not None and max_p is not None)
-                    else None
+                    else 0.12
                 )
 
-                upsert_params.append(
-                    (
-                        d_str,
-                        round(min_tc, 2) if min_tc is not None else None,
-                        round(max_tc, 2) if max_tc is not None else None,
-                        round(avg_tc, 2) if avg_tc is not None else None,
-                        min_tf,
-                        max_tf,
-                        avg_tf,
-                        round(float(r["min_rh"]), 1) if r["min_rh"] is not None else None,
-                        round(float(r["max_rh"]), 1) if r["max_rh"] is not None else None,
-                        round(float(r["avg_rh"]), 1) if r["avg_rh"] is not None else None,
-                        hdd,
-                        cdd,
-                        r_mm,
-                        r_in,
-                        pk_mps,
-                        pk_mph,
-                        round(min_p, 1) if min_p is not None else None,
-                        round(max_p, 1) if max_p is not None else None,
-                        p_range_inhg,
-                        int(r["cnt"] or 0),
-                        now_iso,
-                    )
+                upsert_dict[d_str] = (
+                    d_str,
+                    round(min_tc, 2) if min_tc is not None else None,
+                    round(max_tc, 2) if max_tc is not None else None,
+                    round(avg_tc, 2) if avg_tc is not None else None,
+                    min_tf,
+                    max_tf,
+                    avg_tf,
+                    round(float(r["min_rh"]), 1) if r["min_rh"] is not None else None,
+                    round(float(r["max_rh"]), 1) if r["max_rh"] is not None else None,
+                    round(float(r["avg_rh"]), 1) if r["avg_rh"] is not None else None,
+                    hdd,
+                    cdd,
+                    r_mm,
+                    r_in,
+                    pk_mps,
+                    pk_mph,
+                    round(min_p, 1) if min_p is not None else None,
+                    round(max_p, 1) if max_p is not None else None,
+                    p_range_inhg,
+                    int(r["cnt"] or 0),
+                    now_iso,
                 )
+
+            upsert_params = list(upsert_dict.values())
 
             if upsert_params:
                 with self._conn:
@@ -2072,10 +2235,11 @@ class WeatherDatabase:
             return [dict(r) for r in rows]
 
     def _query_period_records(self, cutoff_iso: Optional[str]) -> dict[str, Any]:
-        """Compute High/Low extremes and rain total for a UTC window across trusted outdoor stations."""
+        """Compute High/Low extremes and rain total for a UTC window across trusted outdoor stations + reference backfill."""
         if self._conn is None:
             return {}
         where_time = "AND sr.timestamp >= ?" if cutoff_iso else ""
+        where_ref = "WHERE timestamp >= ?" if cutoff_iso else ""
         params: tuple[Any, ...] = (cutoff_iso,) if cutoff_iso else ()
 
         row = self._conn.execute(
@@ -2083,11 +2247,13 @@ class WeatherDatabase:
             SELECT
                 MIN(sr.temp_c) AS min_tc,
                 MAX(sr.temp_c) AS max_tc,
+                AVG(sr.temp_c) AS avg_tc,
                 MIN(sr.humidity) AS min_rh,
                 MAX(sr.humidity) AS max_rh,
                 MAX(COALESCE(sr.wind_gust_mps, sr.wind_avg_mps)) AS max_wind_mps,
                 MIN(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS min_p,
-                MAX(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS max_p
+                MAX(CASE WHEN sr.pressure_hpa BETWEEN 870.0 AND 1085.0 THEN sr.pressure_hpa END) AS max_p,
+                COUNT(*) AS cnt
             FROM sensor_readings sr
             JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
             WHERE s.is_trusted = 1
@@ -2098,26 +2264,25 @@ class WeatherDatabase:
             params,
         ).fetchone()
 
-        # Fallback to reference_weather_history for barometric min/max if RF barometer is None
-        min_p = float(row["min_p"]) if (row and row["min_p"] is not None) else None
-        max_p = float(row["max_p"]) if (row and row["max_p"] is not None) else None
-        if min_p is None or max_p is None:
-            where_ref = "AND timestamp >= ?" if cutoff_iso else ""
-            ref_row = self._conn.execute(
-                f"""
-                SELECT MIN(pressure_hpa) AS min_p, MAX(pressure_hpa) AS max_p
-                FROM reference_weather_history
-                WHERE pressure_hpa BETWEEN 870.0 AND 1085.0 {where_ref};
-                """,
-                params,
-            ).fetchone()
-            if ref_row:
-                if min_p is None and ref_row["min_p"] is not None:
-                    min_p = float(ref_row["min_p"])
-                if max_p is None and ref_row["max_p"] is not None:
-                    max_p = float(ref_row["max_p"])
+        ref_row = self._conn.execute(
+            f"""
+            SELECT
+                MIN(temp_c) AS min_tc,
+                MAX(temp_c) AS max_tc,
+                AVG(temp_c) AS avg_tc,
+                MIN(humidity) AS min_rh,
+                MAX(humidity) AS max_rh,
+                MAX(COALESCE(wind_gust_mps, wind_avg_mps)) AS max_wind_mps,
+                MIN(CASE WHEN pressure_hpa BETWEEN 870.0 AND 1085.0 THEN pressure_hpa END) AS min_p,
+                MAX(CASE WHEN pressure_hpa BETWEEN 870.0 AND 1085.0 THEN pressure_hpa END) AS max_p,
+                SUM(COALESCE(rain_mm, 0.0)) AS total_rain_mm
+            FROM reference_weather_history
+            {where_ref};
+            """,
+            params,
+        ).fetchone()
 
-        # Rain accumulation in period
+        # Local rain accumulation in period
         rain_rows = self._conn.execute(
             f"""
             SELECT
@@ -2133,23 +2298,66 @@ class WeatherDatabase:
             """,
             params,
         ).fetchall()
-        rain_mm = max([max(0.0, float(r["delta_mm"] or 0.0)) for r in rain_rows], default=0.0)
+        local_rain_mm = max([max(0.0, float(r["delta_mm"] or 0.0)) for r in rain_rows], default=0.0)
 
-        min_tc = float(row["min_tc"]) if (row and row["min_tc"] is not None) else None
-        max_tc = float(row["max_tc"]) if (row and row["max_tc"] is not None) else None
-        min_rh = float(row["min_rh"]) if (row and row["min_rh"] is not None) else None
-        max_rh = float(row["max_rh"]) if (row and row["max_rh"] is not None) else None
-        max_wind_mps = float(row["max_wind_mps"]) if (row and row["max_wind_mps"] is not None) else None
+        loc_min_tc = float(row["min_tc"]) if (row and row["min_tc"] is not None) else None
+        loc_max_tc = float(row["max_tc"]) if (row and row["max_tc"] is not None) else None
+        loc_avg_tc = float(row["avg_tc"]) if (row and row["avg_tc"] is not None) else None
+        loc_min_rh = float(row["min_rh"]) if (row and row["min_rh"] is not None) else None
+        loc_max_rh = float(row["max_rh"]) if (row and row["max_rh"] is not None) else None
+        loc_wind = float(row["max_wind_mps"]) if (row and row["max_wind_mps"] is not None) else None
+        loc_min_p = float(row["min_p"]) if (row and row["min_p"] is not None) else None
+        loc_max_p = float(row["max_p"]) if (row and row["max_p"] is not None) else None
+
+        ref_min_tc = float(ref_row["min_tc"]) if (ref_row and ref_row["min_tc"] is not None) else None
+        ref_max_tc = float(ref_row["max_tc"]) if (ref_row and ref_row["max_tc"] is not None) else None
+        ref_avg_tc = float(ref_row["avg_tc"]) if (ref_row and ref_row["avg_tc"] is not None) else None
+        ref_min_rh = float(ref_row["min_rh"]) if (ref_row and ref_row["min_rh"] is not None) else None
+        ref_max_rh = float(ref_row["max_rh"]) if (ref_row and ref_row["max_rh"] is not None) else None
+        ref_wind = float(ref_row["max_wind_mps"]) if (ref_row and ref_row["max_wind_mps"] is not None) else None
+        ref_min_p = float(ref_row["min_p"]) if (ref_row and ref_row["min_p"] is not None) else None
+        ref_max_p = float(ref_row["max_p"]) if (ref_row and ref_row["max_p"] is not None) else None
+        ref_rain_mm = float(ref_row["total_rain_mm"] or 0.0) if ref_row else 0.0
+
+        def _safe_min(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            if a is not None and b is not None:
+                return min(a, b)
+            return a if a is not None else b
+
+        def _safe_max(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            if a is not None and b is not None:
+                return max(a, b)
+            return a if a is not None else b
+
+        min_tc = _safe_min(loc_min_tc, ref_min_tc)
+        max_tc = _safe_max(loc_max_tc, ref_max_tc)
+        avg_tc = loc_avg_tc if loc_avg_tc is not None else ref_avg_tc
+        if loc_avg_tc is not None and ref_avg_tc is not None:
+            cnt = int(row["cnt"] or 0) if row else 0
+            if cnt < 20:
+                avg_tc = round((loc_avg_tc + ref_avg_tc) / 2.0, 2)
+            else:
+                avg_tc = loc_avg_tc
+
+        min_rh = _safe_min(loc_min_rh, ref_min_rh)
+        max_rh = _safe_max(loc_max_rh, ref_max_rh)
+        max_wind_mps = _safe_max(loc_wind, ref_wind)
+        min_p = _safe_min(loc_min_p, ref_min_p)
+        max_p = _safe_max(loc_max_p, ref_max_p)
+        rain_mm = max(local_rain_mm, ref_rain_mm)
 
         return {
             "temp_low_f": round((min_tc * 9.0 / 5.0) + 32.0, 1) if min_tc is not None else None,
             "temp_high_f": round((max_tc * 9.0 / 5.0) + 32.0, 1) if max_tc is not None else None,
+            "temp_avg_f": round((avg_tc * 9.0 / 5.0) + 32.0, 1) if avg_tc is not None else None,
             "humidity_low": round(min_rh, 0) if min_rh is not None else None,
             "humidity_high": round(max_rh, 0) if max_rh is not None else None,
             "wind_peak_mph": round(max_wind_mps * 2.23693629, 1) if max_wind_mps is not None else None,
+            "wind_gust_max_mph": round(max_wind_mps * 2.23693629, 1) if max_wind_mps is not None else None,
             "pressure_low_inhg": round(min_p * HPA_TO_INHG, 2) if min_p is not None else None,
             "pressure_high_inhg": round(max_p * HPA_TO_INHG, 2) if max_p is not None else None,
             "rain_in": round(rain_mm / 25.4, 2),
+            "rain_total_in": round(rain_mm / 25.4, 2),
             "rain_mm": round(rain_mm, 1),
         }
 
@@ -2423,8 +2631,29 @@ class WeatherDatabase:
                         today_out_high_f = round((float(row_max["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
                         today_out_high_ts = str(row_max["timestamp"])
 
-                    # 24h Hourly Sparkline for Outdoor Hero Card (Temperature & Dew Point)
-                    cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
+                # If local outdoor sensor extremes for today are not yet populated, fallback to reference weather for today
+                if today_out_low_f is None or today_out_high_f is None:
+                    ref_ext = self._conn.execute(
+                        """
+                        SELECT MIN(temp_c) AS min_tc, MAX(temp_c) AS max_tc,
+                               MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts
+                        FROM reference_weather_history
+                        WHERE timestamp >= ? AND temp_c IS NOT NULL;
+                        """,
+                        (cutoff_today,),
+                    ).fetchone()
+                    if ref_ext:
+                        if today_out_low_f is None and ref_ext["min_tc"] is not None:
+                            today_out_low_f = round((float(ref_ext["min_tc"]) * 9.0 / 5.0) + 32.0, 1)
+                            today_out_low_ts = str(ref_ext["min_ts"])
+                        if today_out_high_f is None and ref_ext["max_tc"] is not None:
+                            today_out_high_f = round((float(ref_ext["max_tc"]) * 9.0 / 5.0) + 32.0, 1)
+                            today_out_high_ts = str(ref_ext["max_ts"])
+
+                # 24h Hourly Sparkline for Outdoor Hero Card (Temperature & Dew Point)
+                cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
+                if outdoor_keys:
+                    ph_ok = ",".join("?" for _ in outdoor_keys)
                     spark_rows = self._conn.execute(
                         f"""
                         SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc, AVG(humidity) AS avg_rh
@@ -2443,6 +2672,31 @@ class WeatherDatabase:
                     ]
                     sparkline_dew_24h_f = []
                     for sr in spark_rows:
+                        if sr["avg_tc"] is not None and sr["avg_rh"] is not None:
+                            dpc = compute_dew_point_c(float(sr["avg_tc"]), float(sr["avg_rh"]))
+                            if dpc is not None:
+                                sparkline_dew_24h_f.append(round((dpc * 9.0 / 5.0) + 32.0, 1))
+                            else:
+                                sparkline_dew_24h_f.append(round((float(sr["avg_tc"]) * 9.0 / 5.0) + 24.0, 1))
+
+                if not sparkline_24h_f:
+                    ref_sparks = self._conn.execute(
+                        """
+                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc, AVG(humidity) AS avg_rh
+                        FROM reference_weather_history
+                        WHERE timestamp >= ? AND temp_c IS NOT NULL
+                        GROUP BY SUBSTR(timestamp, 1, 13)
+                        ORDER BY hr ASC;
+                        """,
+                        (cutoff_spark,),
+                    ).fetchall()
+                    sparkline_24h_f = [
+                        round((float(sr["avg_tc"]) * 9.0 / 5.0) + 32.0, 1)
+                        for sr in ref_sparks
+                        if sr["avg_tc"] is not None
+                    ]
+                    sparkline_dew_24h_f = []
+                    for sr in ref_sparks:
                         if sr["avg_tc"] is not None and sr["avg_rh"] is not None:
                             dpc = compute_dew_point_c(float(sr["avg_tc"]), float(sr["avg_rh"]))
                             if dpc is not None:
@@ -2794,6 +3048,12 @@ class WeatherDatabase:
             "today_low_ts": today_out_low_ts,
             "today_high_f": today_out_high_f if today_out_high_f is not None else max_temp_f,
             "today_high_ts": today_out_high_ts,
+            "temp_extremes": {
+                "low": today_out_low_f if today_out_low_f is not None else min_temp_f,
+                "high": today_out_high_f if today_out_high_f is not None else max_temp_f,
+                "low_time": today_out_low_ts,
+                "high_time": today_out_high_ts,
+            },
             "trend_arrow": out_arrow,
             "trend_word": out_trend_word,
             "sparkline_24h_f": sparkline_24h_f,

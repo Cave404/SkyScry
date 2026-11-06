@@ -205,6 +205,13 @@
   const elClimStreak = document.getElementById("clim-streak");
   const elClimRain30d = document.getElementById("clim-rain-30d");
   const elClimRecordsTbody = document.getElementById("clim-records-tbody");
+  const elClimLearningBanner = document.getElementById("clim-learning-banner");
+  const elClimLearningStatus = document.getElementById("clim-learning-status");
+  const elClimLearnPackets = document.getElementById("clim-learn-packets");
+  const elClimLearnUptime = document.getElementById("clim-learn-uptime");
+  const elClimLearnDegreeDays = document.getElementById("clim-learn-degreedays");
+  const elClimLearnSwing = document.getElementById("clim-learn-swing");
+  const elClimLearnVolatility = document.getElementById("clim-learn-volatility");
 
   const elChartHours = document.getElementById("chart-hours-select");
   const elChartBucket = document.getElementById("chart-bucket-select");
@@ -1067,19 +1074,31 @@
 
     // Outdoor High / Low Pills
     const outExt = out.temp_extremes || {};
-    const lowExt = outExt.low !== null && outExt.low !== undefined ? Number(outExt.low) : null;
-    const highExt = outExt.high !== null && outExt.high !== undefined ? Number(outExt.high) : null;
+    const lowExt =
+      outExt.low !== null && outExt.low !== undefined
+        ? Number(outExt.low)
+        : out.today_low_f !== null && out.today_low_f !== undefined
+        ? Number(out.today_low_f)
+        : null;
+    const highExt =
+      outExt.high !== null && outExt.high !== undefined
+        ? Number(outExt.high)
+        : out.today_high_f !== null && out.today_high_f !== undefined
+        ? Number(out.today_high_f)
+        : null;
+    const lowTimeStr = outExt.low_time || out.today_low_time || "--";
+    const highTimeStr = outExt.high_time || out.today_high_time || "--";
 
     if (elOvOutLowPill) {
       elOvOutLowPill.innerHTML =
         lowExt !== null
-          ? `Low: ${lowExt.toFixed(1)}&deg;F (${escapeHtml(outExt.low_time || "--")})`
+          ? `Low: ${lowExt.toFixed(1)}&deg;F (${escapeHtml(lowTimeStr)})`
           : `Low: --.-&deg;F (--)`;
     }
     if (elOvOutHighPill) {
       elOvOutHighPill.innerHTML =
         highExt !== null
-          ? `High: ${highExt.toFixed(1)}&deg;F (${escapeHtml(outExt.high_time || "--")})`
+          ? `High: ${highExt.toFixed(1)}&deg;F (${escapeHtml(highTimeStr)})`
           : `High: --.-&deg;F (--)`;
     }
 
@@ -1496,7 +1515,11 @@
     const obs = data.observation || {};
     const deltas = data.corroboration || {};
     const alerts = Array.isArray(data.alerts) ? data.alerts : [];
-    const forecast = Array.isArray(data.forecast) ? data.forecast : [];
+    const forecast = Array.isArray(data.forecast)
+      ? data.forecast
+      : Array.isArray(data.forecast_periods)
+      ? data.forecast_periods
+      : [];
 
     // Active NWS Alert Banner at top of dashboard
     if (elNwsAlertBanner) {
@@ -1533,7 +1556,7 @@
         deltas.temp_delta_f !== undefined && deltas.temp_delta_f !== null
           ? `${deltas.temp_delta_f >= 0 ? "+" : ""}${Number(deltas.temp_delta_f).toFixed(1)}°F`
           : "--";
-      elOvNwsSummaryBadge.textContent = `Local Ensemble: ${localT} | NWS Official (${st.station_id || "Station"}): ${nwsT} | Microclimate Delta: ${dTemp} (${obs.text_description || "Synced"})`;
+      elOvNwsSummaryBadge.textContent = `Local Ensemble: ${localT} | NWS Official (${st.station_id || "Station"}): ${nwsT} | Microclimate Delta: ${dTemp} (${obs.text_description || obs.condition || "Synced"})`;
     }
 
     // View 5 Corroboration Table
@@ -1545,6 +1568,18 @@
           ? `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(d)}${unit}`
           : "--";
 
+      const locRh = deltas.local_rh ?? deltas.local_humidity;
+      const obsRh = obs.humidity ?? obs.rh;
+      const rhDelta = deltas.humidity_delta_pct ?? deltas.humidity_delta;
+
+      const locBaro = deltas.local_baro_inhg ?? deltas.local_pressure_inhg;
+      const obsBaro = obs.pressure_inhg ?? obs.baro_inhg;
+      const baroDelta = deltas.pressure_delta_inhg;
+
+      const locWind = deltas.local_wind_mph;
+      const obsWind = obs.wind_speed_mph ?? obs.wind_mph;
+      const windDelta = deltas.wind_delta_mph;
+
       elNwsCorroborationTbody.innerHTML = `
         <tr>
           <td><strong>Outdoor Temperature</strong></td>
@@ -1555,23 +1590,23 @@
         </tr>
         <tr>
           <td><strong>Relative Humidity</strong></td>
-          <td class="mono">${fmtVal(deltas.local_rh, "%", 0)}</td>
-          <td class="mono">${fmtVal(obs.humidity, "%", 0)}</td>
-          <td class="mono">${fmtDelta(deltas.humidity_delta_pct, "%", 1)}</td>
+          <td class="mono">${fmtVal(locRh, "%", 0)}</td>
+          <td class="mono">${fmtVal(obsRh, "%", 0)}</td>
+          <td class="mono">${fmtDelta(rhDelta, "%", 1)}</td>
           <td><span class="badge">Hyperlocal RH</span></td>
         </tr>
         <tr>
           <td><strong>Barometric Pressure</strong></td>
-          <td class="mono">${fmtVal(deltas.local_baro_inhg, " inHg", 2)}</td>
-          <td class="mono">${fmtVal(obs.pressure_inhg, " inHg", 2)}</td>
-          <td class="mono">${fmtDelta(deltas.pressure_delta_inhg, " inHg", 2)}</td>
+          <td class="mono">${fmtVal(locBaro, " inHg", 2)}</td>
+          <td class="mono">${fmtVal(obsBaro, " inHg", 2)}</td>
+          <td class="mono">${fmtDelta(baroDelta, " inHg", 2)}</td>
           <td><span class="badge">Sea-Level Calibrated</span></td>
         </tr>
         <tr>
           <td><strong>Sustained Wind Speed</strong></td>
-          <td class="mono">${fmtVal(deltas.local_wind_mph, " mph", 1)}</td>
-          <td class="mono">${fmtVal(obs.wind_speed_mph, " mph", 1)} (${escapeHtml(obs.wind_cardinal || "--")})</td>
-          <td class="mono">${fmtDelta(deltas.wind_delta_mph, " mph", 1)}</td>
+          <td class="mono">${fmtVal(locWind, " mph", 1)}</td>
+          <td class="mono">${fmtVal(obsWind, " mph", 1)} (${escapeHtml(obs.wind_cardinal || "--")})</td>
+          <td class="mono">${fmtDelta(windDelta, " mph", 1)}</td>
           <td><span class="badge">Anemometer vs ASOS</span></td>
         </tr>
       `;
@@ -1586,22 +1621,23 @@
     // View 5 7-Day Forecast Cards
     if (elNwsForecastGrid) {
       if (forecast.length === 0) {
-        elNwsForecastGrid.innerHTML = `<div class="text-muted">Official NWS 7-day forecast currently unavailable or offline.</div>`;
+        elNwsForecastGrid.innerHTML = `<div class="text-muted">Official NWS 7-day forecast currently loading...</div>`;
       } else {
         elNwsForecastGrid.innerHTML = forecast
-          .slice(0, 12)
+          .slice(0, 14)
           .map((p) => {
+            const popVal = p.pop_pct ?? p.pop_percent ?? 0;
             const popBadge =
-              p.pop_pct !== null && p.pop_pct !== undefined && p.pop_pct > 0
-                ? `<span class="badge badge-indoor">PoP ${p.pop_pct}%</span>`
-                : "";
+              popVal > 0 ? `<span class="badge badge-indoor">PoP ${popVal}%</span>` : "";
+            const tempVal = p.temp ?? p.temperature ?? "--";
+            const tempUnit = p.temp_unit ?? p.temperature_unit ?? "F";
             return `
               <div class="nws-period-tile">
                 <div class="nws-period-header">
                   <span class="nws-period-name">${escapeHtml(p.name)}</span>
-                  <span class="nws-period-temp ${p.is_daytime ? "daytime" : ""}">${p.temperature ?? "--"}&deg;${escapeHtml(p.temperature_unit || "F")}</span>
+                  <span class="nws-period-temp ${p.is_daytime ? "daytime" : ""}">${tempVal}&deg;${escapeHtml(tempUnit)}</span>
                 </div>
-                <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 4px;">
                   <span class="nws-period-short">${escapeHtml(p.short_forecast || "")}</span>
                   ${popBadge}
                 </div>
@@ -1624,6 +1660,25 @@
     });
   }
 
+  function createBasemapLayer() {
+    const osmUrl = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+    const layer = L.tileLayer(osmUrl, {
+      maxZoom: 18,
+      className: "basemap-layer",
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+    });
+    layer.on("tileerror", function (err) {
+      if (err && err.tile && !err.tile._fallbackTried) {
+        err.tile._fallbackTried = true;
+        const coords = err.coords;
+        if (coords) {
+          err.tile.src = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${coords.z}/${coords.y}/${coords.x}`;
+        }
+      }
+    });
+    return layer;
+  }
+
   async function initAndRefreshRadarMaps() {
     if (typeof L === "undefined") return;
     const lat = Number(userSettings.latitude || 38.627);
@@ -1639,10 +1694,7 @@
         zoomControl: false,
         attributionControl: false,
       });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        maxZoom: 18,
-        subdomains: "abcd",
-      }).addTo(miniRadarMap);
+      createBasemapLayer().addTo(miniRadarMap);
       miniStationMarker = L.marker([lat, lon], { icon: createCrosshairIcon() })
         .addTo(miniRadarMap)
         .bindTooltip(userSettings.station_name || "SkyScry Station");
@@ -1657,11 +1709,7 @@
         center: [lat, lon],
         zoom: zoom,
       });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        maxZoom: 18,
-        subdomains: "abcd",
-        attribution: "&copy; CARTO &amp; RainViewer / NOAA NEXRAD",
-      }).addTo(fullRadarMap);
+      createBasemapLayer().addTo(fullRadarMap);
       fullStationMarker = L.marker([lat, lon], { icon: createCrosshairIcon() })
         .addTo(fullRadarMap)
         .bindPopup(`<strong>${escapeHtml(userSettings.station_name)}</strong><br/>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
@@ -1712,6 +1760,7 @@
       layers: "conus_bref_qcd",
       format: "image/png",
       transparent: true,
+      maxZoom: 18,
       opacity: 0.72,
       attribution: "NOAA/NWS OpenGeo",
     };
@@ -1758,7 +1807,11 @@
     if (miniRadarMap && currentFrameIdx === radarFrames.length - 1) {
       if (miniRadarTileLayer) miniRadarMap.removeLayer(miniRadarTileLayer);
       try {
-        miniRadarTileLayer = L.tileLayer(tileUrl, { opacity: 0.72, maxZoom: 18 }).addTo(miniRadarMap);
+        miniRadarTileLayer = L.tileLayer(tileUrl, {
+          maxNativeZoom: 7,
+          maxZoom: 18,
+          opacity: 0.72,
+        }).addTo(miniRadarMap);
         miniRadarTileLayer.on("tileerror", () => {
           applyNexradTileFallback();
         });
@@ -1769,7 +1822,11 @@
     if (fullRadarMap) {
       if (fullActiveTileLayer) fullRadarMap.removeLayer(fullActiveTileLayer);
       try {
-        fullActiveTileLayer = L.tileLayer(tileUrl, { opacity: 0.75, maxZoom: 18 }).addTo(fullRadarMap);
+        fullActiveTileLayer = L.tileLayer(tileUrl, {
+          maxNativeZoom: 7,
+          maxZoom: 18,
+          opacity: 0.75,
+        }).addTo(fullRadarMap);
         fullActiveTileLayer.on("tileerror", () => {
           applyNexradTileFallback();
         });
@@ -1812,20 +1869,51 @@
     climatologyLoadedOnce = true;
 
     const traj = data.seasonal_trajectory || {};
-    const w7 = data.window_7d || {};
-    const w30 = data.window_30d || {};
-    const rec = data.records_table || {};
+    const w7 = data.window_7d || data.weekly || {};
+    const w30 = data.window_30d || data.monthly || {};
+    const rec = data.records_table || data.records || {};
+    const learn = data.learning_status || {};
 
     if (elClimTrajectoryNarrative) {
       elClimTrajectoryNarrative.textContent =
-        traj.narrative || "Accumulating daily telemetry rollups for seasonal trajectory analysis.";
+        traj.narrative ||
+        data.trajectory_narrative ||
+        "Accumulating daily telemetry rollups for seasonal trajectory analysis.";
     }
     if (elClimAnomalyBadge) {
-      if (traj.anomaly_7d_vs_30d_f !== null && traj.anomaly_7d_vs_30d_f !== undefined) {
-        const d = Number(traj.anomaly_7d_vs_30d_f);
+      const anom = traj.anomaly_7d_vs_30d_f ?? traj.anomaly_7d_f ?? data.anomaly_7d_f;
+      if (anom !== null && anom !== undefined) {
+        const d = Number(anom);
         elClimAnomalyBadge.textContent = `7d vs 30d Anomaly: ${d >= 0 ? "+" : ""}${d.toFixed(1)}°F`;
       } else {
         elClimAnomalyBadge.textContent = "Seasonal Baseline Active";
+      }
+    }
+
+    // Active Telemetry Learning Banner
+    if (elClimLearningBanner) {
+      if (elClimLearningStatus && learn.status_label) {
+        elClimLearningStatus.textContent = learn.status_label;
+      }
+      if (elClimLearnPackets && learn.total_packets !== undefined) {
+        elClimLearnPackets.textContent = `${Number(learn.total_packets).toLocaleString()} packets analyzed`;
+      }
+      if (elClimLearnUptime && learn.active_hours !== undefined) {
+        const winStr = learn.active_days >= 1 ? `${learn.active_days} days` : `${learn.active_hours} hrs`;
+        elClimLearnUptime.textContent = `${winStr} learning window`;
+      }
+      if (elClimLearnDegreeDays) {
+        const hdd = learn.hdd_30d ?? w30.hdd_total ?? 0;
+        const cdd = learn.cdd_30d ?? w30.cdd_total ?? 0;
+        elClimLearnDegreeDays.textContent = `${Number(hdd).toFixed(0)} HDD / ${Number(cdd).toFixed(0)} CDD`;
+      }
+      if (elClimLearnSwing) {
+        const sw = learn.diurnal_swing_7d ?? w7.avg_diurnal_swing_f ?? w7.diurnal_swing_avg_f;
+        elClimLearnSwing.textContent = sw !== null && sw !== undefined ? `7d Swing: ${Number(sw).toFixed(1)}°F` : `7d Swing: --`;
+      }
+      if (elClimLearnVolatility) {
+        const vol = learn.baro_volatility ?? w30.baro_volatility_inhg ?? w7.baro_volatility_inhg;
+        elClimLearnVolatility.textContent = vol !== null && vol !== undefined ? `Baro Volatility: ±${Number(vol).toFixed(2)} inHg` : `Baro Volatility: --`;
       }
     }
 
@@ -1836,9 +1924,10 @@
           : `--.-&deg;F`;
     }
     if (elClim7dSwing) {
+      const sw = w7.avg_diurnal_swing_f ?? w7.diurnal_swing_avg_f;
       elClim7dSwing.innerHTML =
-        w7.avg_diurnal_swing_f !== null && w7.avg_diurnal_swing_f !== undefined
-          ? `Avg Diurnal Swing: ${Number(w7.avg_diurnal_swing_f).toFixed(1)}&deg;F`
+        sw !== null && sw !== undefined
+          ? `Avg Diurnal Swing: ${Number(sw).toFixed(1)}&deg;F`
           : `Avg Diurnal Swing: --`;
     }
     if (elClim30dMean) {
@@ -1848,9 +1937,10 @@
           : `--.-&deg;F`;
     }
     if (elClimBaroVol) {
+      const bvol = w30.baro_volatility_inhg ?? w7.baro_volatility_inhg;
       elClimBaroVol.textContent =
-        w30.baro_volatility_inhg !== null && w30.baro_volatility_inhg !== undefined
-          ? `Baro Volatility: ±${Number(w30.baro_volatility_inhg).toFixed(2)} inHg`
+        bvol !== null && bvol !== undefined
+          ? `Baro Volatility: ±${Number(bvol).toFixed(2)} inHg`
           : `Baro Volatility: --`;
     }
     if (elClimHddCdd) {
@@ -1867,30 +1957,56 @@
       elClimRain30d.textContent = `30d Rain: ${Number(w30.rain_total_in || 0).toFixed(2)} in`;
     }
 
+    // Populate Weather-Display Style 6 Metric Rows across 5 Periods
     if (elClimRecordsTbody) {
-      const periods = [
-        { key: "today", label: "Today (Since Midnight)" },
-        { key: "week", label: "Past 7 Days" },
-        { key: "month", label: "Current Month (MTD)" },
-        { key: "year", label: "Current Year (YTD)" },
-        { key: "all_time", label: "All-Time Station Record" },
+      const periods = ["today", "week", "month", "year", "all_time"];
+      const getPeriod = (k) => rec[k] || {};
+
+      const fTempRange = (r) =>
+        r.temp_high_f !== null && r.temp_high_f !== undefined && r.temp_low_f !== null && r.temp_low_f !== undefined
+          ? `${Number(r.temp_high_f).toFixed(1)}&deg; / ${Number(r.temp_low_f).toFixed(1)}&deg;F`
+          : "--";
+      const fAvgTemp = (r) =>
+        r.temp_avg_f !== null && r.temp_avg_f !== undefined
+          ? `${Number(r.temp_avg_f).toFixed(1)}&deg;F`
+          : (r.temp_high_f !== null && r.temp_high_f !== undefined && r.temp_low_f !== null && r.temp_low_f !== undefined
+              ? `${((Number(r.temp_high_f) + Number(r.temp_low_f)) / 2).toFixed(1)}&deg;F`
+              : "--");
+      const fHumRange = (r) =>
+        r.humidity_low !== null && r.humidity_low !== undefined && r.humidity_high !== null && r.humidity_high !== undefined
+          ? `${Math.round(r.humidity_low)}% - ${Math.round(r.humidity_high)}%`
+          : "--";
+      const fWind = (r) => {
+        const w = r.wind_gust_max_mph ?? r.wind_peak_mph;
+        return w !== null && w !== undefined ? `${Number(w).toFixed(1)} mph` : "--";
+      };
+      const fRain = (r) => {
+        const rn = r.rain_total_in ?? r.rain_in;
+        return rn !== null && rn !== undefined ? `${Number(rn).toFixed(2)} in` : "--";
+      };
+      const fBaro = (r) =>
+        r.pressure_low_inhg !== null && r.pressure_low_inhg !== undefined && r.pressure_high_inhg !== null && r.pressure_high_inhg !== undefined
+          ? `${Number(r.pressure_low_inhg).toFixed(2)} - ${Number(r.pressure_high_inhg).toFixed(2)} inHg`
+          : "--";
+
+      const metricRows = [
+        { label: "Temp High / Low", fn: fTempRange },
+        { label: "Avg Temperature", fn: fAvgTemp },
+        { label: "Humidity Range", fn: fHumRange },
+        { label: "Peak Wind Gust", fn: fWind },
+        { label: "Total Precipitation", fn: fRain },
+        { label: "Barometric Range", fn: fBaro },
       ];
-      const fv = (v, u, d) => (v !== null && v !== undefined ? `${Number(v).toFixed(d)}${u}` : "--");
-      elClimRecordsTbody.innerHTML = periods
-        .map((p) => {
-          const r = rec[p.key] || {};
-          return `
-            <tr>
-              <td><strong>${escapeHtml(p.label)}</strong></td>
-              <td class="mono">${fv(r.temp_high_f, "°F", 1)}</td>
-              <td class="mono">${fv(r.temp_low_f, "°F", 1)}</td>
-              <td class="mono">${fv(r.humidity_high, "%", 0)} / ${fv(r.humidity_low, "%", 0)}</td>
-              <td class="mono">${fv(r.wind_gust_max_mph, " mph", 1)}</td>
-              <td class="mono">${fv(r.pressure_high_inhg, "", 2)} / ${fv(r.pressure_low_inhg, " inHg", 2)}</td>
-              <td class="mono">${fv(r.rain_total_in, " in", 2)}</td>
-            </tr>
-          `;
-        })
+
+      elClimRecordsTbody.innerHTML = metricRows
+        .map(
+          (m) => `
+          <tr>
+            <td><strong>${escapeHtml(m.label)}</strong></td>
+            ${periods.map((p) => `<td class="mono">${m.fn(getPeriod(p))}</td>`).join("")}
+          </tr>
+        `
+        )
         .join("");
     }
   }
