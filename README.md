@@ -1,7 +1,7 @@
 # SkyScry
 
 ![Version](https://img.shields.io/badge/version-0.0.24-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 **SkyScry** is an open-source, cross-platform **433.92 MHz microclimate telemetry and weather ingestion daemon** with a hosted 6-view dark-mode WebUI, AcuRite & Weather-Display (`grahamsbeach.htm`) inspired interactive SVG hardware gauges, US National Weather Service (`api.weather.gov`) official corroboration & animated Doppler radar, long-term seasonal/climatology analytics, hardened first-run encrypted Admin Password security, and turnkey **TrueNAS SCALE & Cloudflare Tunnel (`cloudflared`)** Docker deployment.
