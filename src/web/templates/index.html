@@ -1,0 +1,1911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkyScry v{{ version }} | 433.92 MHz Microclimate Telemetry Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ asset_version or version }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+</head>
+<body>
+  <header class="topbar sticky-app-bar">
+    <div class="topbar-left">
+      <button id="btn-nav-drawer-toggle" class="hamburger-btn" type="button" aria-label="Open Navigation Drawer" title="Navigation &amp; System Menu">
+        <span class="hamburger-icon">&#9776;</span>
+      </button>
+      <span id="top-bar-active-view" class="topbar-active-title">Overview</span>
+    </div>
+
+    <div class="topbar-right">
+      <!-- Interactive Status Popover Trigger -->
+      <button id="status-popover-btn" class="topbar-status-btn" type="button" aria-haspopup="dialog" aria-expanded="false" title="System Status &amp; Telemetry Summary">
+        <span id="stat-sync-indicator" class="sync-dot"></span>
+        <span id="topbar-auth-indicator" class="topbar-auth-icon">&#128274;</span>
+        <span class="status-btn-text">Status</span>
+        <span class="status-btn-caret">&#9662;</span>
+      </button>
+
+      <!-- 1-Tap Manual Refresh / Sync Button -->
+      <button id="btn-refresh-now" class="btn btn-primary btn-sm topbar-sync-btn" type="button" title="Sync All Telemetry">
+        <span class="sync-arrow">&#8635;</span>
+        <span class="sync-btn-label">Sync</span>
+      </button>
+    </div>
+
+    <!-- Floating System Status Popover Card -->
+    <div id="status-popover" class="status-popover hidden" role="dialog" aria-label="System Status Popover">
+      <div class="popover-header">
+        <div class="popover-title">SYSTEM STATUS</div>
+        <button id="btn-popover-close" class="popover-close-btn" type="button" aria-label="Close Status Popover">&times;</button>
+      </div>
+
+      <div class="popover-body">
+        <!-- SDR Stream & Active Sensors -->
+        <div class="popover-row">
+          <span class="popover-label">SDR Stream</span>
+          <div class="popover-val-group">
+            <span id="popover-sdr-status" class="status-badge running">RUNNING</span>
+            <button id="btn-reconnect-sdr" class="btn btn-xs btn-outline-danger hidden" type="button" style="padding: 2px 8px; font-size: 0.72rem; line-height: 1.2;">Reset USB & Reconnect</button>
+            <span id="stat-sensor-count" class="popover-subval">--/--</span>
+          </div>
+        </div>
+
+        <!-- Barometer -->
+        <div class="popover-row">
+          <span class="popover-label">Barometer</span>
+          <span id="stat-baro-header" class="popover-val-accent">--.--"</span>
+        </div>
+
+        <!-- Security Mode -->
+        <div class="popover-row popover-auth-row">
+          <div class="popover-auth-info">
+            <span class="popover-label">Security</span>
+            <span id="popover-auth-status" class="popover-auth-val">Locked (Read-Only)</span>
+          </div>
+          <button id="btn-popover-auth" class="btn btn-xs btn-outline-primary" type="button">Unlock Admin</button>
+        </div>
+
+        <div class="popover-divider"></div>
+
+        <!-- Telemetry DB: Packets Logged & DB Size -->
+        <div class="popover-grid">
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">PACKETS LOGGED</span>
+            <span id="popover-reading-count" class="popover-cell-val">--</span>
+          </div>
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">DB SIZE (WAL)</span>
+            <span id="popover-db-size" class="popover-cell-val">-- MB</span>
+          </div>
+        </div>
+
+        <!-- Uptime & Last Sync -->
+        <div class="popover-grid">
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">UPTIME</span>
+            <span id="popover-uptime" class="popover-cell-val">--</span>
+          </div>
+          <div class="popover-grid-cell">
+            <span class="popover-cell-label">LAST SYNC</span>
+            <span id="popover-last-sync" class="popover-cell-val">--</span>
+          </div>
+        </div>
+
+        <div class="popover-divider"></div>
+
+        <!-- Version & Build -->
+        <div class="popover-footer">
+          <span id="popover-app-version">v{{ version }}</span>
+          <span class="popover-bullet">&bull;</span>
+          <span id="popover-git-commit">git:local</span>
+          <span class="popover-bullet">&bull;</span>
+          <span id="popover-rtl433-ver">rtl_433</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Slide-Out Navigation & System Drawer (Hamburger Menu) -->
+  <div id="nav-drawer-backdrop" class="nav-drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="nav-drawer" class="nav-drawer" aria-label="Navigation &amp; System Menu" aria-hidden="true">
+    <div class="drawer-header">
+      <div class="drawer-brand">
+        <div class="brand-mark">SS</div>
+        <div>
+          <div class="drawer-title"><span id="header-station-title">SkyScry</span> <span class="drawer-version-tag">v{{ version }}</span></div>
+          <div class="drawer-subtitle">Telemetry &amp; Microclimate Control</div>
+        </div>
+      </div>
+      <button id="btn-nav-drawer-close" class="drawer-close-btn" type="button" aria-label="Close Navigation Drawer">&times;</button>
+    </div>
+
+    <div class="drawer-body">
+      <!-- Section A: Navigation Views -->
+      <div class="drawer-section">
+        <div class="drawer-section-title">NAVIGATION VIEWS</div>
+        <div class="drawer-nav-list" role="tablist">
+          <button class="drawer-nav-item active" data-tab="overview" type="button">
+            <span class="drawer-nav-num">1</span>
+            <span class="drawer-nav-label">Overview Dashboard</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="charts" type="button">
+            <span class="drawer-nav-num">2</span>
+            <span class="drawer-nav-label">Historical Charts &amp; Climatology</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="sensors" type="button">
+            <span class="drawer-nav-num">3</span>
+            <span class="drawer-nav-label">Sensors Manager</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="logs" type="button">
+            <span class="drawer-nav-num">4</span>
+            <span class="drawer-nav-label">SQLite Log Explorer</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="radar" type="button">
+            <span class="drawer-nav-num">5</span>
+            <span class="drawer-nav-label">Radar &amp; NWS Forecast</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="calendar" type="button">
+            <span class="drawer-nav-num">&#128197;</span>
+            <span class="drawer-nav-label">Weather Calendar</span>
+          </button>
+          <button class="drawer-nav-item" data-tab="settings" type="button">
+            <span class="drawer-nav-num">7</span>
+            <span class="drawer-nav-label">Settings &#128274;</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Section B: System Maintenance Actions -->
+      <div class="drawer-section">
+        <div class="drawer-section-title">SYSTEM MAINTENANCE</div>
+        <div class="drawer-action-list">
+          <button id="btn-trigger-update" class="drawer-action-btn" type="button" title="Check GitHub for updates &amp; upgrades">
+            <span class="action-icon">&#128640;</span>
+            <span class="action-text">Check &amp; Apply Updates</span>
+          </button>
+          <button id="btn-sync-reference" class="drawer-action-btn" type="button" title="Fetch 48h regional barometric pressure &amp; weather backfill">
+            <span class="action-icon">&#128260;</span>
+            <span class="action-text">Sync Barometer &amp; History</span>
+          </button>
+          <button id="btn-purge-outliers" class="drawer-action-btn" type="button" title="Expunge corrupted RF bit-flip spikes and appliance probes">
+            <span class="action-icon">&#129529;</span>
+            <span class="action-text">Purge Skewed Outliers</span>
+          </button>
+          <button id="btn-drawer-auth" class="drawer-action-btn" type="button" title="Lock or Unlock Admin session">
+            <span class="action-icon" id="drawer-auth-icon">&#128274;</span>
+            <span class="action-text" id="drawer-auth-text">Lock / Unlock Admin</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Section C: System Telemetry & Version Footer -->
+      <div class="drawer-section drawer-footer-section">
+        <div class="drawer-section-title">SYSTEM TELEMETRY</div>
+        <div class="drawer-telemetry-grid">
+          <div class="telem-row">
+            <span class="telem-label">Version</span>
+            <span class="telem-val" id="stat-app-version">v{{ version }}</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Git Commit</span>
+            <span class="telem-val mono" id="stat-git-commit">git:--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">rtl_433 Build</span>
+            <span class="telem-val mono" id="stat-rtl433-ver">rtl_433:--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">SDR Ingestion</span>
+            <span class="telem-val" id="stat-sdr-status">READY</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Packets Logged</span>
+            <span class="telem-val mono" id="stat-reading-count">--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">DB Size (WAL)</span>
+            <span class="telem-val mono" id="stat-db-size">-- MB</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Daemon Uptime</span>
+            <span class="telem-val" id="stat-uptime">--</span>
+          </div>
+          <div class="telem-row">
+            <span class="telem-label">Last Sync</span>
+            <span class="telem-val mono" id="stat-last-sync">--:--:--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <!-- ================================================================== -->
+    <!-- VIEW 1: MAIN OVERVIEW DASHBOARD (ACURITE & WEATHER-DISPLAY GAUGES) -->
+    <!-- ================================================================== -->
+    <section id="view-overview" class="view-panel active">
+      <!-- Compact 1-Line Hyperlocal NWS Corroboration Strip -->
+      <div class="nws-corroboration-strip card compact-strip">
+        <div class="nws-strip-left">
+          <span id="ov-nws-summary-badge" class="nws-strip-text">
+            National Weather Service: Syncing... | &Delta; --
+          </span>
+        </div>
+        <div class="nws-strip-right">
+          <span id="ov-nws-office-pill" class="trend-pill neutral hidden">WFO: --</span>
+          <button id="btn-open-radar-tab" class="btn btn-secondary btn-sm compact-radar-btn" type="button">
+            Radar &amp; 7-Day &rarr;
+          </button>
+        </div>
+      </div>
+
+      <div class="overview-top-grid">
+        <!-- Hero Outdoor Weather Condition Card with Full-Width Split Layout & 24h Area Sparkline -->
+        <div class="hero-weather-card card">
+          <div class="hero-split-grid">
+            <!-- Left Column: Primary Condition & Ensemble Readout -->
+            <div class="hero-left-col">
+              <div class="hero-eyebrow">Current Outdoor Weather</div>
+              <div class="hero-main-flex">
+                <div id="hero-weather-icon" class="weather-icon-stage" aria-hidden="true"></div>
+                <div class="hero-temp-block">
+                  <div id="ov-condition-label" class="hero-condition-title">Loading Local Weather...</div>
+                  <div class="hero-temp-row">
+                    <span id="ov-out-temp-f" class="hero-temp-primary">--.-&deg;F</span>
+                    <span id="ov-out-temp-c" class="hero-temp-secondary">(--.-&deg;C)</span>
+                    <span id="ov-out-trend-arrow" class="trend-arrow-badge steady" title="1-Hour Temperature Trend">&rarr; Steady</span>
+                  </div>
+                  <!-- AcuRite-Style Daily High/Low Extremes Pills with Timestamps -->
+                  <div class="extremes-pill-row">
+                    <span id="ov-out-low-pill" class="extreme-pill low-pill">Low: --.-&deg;F (--)</span>
+                    <span class="extreme-sep">|</span>
+                    <span id="ov-out-high-pill" class="extreme-pill high-pill">High: --.-&deg;F (--)</span>
+                  </div>
+                  <div id="ov-out-spread" class="hero-spread-sub">Outdoor average across -- sensor(s)</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: 4-Metric Quick Grid -->
+            <div class="hero-right-col">
+              <!-- 4-Box Hyperlocal Quick Grid -->
+              <div class="hero-quick-grid">
+                <div class="quick-stat-box">
+                  <span class="quick-label">FEELS LIKE</span>
+                  <div id="ov-hero-feels" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-feels-sub" class="quick-sub">Apparent</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">DEW POINT</span>
+                  <div id="ov-hero-dew" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-dew-spread" class="quick-sub">Spread: --</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">TODAY'S RANGE</span>
+                  <div id="ov-hero-range" class="quick-val">&Delta; --.-&deg;F</div>
+                  <span id="ov-hero-range-sub" class="quick-sub">--&deg; &rarr; --&deg;</span>
+                </div>
+                <div class="quick-stat-box">
+                  <span class="quick-label">SENSOR SPREAD</span>
+                  <div id="ov-hero-spread-val" class="quick-val">--.-&deg;F</div>
+                  <span id="ov-hero-spread-count" class="quick-sub">-- sensors</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Middle Row of Hero Card (Full Width): 24-Hour Temperature & Dew Point Trend Sparkline SVG Panel -->
+          <div class="hero-sparkline-panel hero-sparkline-full">
+            <div class="sparkline-header-row">
+              <span class="sparkline-title">24-Hour Temp &amp; Dew Point</span>
+              <div class="sparkline-legend">
+                <span id="sparkline-range-pill" class="sparkline-range-pill">H: --.-&deg; | L: --.-&deg;</span>
+                <span class="legend-dot temp-dot"></span><span>Temp</span>
+                <span class="legend-dot dew-dot"></span><span>Dew Pt</span>
+              </div>
+            </div>
+            <div class="sparkline-svg-container">
+              <svg id="ov-hero-sparkline-svg" class="hero-trend-svg" viewBox="0 0 840 85" preserveAspectRatio="none" aria-label="24-hour temperature and dew point area trend chart"></svg>
+            </div>
+          </div>
+
+          <!-- Bottom Nowcast Bar (Fixed 4-Pill Layout + Anti-Shift Height + Ground-Truth Check-In) -->
+          <div class="hero-nowcast-box">
+            <div class="nowcast-header">
+              <span class="nowcast-title">12&ndash;24 Hour Local Forecast</span>
+              <div id="ov-trend-badges" class="trend-badge-row fixed-four-pills">
+                <span class="trend-pill neutral">&rarr; Baro -- inHg</span>
+                <span class="trend-pill neutral">&rarr; Temp Steady</span>
+                <span class="trend-pill neutral">Wind Steady</span>
+                <span class="trend-pill neutral">Dew Spread --&deg;F</span>
+              </div>
+            </div>
+            <p id="ov-nowcast-text" class="nowcast-text">
+              Analyzing 1-hour and 3-hour weather changes and barometric pressure trends across your outdoor sensors...
+            </p>
+            <div class="nowcast-trajectory-bar">
+              <span id="ov-traj-prob" class="traj-chip">Model Confidence: --% | Rain Chance: --%</span>
+              <span id="ov-traj-est-hl" class="traj-chip">Est. Daytime High: --.-&deg;F | Overnight Low: --.-&deg;F</span>
+              <div id="ov-traj-risk-badges" class="trend-badge-row"></div>
+            </div>
+
+            <!-- Subtle Inline Ground-Truth Check-In Prompt (Anti-Shift Footer) -->
+            <div id="ov-checkin-bar" class="nowcast-checkin-bar">
+              <div class="checkin-left">
+                <span class="checkin-prompt-text">Look right outside?</span>
+                <div class="checkin-btn-group">
+                  <button type="button" class="btn-checkin-pill" data-rating="spot_on" title="Confirm current condition &amp; train forecast model">&#128077; Spot On</button>
+                  <button type="button" class="btn-checkin-pill" data-rating="slightly_off" title="Condition is close but slightly off">&#127780;&#65039; Slightly Off</button>
+                  <button type="button" class="btn-checkin-pill" data-rating="wrong" title="Report mismatch &amp; calibrate model">&#128078; Wrong</button>
+                </div>
+              </div>
+              <div class="checkin-right">
+                <span id="ov-checkin-status" class="checkin-status-note">Trains local forecast confidence</span>
+                <button type="button" id="btn-dismiss-checkin" class="btn-checkin-dismiss" title="Dismiss check-in for 8 hours">&times;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Compact Indoor Summary (with High/Low & Trend) + At-a-Glance Mini Live Radar Card -->
+        <div class="overview-side-stack">
+          <div class="indoor-summary-card card">
+            <div class="card-header">
+              <h3>Indoor Temp &amp; Humidity</h3>
+              <span id="ov-in-count" class="badge">-- sensors</span>
+            </div>
+            <div class="indoor-metrics-row">
+              <div class="indoor-stat">
+                <span class="metric-label">INDOOR TEMP</span>
+                <div class="indoor-val-line">
+                  <span id="ov-in-temp" class="indoor-val">--.-&deg;F</span>
+                  <span id="ov-in-trend-arrow" class="trend-arrow-inline steady">&rarr;</span>
+                </div>
+                <span id="ov-in-temp-c" class="metric-sub">--.-&deg;C</span>
+                <div id="ov-in-extremes" class="indoor-extremes-sub">L: --.-&deg;F | H: --.-&deg;F</div>
+              </div>
+              <div class="indoor-stat">
+                <span class="metric-label">INDOOR HUMIDITY</span>
+                <span id="ov-in-rh" class="indoor-val">--%</span>
+                <span id="ov-in-comfort" class="metric-sub">--</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- At-a-Glance Mini Live Weather Radar Card -->
+          <div class="mini-radar-card card">
+            <div class="card-header mini-radar-header">
+              <div>
+                <h3>Live Weather Radar</h3>
+                <span id="mini-radar-timestamp" class="text-muted">Clean Precip Live Radar</span>
+              </div>
+              <div class="mini-radar-actions">
+                <div class="mini-opacity-wrap" title="Adjust radar opacity">
+                  <label for="mini-radar-opacity-slider">Opacity:</label>
+                  <input type="range" id="mini-radar-opacity-slider" min="15" max="100" value="65" class="mini-opacity-slider" aria-label="Mini radar opacity slider" />
+                  <span id="mini-radar-opacity-val" class="mono">65%</span>
+                </div>
+                <button id="btn-expand-radar" class="btn btn-secondary btn-sm" type="button">Full Screen</button>
+              </div>
+            </div>
+            <div id="mini-radar-map" class="mini-radar-map" aria-label="At-a-glance live weather radar"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AcuRite & Weather-Display Inspired Hardware SVG Gauges Grid (Spacious 6-Card Grid) -->
+      <div class="ensemble-kpi-grid">
+        <!-- 1. Wind Speed & Compass -->
+        <div class="kpi-tile kpi-wind-card card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Wind Speed &amp; Compass</span>
+            <span id="ov-wind-bearing" class="metric-sub">Bearing: -- deg</span>
+          </div>
+
+          <div class="wind-gauge-layout">
+            <div class="acurite-wind-wrap">
+              <svg class="acurite-wind-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-label="Wind Speed and Compass">
+                <defs>
+                  <radialGradient id="windDialBg" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stop-color="#0f172a" />
+                    <stop offset="100%" stop-color="#070b14" />
+                  </radialGradient>
+                </defs>
+                <!-- Outer Bezel & Speed Color Ring -->
+                <circle cx="100" cy="100" r="95" fill="url(#windDialBg)" stroke="#24324b" stroke-width="2.5" />
+                <circle id="wind-speed-glow-ring" cx="100" cy="100" r="90" fill="none" stroke="rgba(56, 189, 248, 0.28)" stroke-width="3.5" />
+
+                <!-- 15-Minute Wind Direction Variance Sector Wedge -->
+                <path id="wind-variance-wedge" d="" fill="rgba(56, 189, 248, 0.18)" stroke="rgba(56, 189, 248, 0.35)" stroke-width="1" />
+
+                <!-- Crisp Degree Tick Marks along Inner Ring (radius = 70, every 22.5 deg for all 16 compass points) -->
+                <g stroke="#475569" stroke-linecap="round">
+                  <line x1="100" y1="27" x2="100" y2="33" stroke="#38bdf8" stroke-width="2.2" transform="rotate(0 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(22.5 100 100)" />
+                  <line x1="100" y1="28" x2="100" y2="33" stroke="#94a3b8" stroke-width="1.8" transform="rotate(45 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(67.5 100 100)" />
+                  <line x1="100" y1="27" x2="100" y2="33" stroke="#cbd5e1" stroke-width="2.2" transform="rotate(90 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(112.5 100 100)" />
+                  <line x1="100" y1="28" x2="100" y2="33" stroke="#94a3b8" stroke-width="1.8" transform="rotate(135 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(157.5 100 100)" />
+                  <line x1="100" y1="27" x2="100" y2="33" stroke="#cbd5e1" stroke-width="2.2" transform="rotate(180 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(202.5 100 100)" />
+                  <line x1="100" y1="28" x2="100" y2="33" stroke="#94a3b8" stroke-width="1.8" transform="rotate(225 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(247.5 100 100)" />
+                  <line x1="100" y1="27" x2="100" y2="33" stroke="#cbd5e1" stroke-width="2.2" transform="rotate(270 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(292.5 100 100)" />
+                  <line x1="100" y1="28" x2="100" y2="33" stroke="#94a3b8" stroke-width="1.8" transform="rotate(315 100 100)" />
+                  <line x1="100" y1="29" x2="100" y2="33" stroke-width="1.3" transform="rotate(337.5 100 100)" />
+                </g>
+
+                <!-- 8 Bold High-Contrast Directional Labels in Outer Ring (radius = 84, outside needle tip radius = 68) -->
+                <g class="svg-halo-text" font-weight="800" text-anchor="middle" dominant-baseline="central">
+                  <text x="100" y="16" fill="#38bdf8" font-size="14">N</text>
+                  <text x="159" y="41" fill="#e2e8f0" font-size="13">NE</text>
+                  <text x="184" y="100" fill="#f8fafc" font-size="14">E</text>
+                  <text x="159" y="159" fill="#e2e8f0" font-size="13">SE</text>
+                  <text x="100" y="184" fill="#f8fafc" font-size="14">S</text>
+                  <text x="41" y="159" fill="#e2e8f0" font-size="13">SW</text>
+                  <text x="16" y="100" fill="#f8fafc" font-size="14">W</text>
+                  <text x="41" y="41" fill="#e2e8f0" font-size="13">NW</text>
+                </g>
+
+                <!-- Inner Digital Readout Bezel (Protected Center Hub radius = 44) -->
+                <circle cx="100" cy="100" r="44" fill="#0b1322" stroke="#1e293b" stroke-width="1.8" />
+
+                <!-- Rotating Primary Pointer Needle (Tip radius = 68 -> y = 32, never overlaps outer labels at r=84) -->
+                <g id="compass-needle-group" class="compass-needle" style="transform: rotate(0deg); transform-origin: 100px 100px;">
+                  <polygon points="100,32 93,49 100,44 107,49" fill="#f59e0b" />
+                  <line x1="100" y1="44" x2="100" y2="56" stroke="#f59e0b" stroke-width="2.8" stroke-linecap="round" />
+                </g>
+
+                <!-- Center Digital Console Readout (16-Point Cardinal + Speed) -->
+                <text id="wind-dial-cardinal" class="svg-halo-text" x="100" y="81" text-anchor="middle" fill="#38bdf8" font-size="14" font-weight="800">--</text>
+                <text id="ov-wind-speed" class="svg-halo-text" x="100" y="106" text-anchor="middle" fill="#ffffff" font-size="22" font-weight="800">0.0</text>
+                <text id="wind-dial-unit" class="svg-halo-text" x="100" y="122" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="700">MPH</text>
+              </svg>
+            </div>
+
+            <!-- Compact 2x2 Stat Grid Beside Dial -->
+            <div class="gauge-stat-grid wind-stat-grid">
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">SUSTAINED</span>
+                <div id="ov-wind-speed-flank" class="stat-callout-val">0.0 mph</div>
+                <span id="ov-wind-bearing-flank" class="stat-callout-sub">--&deg;</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">PEAK GUST</span>
+                <div id="ov-wind-gust" class="stat-callout-val">0.0 mph</div>
+                <span id="ov-wind-gust-time" class="stat-callout-sub">Today's High</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">10M AVERAGE</span>
+                <div id="ov-wind-avg-10m" class="stat-callout-val">0.0 mph</div>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">BEARING</span>
+                <div id="ov-wind-bearing-val" class="stat-callout-val">--&deg;</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Barometric Pressure -->
+        <div class="kpi-tile card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Barometric Pressure</span>
+            <span id="ov-baro-trend-pill" class="trend-arrow-badge steady">&rarr; Steady</span>
+          </div>
+
+          <div class="baro-tower-layout">
+            <!-- Animated Vertical Mercury Column SVG (130x180 viewBox, dedicated pointer track) -->
+            <div class="baro-tower-svg-wrap" aria-label="Barometric Pressure Mercury Tower">
+              <svg viewBox="0 0 130 180" class="baro-tower-svg" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <linearGradient id="baroMercuryGrad" x1="0" y1="1" x2="0" y2="0">
+                    <stop offset="0%" stop-color="#3b82f6" />
+                    <stop offset="50%" stop-color="#10b981" />
+                    <stop offset="100%" stop-color="#f59e0b" />
+                  </linearGradient>
+                </defs>
+                <!-- Weather State Labels on LEFT side (x=36, text-anchor="end", bold 12px) -->
+                <g class="svg-halo-text" text-anchor="end" font-size="12" font-weight="800">
+                  <text x="36" y="26" fill="#fbbf24">SUN</text>
+                  <text x="36" y="88" fill="#cbd5e1">FAIR</text>
+                  <text x="36" y="150" fill="#38bdf8">RAIN</text>
+                </g>
+
+                <!-- Tube Background in CENTER (x=52, width=18) -->
+                <rect x="52" y="14" width="18" height="142" rx="9" fill="#090d16" stroke="#334155" stroke-width="1.6" />
+                <!-- Animated Mercury Column -->
+                <rect id="baro-mercury-fill" x="54.5" y="85" width="13" height="71" rx="6.5" fill="url(#baroMercuryGrad)" />
+
+                <!-- Numeric Scale Ticks on RIGHT side (x=82, bold 11.5px #cbd5e1) -->
+                <g stroke="#475569" stroke-width="1.2" font-size="11.5" font-weight="700" fill="#cbd5e1">
+                  <line x1="71" y1="18" x2="78" y2="18" /><text class="svg-halo-text" x="82" y="22" stroke="none">30.5</text>
+                  <line x1="71" y1="51" x2="78" y2="51" /><text class="svg-halo-text" x="82" y="55" stroke="none">30.0</text>
+                  <line x1="71" y1="84" x2="78" y2="84" /><text class="svg-halo-text" x="82" y="88" stroke="none">29.7</text>
+                  <line x1="71" y1="117" x2="76" y2="117" />
+                  <line x1="71" y1="150" x2="78" y2="150" /><text class="svg-halo-text" x="82" y="154" stroke="none">29.2</text>
+                </g>
+
+                <!-- Dedicated Glowing Pointer Track (x=40..51, never overlaps SUN/FAIR/RAIN at x<=36 or numbers at x>=82) -->
+                <g id="baro-tower-pointer" style="transform: translateY(84px); transition: transform 0.7s ease;">
+                  <polygon points="51,0 41,-5 41,5" fill="#38bdf8" />
+                  <line x1="51" y1="0" x2="71" y2="0" stroke="#38bdf8" stroke-width="2" />
+                </g>
+              </svg>
+            </div>
+
+            <!-- Compact Readout + 2x2 Stat Grid -->
+            <div class="baro-readout-col">
+              <div class="baro-main-block">
+                <span class="metric-label">SEA-LEVEL PRESSURE</span>
+                <div id="ov-baro-inhg" class="kpi-primary baro-primary-val">--.-- inHg</div>
+              </div>
+              <div class="gauge-stat-grid baro-stat-grid">
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">METRIC</span>
+                  <div id="ov-baro-hpa" class="stat-callout-val">----.- hPa</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">3H CHANGE</span>
+                  <div id="ov-delta-3h-baro" class="stat-callout-val">--</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">TODAY L / H</span>
+                  <div id="ov-baro-extremes" class="stat-callout-val">-- / --</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">1H TEMP &Delta;</span>
+                  <div id="ov-delta-1h-temp" class="stat-callout-val">--</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Rain Accumulation & History -->
+        <div class="kpi-tile card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Rain Accumulation &amp; History</span>
+            <span id="ov-rain-rate-badge" class="badge">0.00 in/hr</span>
+          </div>
+
+          <div class="rain-gauge-layout">
+            <!-- SVG Vertical Graduated Rain Cylinder (95x175 viewBox with 12px bold labels) -->
+            <div class="rain-cylinder-wrap" aria-label="Animated Graduated Rain Cylinder">
+              <svg viewBox="0 0 95 175" class="rain-cylinder-svg" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <linearGradient id="rainWaterGrad" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#0284c7" />
+                    <stop offset="50%" stop-color="#38bdf8" />
+                    <stop offset="100%" stop-color="#0369a1" />
+                  </linearGradient>
+                </defs>
+                <polygon points="10,12 46,12 40,20 16,20" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+                <rect x="16" y="20" width="24" height="136" rx="4" fill="#090d16" stroke="#334155" stroke-width="1.6" />
+
+                <!-- Animated Water Fill & Meniscus -->
+                <rect id="rain-cylinder-fill" x="17.5" y="154" width="21" height="0" fill="url(#rainWaterGrad)" style="transition: all 0.7s ease;" />
+                <ellipse id="rain-cylinder-meniscus" cx="28" cy="154" rx="10.5" ry="2.2" fill="#bae6fd" opacity="0" />
+
+                <!-- 0.25" Graduated Tick Marks (0.0" to 2.0") with 12px Bold High-Contrast Labels -->
+                <g stroke="#475569" stroke-width="1.2" font-size="12" font-weight="700" fill="#e2e8f0">
+                  <line x1="41" y1="22" x2="49" y2="22" /><text class="svg-halo-text" x="53" y="26" stroke="none">2.0"</text>
+                  <line x1="41" y1="38.5" x2="46" y2="38.5" />
+                  <line x1="41" y1="55" x2="49" y2="55" /><text class="svg-halo-text" x="53" y="59" stroke="none">1.5"</text>
+                  <line x1="41" y1="71.5" x2="46" y2="71.5" />
+                  <line x1="41" y1="88" x2="49" y2="88" /><text class="svg-halo-text" x="53" y="92" stroke="none">1.0"</text>
+                  <line x1="41" y1="104.5" x2="46" y2="104.5" />
+                  <line x1="41" y1="121" x2="49" y2="121" /><text class="svg-halo-text" x="53" y="125" stroke="none">0.5"</text>
+                  <line x1="41" y1="137.5" x2="46" y2="137.5" />
+                  <line x1="41" y1="154" x2="49" y2="154" /><text class="svg-halo-text" x="53" y="157" stroke="none">0.0"</text>
+                </g>
+              </svg>
+            </div>
+
+            <!-- Compact Rain Readout + 2x2 Records Grid -->
+            <div class="rain-records-col">
+              <div class="rain-main-block">
+                <span class="metric-label">TODAY'S RAINFALL</span>
+                <div id="ov-rain-24h" class="kpi-primary rain-primary-val">0.00 in</div>
+                <div id="ov-rain-mm" class="metric-sub">0.0 mm</div>
+              </div>
+
+              <div class="gauge-stat-grid rain-stat-grid">
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">RATE</span>
+                  <div id="rain-rec-rate" class="stat-callout-val">0.00 in/hr</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">WEEK (7D)</span>
+                  <div id="rain-rec-week" class="stat-callout-val">0.00 in</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">MONTH</span>
+                  <div id="rain-rec-month" class="stat-callout-val">0.00 in</div>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">YEAR (YTD)</span>
+                  <div id="rain-rec-year" class="stat-callout-val">0.00 in</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Card A: Humidity & Dew Point (Dedicated Card) -->
+        <div class="kpi-tile card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Humidity &amp; Dew Point</span>
+            <span id="ov-rh-comfort-badge" class="badge badge-outdoor">OPTIMAL</span>
+          </div>
+
+          <div class="humidity-dedicated-layout">
+            <!-- Left: Enlarged 155px Humidity Comfort Gauge -->
+            <div class="rh-gauge-col">
+              <div class="rh-gauge-wrap">
+                <svg viewBox="0 0 190 116" class="rh-gauge-svg" xmlns="http://www.w3.org/2000/svg" aria-label="Humidity Comfort Gauge">
+                  <!-- Background Arc -->
+                  <path d="M 20 92 A 74 74 0 0 1 169 92" fill="none" stroke="#1e293b" stroke-width="14" stroke-linecap="round" />
+                  <!-- Active Colored Arc (232.5px circumference) -->
+                  <path id="rh-gauge-arc" d="M 20 92 A 74 74 0 0 1 169 92" fill="none" stroke="#10b981" stroke-width="14" stroke-linecap="round" stroke-dasharray="232.5" stroke-dashoffset="116" style="transition: stroke-dashoffset 0.7s ease, stroke 0.4s ease;" />
+                  <text id="ov-out-rh" class="svg-halo-text" x="94.5" y="75" text-anchor="middle" fill="#ffffff" font-size="32" font-weight="800">--%</text>
+                  <text class="svg-halo-text" x="14" y="111" text-anchor="start" fill="#fbbf24" font-size="11.5" font-weight="800">DRY</text>
+                  <text class="svg-halo-text" x="94.5" y="111" text-anchor="middle" fill="#34d399" font-size="11.5" font-weight="800">OPT</text>
+                  <text class="svg-halo-text" x="176" y="111" text-anchor="end" fill="#38bdf8" font-size="11.5" font-weight="800">HUMID</text>
+                </svg>
+              </div>
+              <div id="ov-out-rh-extremes" class="rh-extremes-pill mono">Today L: --% | H: --%</div>
+            </div>
+
+            <!-- Right: Spacious 2x2 Grid with Large 1.35rem Numbers (Zero Truncation) -->
+            <div class="gauge-stat-grid rh-spacious-grid">
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">DEW POINT</span>
+                <div id="ov-out-dp" class="stat-callout-val stat-val-lg">--.-&deg;F</div>
+                <span id="ov-out-dp-c" class="stat-callout-sub">--.-&deg;C</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">FEELS LIKE</span>
+                <div id="ov-feels-inline" class="stat-callout-val stat-val-lg">--.-&deg;F</div>
+                <span id="ov-feels-inline-c" class="stat-callout-sub">--.-&deg;C</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">DEW SPREAD</span>
+                <div id="ov-dew-spread" class="stat-callout-val stat-val-lg">--.-&deg;F</div>
+                <span id="ov-dew-spread-note" class="stat-callout-sub">Dry air margin</span>
+              </div>
+              <div class="stat-callout-box">
+                <span class="stat-callout-label">3H RH TREND</span>
+                <div id="ov-rh-3h-trend" class="stat-callout-val stat-val-lg">--% / 3h</div>
+                <span id="ov-delta-3h-temp" class="stat-callout-sub">3h &Delta;T: --</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Card B: Solar UV & Daylight Brightness (Dedicated Card) -->
+        <div class="kpi-tile card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Solar UV &amp; Daylight Brightness</span>
+            <span id="ov-uv-risk-badge" class="badge badge-outdoor">LOW UV</span>
+          </div>
+
+          <div class="solar-uv-dedicated-layout">
+            <!-- Top Visualizer: UV Index Gauge (0 to 11+ Extreme) -->
+            <div class="uv-visualizer-block">
+              <div class="uv-header-row">
+                <div class="uv-primary-group">
+                  <span class="stat-callout-label">UV INDEX (0&ndash;11+ SCALE)</span>
+                  <div class="uv-readout-line">
+                    <span id="ov-uv-inline" class="uv-big-val">0.0</span>
+                    <span id="ov-uv-peak-today" class="uv-peak-sub mono">Peak Today: 0.0</span>
+                  </div>
+                </div>
+                <span id="ov-uv-advisory" class="uv-advisory-text">Low UV &mdash; No protection needed</span>
+              </div>
+
+              <!-- Segmented UV Scale Bar with Pointer -->
+              <div class="uv-segmented-scale-wrap">
+                <div class="uv-segmented-bar">
+                  <div class="uv-seg uv-seg-low" title="0-2 Low">0-2 Low</div>
+                  <div class="uv-seg uv-seg-mod" title="3-5 Moderate">3-5 Mod</div>
+                  <div class="uv-seg uv-seg-high" title="6-7 High">6-7 High</div>
+                  <div class="uv-seg uv-seg-vhigh" title="8-10 Very High">8-10 V.High</div>
+                  <div class="uv-seg uv-seg-ext" title="11+ Extreme">11+ Ext</div>
+                </div>
+                <div id="uv-scale-pointer" class="uv-scale-pointer" style="left: 2%;">
+                  <span class="uv-pointer-triangle">&#9650;</span>
+                </div>
+                <!-- Hidden legacy bar fill for compatibility -->
+                <div id="uv-bar-fill" class="hidden" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Bottom Visualizer: Daylight Luminosity Spectrum (0 to 100,000+ Lux) -->
+            <div class="lux-visualizer-block">
+              <div class="lux-header-row">
+                <div>
+                  <span class="stat-callout-label">DAYLIGHT LUMINOSITY SPECTRUM</span>
+                  <div class="lux-readout-line">
+                    <span id="ov-lux-val" class="lux-big-val">-- lx</span>
+                    <span id="ov-lux-state-label" class="lux-state-badge">Daylight</span>
+                  </div>
+                </div>
+                <span id="ov-lux-peak-today" class="lux-peak-sub mono">Peak Today: -- lx</span>
+              </div>
+
+              <div class="lux-spectrum-wrap">
+                <div class="lux-spectrum-bar">
+                  <div id="lux-spectrum-marker" class="lux-spectrum-marker" style="left: 50%;" title="Current Sky Brightness">
+                    <span id="lux-marker-icon" class="lux-marker-glyph">&#9728;&#65039;</span>
+                  </div>
+                </div>
+                <div class="lux-spectrum-labels mono">
+                  <span>Night 0 lx</span>
+                  <span>Twilight</span>
+                  <span>Overcast</span>
+                  <span>Daylight 25k</span>
+                  <span>Direct Sun 80k+</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Card C: Lightning Strike(s) & Proximity -->
+        <div class="kpi-tile kpi-lightning-card card">
+          <div class="gauge-card-header">
+            <span class="metric-label">Lightning Strike(s) &amp; Proximity</span>
+            <div class="lightning-header-badges">
+              <span id="ov-lightning-rfi-badge" class="badge badge-expunged hidden" title="06045M RFI Interference Detected from nearby motor or electronics">&#9888; RFI INTERFERENCE</span>
+              <span id="ov-lightning-status-badge" class="badge">Standby / Waiting for 06045M</span>
+            </div>
+          </div>
+
+          <div class="lightning-card-layout">
+            <!-- Left: Static Local Area Range-Ring Visualizer (1 to 25 Mile Detection Radar) -->
+            <div class="lightning-radar-wrap">
+              <svg id="ov-lightning-radar-svg" viewBox="0 0 200 200" class="lightning-radar-svg" xmlns="http://www.w3.org/2000/svg" aria-label="1 to 25 Mile Lightning Range-Ring Radar">
+                <defs>
+                  <radialGradient id="ltRadarBg" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stop-color="#0f1f38" />
+                    <stop offset="70%" stop-color="#091324" />
+                    <stop offset="100%" stop-color="#060b14" />
+                  </radialGradient>
+                </defs>
+                <!-- Radar Background Circle (25 Mile Max Range = r=88) -->
+                <circle cx="100" cy="100" r="90" fill="url(#ltRadarBg)" stroke="#24324b" stroke-width="2" />
+
+                <!-- Subtle Map Grid & Crosshairs -->
+                <line x1="10" y1="100" x2="190" y2="100" stroke="rgba(51, 65, 85, 0.45)" stroke-width="1" stroke-dasharray="2 3" />
+                <line x1="100" y1="10" x2="100" y2="190" stroke="rgba(51, 65, 85, 0.45)" stroke-width="1" stroke-dasharray="2 3" />
+                <line x1="36" y1="36" x2="164" y2="164" stroke="rgba(51, 65, 85, 0.25)" stroke-width="1" />
+                <line x1="164" y1="36" x2="36" y2="164" stroke="rgba(51, 65, 85, 0.25)" stroke-width="1" />
+
+                <!-- Fixed Reference Distance Rings: 5, 10, 15, 20, 25 mi (r = dist * 3.52) -->
+                <circle cx="100" cy="100" r="17.6" fill="none" stroke="rgba(100, 116, 139, 0.35)" stroke-width="1" />
+                <circle cx="100" cy="100" r="35.2" fill="none" stroke="rgba(100, 116, 139, 0.35)" stroke-width="1" />
+                <circle cx="100" cy="100" r="52.8" fill="none" stroke="rgba(100, 116, 139, 0.35)" stroke-width="1" />
+                <circle cx="100" cy="100" r="70.4" fill="none" stroke="rgba(100, 116, 139, 0.35)" stroke-width="1" />
+                <circle cx="100" cy="100" r="88.0" fill="none" stroke="rgba(100, 116, 139, 0.55)" stroke-width="1.2" />
+
+                <!-- Dynamic Strike Rings Layer (Populated by JS: Furthest, Closest, and Animated Fading Strikes) -->
+                <g id="lightning-dynamic-rings"></g>
+
+                <!-- Range Labels Along Top Axis (11.5px Bold #e2e8f0 with Dark Stroke Halo) -->
+                <g class="svg-halo-text" font-size="11.5" fill="#e2e8f0" text-anchor="middle" font-weight="800">
+                  <text x="100" y="81">5mi</text>
+                  <text x="100" y="47">15mi</text>
+                  <text x="100" y="14" fill="#38bdf8">25mi</text>
+                </g>
+
+                <!-- Station Center Pin -->
+                <circle cx="100" cy="100" r="4" fill="#38bdf8" stroke="#ffffff" stroke-width="1.5" />
+              </svg>
+            </div>
+
+            <!-- Right: Strike Telemetry & Sensor Status -->
+            <div class="lightning-stats-col">
+              <div class="gauge-stat-grid lightning-stat-grid">
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">STRIKES (1H / 24H)</span>
+                  <div id="ov-lt-strikes-count" class="stat-callout-val stat-val-lg">0 / 0</div>
+                  <span id="ov-lt-cadence-sub" class="stat-callout-sub">24s normal cadence</span>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">CLOSEST STRIKE</span>
+                  <div id="ov-lt-closest" class="stat-callout-val stat-val-lg">-- mi</div>
+                  <span class="stat-callout-sub">24h inner ring</span>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">FURTHEST STRIKE</span>
+                  <div id="ov-lt-furthest" class="stat-callout-val stat-val-lg">-- mi</div>
+                  <span class="stat-callout-sub">24h outer ring</span>
+                </div>
+                <div class="stat-callout-box">
+                  <span class="stat-callout-label">LAST STRIKE</span>
+                  <div id="ov-lt-last-time" class="stat-callout-val">None</div>
+                  <span id="ov-lt-last-dist" class="stat-callout-sub">Range: 1&ndash;25 mi</span>
+                </div>
+              </div>
+
+              <div class="lightning-card-actions">
+                <button type="button" id="btn-ov-simulate-strike" class="btn btn-secondary btn-sm" title="Preview animated concentric strike rings at 6, 12, and 19 miles">
+                  &#9889; Simulate Test Strike
+                </button>
+              </div>
+            </div>
+
+            <!-- Full-Width Centered Legend Footer -->
+            <div class="lightning-ring-legend mono">
+              <span class="lt-leg-closest">--- Closest</span>
+              <span class="lt-leg-furthest">&bull;&bull;&bull; Furthest</span>
+              <span class="lt-leg-recent">&#9889; Recent</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 2: HISTORICAL CHARTS & SEASONAL CLIMATOLOGY INSIGHTS          -->
+    <!-- ================================================================== -->
+    <section id="view-charts" class="view-panel">
+      <!-- Climatology & Seasonal Insights Engine Panel -->
+      <div class="climatology-panel card">
+        <div class="card-header clim-card-header">
+          <div class="clim-header-main">
+            <h3>Weather Trends &amp; Records</h3>
+            <p id="clim-trajectory-narrative" class="text-muted">
+              Calculating rolling 7-day and 30-day anomalies, Heating/Cooling Degree Days (HDD/CDD), and barometric volatility...
+            </p>
+          </div>
+          <div class="clim-header-badge-row">
+            <span id="clim-anomaly-badge" class="trend-pill info">7d vs 30d Anomaly: --</span>
+          </div>
+        </div>
+
+        <!-- Live Active Telemetry Learning Status Banner -->
+        <div id="clim-learning-banner" class="learning-banner">
+          <div class="learning-banner-header">
+            <span class="learning-pulse-dot" aria-hidden="true"></span>
+            <span id="clim-learning-status" class="learning-banner-title">Telemetry Learning Engine &mdash; Blending Local Sensors + 30d Baseline</span>
+          </div>
+          <div id="clim-learning-details" class="learning-banner-details mono">
+            <span id="clim-learn-packets">-- packets analyzed</span> &bull;
+            <span id="clim-learn-uptime">-- learning window</span> &bull;
+            <span id="clim-learn-degreedays">-- HDD / -- CDD</span> &bull;
+            <span id="clim-learn-swing">7d Swing: --.-&deg;F</span> &bull;
+            <span id="clim-learn-volatility">Baro Volatility: &plusmn;-- inHg</span>
+          </div>
+        </div>
+
+        <div class="clim-summary-grid">
+          <div class="clim-stat-box">
+            <span class="metric-label">7-DAY MEAN / SWING</span>
+            <span id="clim-7d-mean" class="clim-val">--.-&deg;F</span>
+            <span id="clim-7d-swing" class="metric-sub">Diurnal Swing: --.-&deg;F</span>
+          </div>
+          <div class="clim-stat-box">
+            <span class="metric-label">30-DAY MEAN / ANOMALY</span>
+            <span id="clim-30d-mean" class="clim-val">--.-&deg;F</span>
+            <span id="clim-30d-anom" class="metric-sub">Baseline: --.-&deg;F</span>
+          </div>
+          <div class="clim-stat-box">
+            <span class="metric-label">DEGREE DAYS (30D)</span>
+            <span id="clim-hdd-cdd" class="clim-val">HDD: -- | CDD: --</span>
+            <span class="metric-sub">Base 65&deg;F Thermal Load</span>
+          </div>
+          <div class="clim-stat-box">
+            <span class="metric-label">PRECIP STREAK &amp; VOLATILITY</span>
+            <span id="clim-streak" class="clim-val">--</span>
+            <span id="clim-baro-vol" class="metric-sub">Baro Volatility: -- inHg/d</span>
+          </div>
+        </div>
+
+        <!-- Weather-Display Style Records Summary Table -->
+        <div class="table-responsive clim-table-scroll" style="overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; margin-top: 14px;">
+          <table class="data-table records-summary-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Today</th>
+                <th>This Week (7d)</th>
+                <th>This Month</th>
+                <th>This Year (YTD)</th>
+                <th>All-Time Record</th>
+              </tr>
+            </thead>
+            <tbody id="clim-records-tbody">
+              <tr><td colspan="6" class="text-center text-muted">Loading Climatology Records Summary...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="explorer-controls card">
+        <div class="control-group">
+          <label for="chart-hours-select">Time Window</label>
+          <select id="chart-hours-select">
+            <option value="1">Last 1 Hour (1m buckets)</option>
+            <option value="6">Last 6 Hours (5m buckets)</option>
+            <option value="24" selected>Last 24 Hours (15m buckets)</option>
+            <option value="72">Last 3 Days (1h buckets)</option>
+            <option value="168">Last 7 Days (1h buckets)</option>
+            <option value="720">Last 30 Days (6h buckets)</option>
+          </select>
+        </div>
+
+        <div class="control-group filter-dropdown-group">
+          <label>Chart Streams &amp; Sensors</label>
+          <div class="multi-filter-dropdown" id="chart-filter-dropdown">
+            <button type="button" class="multi-filter-btn" id="chart-filter-btn" aria-expanded="false">
+              <span id="chart-filter-summary">Outdoor (Trusted)</span>
+              <span class="dropdown-caret">&#9662;</span>
+            </button>
+            <div class="multi-filter-menu hidden" id="chart-filter-menu">
+              <div class="filter-section-title">Location Groups</div>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-outdoor" value="outdoor" checked />
+                <span>Outdoor Sensors (Trusted)</span>
+              </label>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-indoor" value="indoor" />
+                <span>Indoor Sensors (Trusted)</span>
+              </label>
+              <label class="checkbox-label filter-item">
+                <input type="checkbox" id="filter-loc-reference" value="reference" />
+                <span>Regional Reference Baseline</span>
+              </label>
+              <div class="filter-divider"></div>
+              <div class="filter-section-title">Active Trusted Stations</div>
+              <div id="filter-sensor-list" class="filter-sensor-list">
+                <span class="text-muted">No trusted Outdoor/Indoor stations configured yet.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label for="chart-bucket-select">Smoothing Bucket</label>
+          <select id="chart-bucket-select">
+            <option value="auto" selected>Auto-Bucket (Recommended)</option>
+            <option value="1">1 Minute</option>
+            <option value="5">5 Minutes</option>
+            <option value="15">15 Minutes</option>
+            <option value="60">60 Minutes</option>
+          </select>
+        </div>
+
+        <div class="control-actions">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chart-toggle-ensemble" checked />
+            <span>Show Dashed Outdoor Average Line</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="stacked-charts-grid">
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>1. Temperature Cross-Analysis (&deg;F)</h3>
+            <span id="chart-meta-temp" class="text-muted">Outliers &amp; appliances automatically excluded</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-temp"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>2. Relative Humidity Cross-Analysis (%)</h3>
+            <span id="chart-meta-rh" class="text-muted">Time-bucketed mean</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-rh"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>3. Wind Speed &amp; Peak Gusts (mph)</h3>
+            <span class="text-muted">Solid: Avg Wind | Dashed: Peak Gust</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-wind"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card card">
+          <div class="card-header">
+            <h3>4. Rainfall Accumulation in Window (in)</h3>
+            <span class="text-muted">Relative accumulation across selected window</span>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="canvas-chart-rain"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 3: DEDICATED SENSORS MANAGEMENT PAGE                          -->
+    <!-- ================================================================== -->
+    <section id="view-sensors" class="view-panel">
+      <div class="sensors-Subheader card">
+        <div>
+          <h3>Registered 433.92 MHz Sensor Fleet</h3>
+          <p class="text-muted">
+            Newly discovered stations default to <strong>Ignored / Untrusted (Opt-In)</strong>. Click <strong>Configure</strong> on your stations to set them to <strong>Outdoor</strong> or <strong>Indoor</strong>.
+          </p>
+        </div>
+        <label class="checkbox-label">
+          <input type="checkbox" id="toggle-show-ignored" checked />
+          <span>Show Ignored / Unconfigured Sensors</span>
+        </label>
+      </div>
+
+      <div id="sensor-grid-empty" class="empty-state hidden">
+        <h3>No 433.92 MHz Sensors Discovered Yet</h3>
+        <p>Listening for incoming RF bursts via <code>rtl_433 -M time:utc -M level</code>. Discovered stations will automatically register here as <code>{model} #{sensor_id}</code>.</p>
+      </div>
+
+      <div id="sensor-grid" class="sensor-grid"></div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 4: RAW SQLITE TELEMETRY LOG EXPLORER                          -->
+    <!-- ================================================================== -->
+    <section id="view-logs" class="view-panel">
+      <div class="explorer-controls card">
+        <div class="control-group">
+          <label for="log-sensor-select">Sensor Filter</label>
+          <select id="log-sensor-select">
+            <option value="">All Registered Sensors</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="log-hours-select">Time Window</label>
+          <select id="log-hours-select">
+            <option value="1">Last 1 Hour</option>
+            <option value="6">Last 6 Hours</option>
+            <option value="24" selected>Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168">Last 7 Days</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="log-limit-select">Row Limit (Max 2000)</label>
+          <select id="log-limit-select">
+            <option value="100">100 rows</option>
+            <option value="250" selected>250 rows</option>
+            <option value="500">500 rows</option>
+            <option value="1000">1000 rows</option>
+            <option value="2000">2000 rows</option>
+          </select>
+        </div>
+
+        <div class="control-actions">
+          <button id="btn-run-log-query" class="btn btn-primary" type="button">Filter Logs</button>
+          <button id="btn-export-csv" class="btn btn-secondary" type="button">Export CSV</button>
+          <button id="btn-export-json" class="btn btn-secondary" type="button">Export JSON</button>
+        </div>
+      </div>
+
+      <div class="table-card card">
+        <div class="card-header">
+          <h3>SQLite Telemetry Packet Inspector</h3>
+          <span id="log-record-summary" class="text-muted">0 records loaded</span>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Local Time</th>
+                <th>UTC ISO-8601</th>
+                <th>Sensor Display Name</th>
+                <th>Loc</th>
+                <th>Temp (F / C)</th>
+                <th>RH / DewPt</th>
+                <th>Wind (mph / dir)</th>
+                <th>Rain (in / mm)</th>
+                <th>RF (RSSI / SNR / Noise)</th>
+                <th>Batt</th>
+              </tr>
+            </thead>
+            <tbody id="log-table-body">
+              <tr>
+                <td colspan="10" class="text-center text-muted">No telemetry records loaded.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 5: WEATHER RADAR & OFFICIAL NWS FORECAST                      -->
+    <!-- ================================================================== -->
+    <section id="view-radar" class="view-panel">
+      <div class="radar-view-grid">
+        <!-- Full-Width Interactive Live Doppler Radar & NWS Corroboration Card -->
+        <div class="radar-main-card card">
+          <div class="card-header radar-toolbar">
+            <div>
+              <h3>Interactive Live Doppler Radar &amp; Infrared Satellite</h3>
+              <span id="radar-station-meta" class="text-muted">Centered on Station Coordinates</span>
+            </div>
+            <div class="radar-layer-controls">
+              <button id="btn-radar-layer-precip" class="btn btn-primary btn-sm" type="button">Weather Radar (Precip)</button>
+              <button id="btn-radar-layer-sat" class="btn btn-secondary btn-sm" type="button">Infrared Satellite (Clouds)</button>
+              <button id="btn-toggle-windy" class="btn btn-secondary btn-sm" type="button" title="Switch between Leaflet radar and interactive Windy radar">Windy Live Map</button>
+              <button id="btn-refresh-nws" class="btn btn-secondary btn-sm" type="button">Refresh NWS</button>
+            </div>
+          </div>
+
+          <div id="full-radar-map" class="full-radar-map" aria-label="Full interactive weather radar map"></div>
+          <div id="windy-radar-container" class="full-radar-map hidden" aria-label="Windy live Doppler radar embed">
+            <iframe id="windy-radar-iframe" title="Windy Live Radar" style="width: 100%; height: 100%; border: 0; border-radius: 8px; min-height: 480px;" loading="lazy"></iframe>
+          </div>
+
+          <!-- Timeline Play/Pause Scrubber, Opacity Slider & dBZ Reflectivity Legend -->
+          <div class="radar-scrubber-bar">
+            <div class="scrubber-controls">
+              <button id="btn-radar-play" class="btn btn-primary btn-sm" type="button">&#9654; Play Loop</button>
+              <input type="range" id="radar-frame-slider" min="0" max="10" value="10" class="radar-slider" aria-label="Radar frame slider" />
+              <span id="radar-frame-time" class="mono">Latest Frame</span>
+            </div>
+            <div class="radar-opacity-wrap" title="Adjust radar overlay transparency">
+              <label for="radar-opacity-slider">Opacity:</label>
+              <input type="range" id="radar-opacity-slider" min="15" max="100" value="65" class="opacity-slider" aria-label="Radar layer opacity slider" />
+              <span id="radar-opacity-val" class="mono">65%</span>
+            </div>
+            <div id="radar-color-legend" class="dbz-legend" aria-label="Radar Reflectivity Legend (dBZ)">
+              <span class="dbz-label">Precip:</span>
+              <span class="dbz-chip" style="background:#01a0f6;color:#fff">Light</span>
+              <span class="dbz-chip" style="background:#00c800;color:#000">Mod</span>
+              <span class="dbz-chip" style="background:#ffff00;color:#000">Heavy</span>
+              <span class="dbz-chip" style="background:#ff0000;color:#fff">Severe</span>
+              <span class="dbz-chip" style="background:#d400ff;color:#fff">Hail</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Local Sensors vs Official NWS Station Corroboration Table -->
+        <div class="nws-corroboration-card card">
+          <div class="card-header">
+            <h3>Hyperlocal Ensemble vs. National Weather Service</h3>
+            <span id="nws-obs-station-id" class="badge">Station: --</span>
+          </div>
+          <p id="nws-obs-condition" class="text-muted" style="margin-bottom: 12px;">
+            Comparing local station sensors against nearest official airport/ASOS observation...
+          </p>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th id="th-corrob-local-name">Local Sensors</th>
+                  <th>National Weather Service</th>
+                  <th>Microclimate &Delta;</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="nws-corroboration-tbody">
+                <tr><td colspan="5" class="text-center text-muted">Awaiting NWS observation sync...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Official NWS 7-Day Detailed Forecast Grid -->
+      <div class="card" style="margin-top: 18px;">
+        <div class="card-header">
+          <h3>Official National Weather Service 7-Day Forecast</h3>
+          <span id="nws-forecast-office-label" class="text-muted">api.weather.gov</span>
+        </div>
+        <div id="nws-forecast-grid" class="nws-forecast-grid">
+          <div class="text-muted">Configure station Latitude &amp; Longitude in Settings to load the 7-day NWS forecast.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 6: INTERACTIVE WEATHER CALENDAR (PAST, PRESENT & FUTURE)      -->
+    <!-- ================================================================== -->
+    <section id="view-calendar" class="view-panel">
+      <!-- Calendar Header, Navigation Controls & Monthly Summary Strip -->
+      <div class="calendar-header-card card">
+        <div class="calendar-topbar">
+          <div class="calendar-title-block">
+            <span class="calendar-eyebrow">Monthly Weather Calendar</span>
+            <h2 id="cal-month-title" class="calendar-month-title">November 2026</h2>
+          </div>
+          <div class="calendar-nav-controls">
+            <button id="btn-cal-prev" class="btn btn-secondary btn-sm" type="button">&larr; Prev Month</button>
+            <button id="btn-cal-today" class="btn btn-primary btn-sm" type="button">Today</button>
+            <button id="btn-cal-next" class="btn btn-secondary btn-sm" type="button">Next Month &rarr;</button>
+          </div>
+        </div>
+
+        <!-- Monthly Summary Strip & Data Source Legend -->
+        <div class="calendar-summary-strip">
+          <div class="cal-summary-metrics">
+            <div class="cal-stat-chip">
+              <span class="cal-stat-label">AVG HIGH / LOW</span>
+              <span id="cal-stat-avg-hl" class="cal-stat-val mono">--.-&deg;F / --.-&deg;F</span>
+            </div>
+            <div class="cal-stat-chip">
+              <span class="cal-stat-label">TOTAL MONTHLY RAIN</span>
+              <span id="cal-stat-rain" class="cal-stat-val mono">0.00 in</span>
+            </div>
+            <div class="cal-stat-chip">
+              <span class="cal-stat-label">SUNNY VS RAINY DAYS</span>
+              <span id="cal-stat-sunny-rainy" class="cal-stat-val mono">-- Sunny &bull; -- Wet</span>
+            </div>
+          </div>
+
+          <div class="cal-legend-row">
+            <span class="cal-legend-item"><span class="cal-dot recorded-dot"></span> Recorded Local Data</span>
+            <span class="cal-legend-item"><span class="cal-dot archive-dot"></span> Regional Archive</span>
+            <span class="cal-legend-item"><span class="cal-dot forecast-dot"></span> Upcoming Forecast / Model Estimate</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7-Column Monthly Calendar Grid (`Sun` through `Sat`) with Combo Streak Ribbons -->
+      <div class="calendar-board-card card">
+        <div class="calendar-weekdays-header">
+          <div class="cal-weekday-cell">Sun</div>
+          <div class="cal-weekday-cell">Mon</div>
+          <div class="cal-weekday-cell">Tue</div>
+          <div class="cal-weekday-cell">Wed</div>
+          <div class="cal-weekday-cell">Thu</div>
+          <div class="cal-weekday-cell">Fri</div>
+          <div class="cal-weekday-cell">Sat</div>
+        </div>
+        <div id="calendar-weeks-container" class="calendar-weeks-container" aria-label="Monthly weather calendar grid">
+          <div class="text-center text-muted" style="padding: 32px;">Loading Weather Calendar...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- VIEW 7: DEDICATED SETTINGS TAB (LOCKED BEHIND ADMIN PASSWORD)      -->
+    <!-- ================================================================== -->
+    <section id="view-settings" class="view-panel">
+      <div class="settings-grid">
+        <!-- Section 1: Location & NWS Baseline Config -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>1. Location &amp; NWS Baseline Configuration</h3>
+            <span class="badge badge-outdoor">Zero-PII SQLite Storage</span>
+          </div>
+          <p class="text-muted" style="margin-bottom: 10px;">
+            Stored exclusively in <code>data/skyscry.db</code> (gitignored). Powers your NWS WFO lookup, live NEXRAD radar crosshair, and Open-Meteo barometric backfill.
+          </p>
+          <form id="form-settings-location" onsubmit="return false;">
+            <!-- City & State Search Bar + Lookup Coordinates Button -->
+            <div class="form-group">
+              <label for="set-city-state-query">City &amp; State Quick Lookup</label>
+              <div class="geocode-search-row">
+                <input type="text" id="set-city-state-query" maxlength="90" placeholder="e.g., Enter City, State or Postal Code" />
+                <button id="btn-geocode-lookup" type="button" class="btn btn-secondary">Lookup Coordinates</button>
+              </div>
+              <small id="set-geocode-status" class="form-hint">Type a City &amp; State and click Lookup to auto-fill Latitude, Longitude &amp; Elevation.</small>
+            </div>
+
+            <div class="form-group">
+              <label for="set-station-name">Station Display Name</label>
+              <input type="text" id="set-station-name" maxlength="80" placeholder="SkyScry" />
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="set-latitude">Latitude (&deg;N)</label>
+                <input type="number" step="0.0001" min="-90" max="90" id="set-latitude" placeholder="0.0000" />
+              </div>
+              <div class="form-group">
+                <label for="set-longitude">Longitude (&deg;E)</label>
+                <input type="number" step="0.0001" min="-180" max="180" id="set-longitude" placeholder="0.0000" />
+              </div>
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="set-elevation-m">Elevation (meters)</label>
+                <input type="number" step="0.1" id="set-elevation-m" placeholder="0.0" />
+              </div>
+              <div class="form-group">
+                <label for="set-radar-zoom">Default Radar Zoom (3&ndash;14)</label>
+                <input type="number" min="3" max="14" id="set-radar-zoom" value="7" />
+              </div>
+            </div>
+            <button id="btn-save-location" type="button" class="btn btn-primary">Save Location &amp; Sync NWS</button>
+          </form>
+        </div>
+
+        <!-- Section 2: Security & Access Control -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>2. Security &amp; Access Control</h3>
+            <button id="btn-settings-lock-now" class="btn btn-secondary btn-sm" type="button">Manual Lock Now</button>
+          </div>
+          <div class="form-group">
+            <label for="set-timeout-minutes">Auto-Lock Inactivity Timeout</label>
+            <select id="set-timeout-minutes">
+              <option value="5">5 Minutes</option>
+              <option value="15" selected>15 Minutes (Default)</option>
+              <option value="30">30 Minutes</option>
+              <option value="60">60 Minutes</option>
+            </select>
+          </div>
+
+          <hr class="settings-divider" />
+          <h4 style="margin-bottom: 10px;">Change Admin Security Password</h4>
+          <form id="form-change-password" onsubmit="return false;">
+            <div class="form-group">
+              <label for="cp-current-pw">Current Admin Password</label>
+              <input type="password" id="cp-current-pw" autocomplete="current-password" />
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="cp-new-pw">New Password (min 6 chars)</label>
+                <input type="password" id="cp-new-pw" autocomplete="new-password" minlength="6" />
+              </div>
+              <div class="form-group">
+                <label for="cp-confirm-pw">Confirm New Password</label>
+                <input type="password" id="cp-confirm-pw" autocomplete="new-password" minlength="6" />
+              </div>
+            </div>
+            <button id="btn-save-password" type="button" class="btn btn-primary">Update Admin Password</button>
+          </form>
+        </div>
+
+        <!-- Section 3: Ingestion & Data Hygiene -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>3. Ingestion &amp; Data Hygiene</h3>
+            <span class="badge">SQLite WAL</span>
+          </div>
+          <form id="form-settings-hygiene" onsubmit="return false;">
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="set-outlier-thresh">Outlier Consensus Threshold (&plusmn;&deg;F)</label>
+                <input type="number" step="0.5" min="5" max="60" id="set-outlier-thresh" value="22.0" />
+              </div>
+              <div class="form-group">
+                <label for="set-dedup-window">Burst Deduplication Window (sec)</label>
+                <input type="number" step="0.5" min="0" max="60" id="set-dedup-window" value="4.0" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-auto-expunge" checked />
+                <span>Enable Automated TPMS, Soil Probe &amp; Bit-Flip Outlier Expunger</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-auto-update" checked />
+                <span>Enable Startup GitHub Self-Update &amp; Dependency Check</span>
+              </label>
+            </div>
+            <div class="settings-btn-row">
+              <button id="btn-save-hygiene" type="button" class="btn btn-primary">Save Ingestion Rules</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Section 4: Display & Units -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>4. Display &amp; Units</h3>
+            <span class="badge">Console Defaults</span>
+          </div>
+          <form id="form-settings-units" onsubmit="return false;">
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="set-temp-unit">Temperature Unit</label>
+                <select id="set-temp-unit">
+                  <option value="F">&deg;F (Fahrenheit)</option>
+                  <option value="C">&deg;C (Celsius)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="set-wind-unit">Wind Speed Unit</label>
+                <select id="set-wind-unit">
+                  <option value="mph">mph (Miles/hr)</option>
+                  <option value="m/s">m/s (Meters/sec)</option>
+                  <option value="knots">knots</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="set-pressure-unit">Barometric Pressure Unit</label>
+                <select id="set-pressure-unit">
+                  <option value="inHg">inHg (Inches of Mercury)</option>
+                  <option value="hPa">hPa / mb (Hectopascals)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="set-rain-unit">Rainfall Unit</label>
+                <select id="set-rain-unit">
+                  <option value="in">in (Inches)</option>
+                  <option value="mm">mm (Millimeters)</option>
+                </select>
+              </div>
+            </div>
+            <button id="btn-save-units" type="button" class="btn btn-primary">Save Display Units</button>
+          </form>
+        </div>
+
+        <!-- Section 5: Forecast Learning & Multi-Model Manager -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>5. Forecast Learning &amp; Multi-Model Manager</h3>
+            <span id="set-model-confidence-badge" class="badge badge-outdoor">Confidence: --%</span>
+          </div>
+          <p class="text-muted" style="margin-bottom: 12px;">
+            Fine-tune how your station blends local sensor readings, historical weather averages, and external forecast models.
+          </p>
+
+          <!-- Top Status Row with Inspect Baseline Action -->
+          <div class="learning-status-grid">
+            <div class="stat-callout-box">
+              <span class="stat-callout-label">HISTORICAL ARCHIVE BASELINE</span>
+              <div id="set-learn-archive-status" class="stat-callout-val">365-Day Regional Baseline</div>
+              <span id="set-learn-archive-sub" class="stat-callout-sub">12 monthly profiles</span>
+              <button id="btn-open-baseline-inspector" type="button" class="btn btn-secondary btn-xs" style="margin-top: 8px;">
+                Inspect 12-Month Baseline &rarr;
+              </button>
+            </div>
+            <div class="stat-callout-box">
+              <span class="stat-callout-label">USER GROUND-TRUTH CHECK-INS</span>
+              <div id="set-learn-feedback-stats" class="stat-callout-val">0 confirmations logged</div>
+              <span id="set-learn-feedback-acc" class="stat-callout-sub">Accuracy: --%</span>
+              <span class="stat-callout-sub" style="margin-top: 8px; color: var(--text-muted);">Calibrates prediction confidence</span>
+            </div>
+          </div>
+
+          <!-- Multi-Model Forecast Selector & Weighting -->
+          <div class="models-manager-wrap" style="margin-top: 14px;">
+            <div class="stat-callout-label" style="margin-bottom: 8px;">BLENDED FORECAST MODELS &amp; WEIGHTING</div>
+            <div id="models-selector-container" class="models-selector-grid">
+              <div class="text-muted text-center" style="padding: 16px;">Loading weather models...</div>
+            </div>
+
+            <!-- Blended Summary Bar -->
+            <div class="models-summary-bar">
+              <div class="models-summary-left">
+                <span class="models-sum-label">TOTAL WEIGHT:</span>
+                <span id="models-total-weight" class="mono font-bold">100%</span>
+                <span class="models-sum-sep">&bull;</span>
+                <span id="models-blended-preview" class="mono text-muted">Blended Today: High --&deg;F / Low --&deg;F</span>
+              </div>
+              <button id="btn-save-model-weights" type="button" class="btn btn-primary btn-sm">Save Model Weights</button>
+            </div>
+          </div>
+
+          <!-- Legacy Sensor Sensitivity Weights -->
+          <div class="form-row-2" style="margin-top: 10px;">
+            <div class="form-group">
+              <label for="set-baro-weight">Barometric Sensitivity: <span id="set-baro-weight-val" class="mono">1.0x</span></label>
+              <input type="range" id="set-baro-weight" min="0.5" max="2.0" step="0.1" value="1.0" />
+            </div>
+            <div class="form-group">
+              <label for="set-dew-weight">Dew Spread Sensitivity: <span id="set-dew-weight-val" class="mono">1.0x</span></label>
+              <input type="range" id="set-dew-weight" min="0.5" max="2.0" step="0.1" value="1.0" />
+            </div>
+          </div>
+
+          <!-- Interactive Current Weather Check-In Box -->
+          <div class="settings-checkin-box">
+            <div class="stat-callout-label" style="margin-bottom: 6px;">WHAT IS THE WEATHER LIKE OUTSIDE RIGHT NOW?</div>
+            <div class="settings-checkin-grid">
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Sunny/Clear">&#9728;&#65039; Sunny/Clear</button>
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Partly Cloudy">&#9925; Partly Cloudy</button>
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Overcast">&#9729;&#65039; Overcast</button>
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Rain/Drizzle">&#127783;&#65039; Rain/Drizzle</button>
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Storm/Windy">&#9889; Storm/Windy</button>
+              <button type="button" class="btn btn-secondary btn-sm btn-set-weather-checkin" data-condition="Fog/Mist">&#127787;&#65039; Fog/Mist</button>
+            </div>
+          </div>
+
+          <div class="settings-btn-row" style="margin-top: 10px;">
+            <button id="btn-sync-learn-history" type="button" class="btn btn-secondary btn-sm">Retrain 365-Day Baseline Now</button>
+          </div>
+        </div>
+
+        <!-- Section 6: System, Clock & Database Console -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>6. System, Clock &amp; Database Console</h3>
+            <span id="set-clock-sync-badge" class="badge badge-batt-ok">NTP Synced</span>
+          </div>
+
+          <div class="learning-status-grid">
+            <div class="stat-callout-box">
+              <span class="stat-callout-label">SERVER LOCAL &amp; UTC TIME</span>
+              <div id="set-sys-local-time" class="stat-callout-val">--:--:--</div>
+              <span id="set-sys-utc-time" class="stat-callout-sub">UTC: --:--:--</span>
+            </div>
+            <div class="stat-callout-box">
+              <span class="stat-callout-label">TIMEZONE &amp; NTP DRIFT</span>
+              <div id="set-sys-tz" class="stat-callout-val">UTC</div>
+              <span id="set-sys-drift" class="stat-callout-sub">Drift: 0 ms</span>
+            </div>
+          </div>
+
+          <div class="form-row-2" style="margin-top: 8px; align-items: end;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="set-vacuum-schedule">Auto-Vacuum Schedule</label>
+              <select id="set-vacuum-schedule">
+                <option value="off">Off (Manual Only)</option>
+                <option value="daily_0300" selected>Daily at 03:00 AM</option>
+                <option value="weekly_sunday">Weekly on Sunday</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="checkbox-label" style="padding-bottom: 8px;">
+                <input type="checkbox" id="set-auto-sync-time" checked />
+                <span>Auto-Sync Time (NTP Pool)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-btn-row" style="margin-top: 8px;">
+            <button id="btn-vacuum-db" type="button" class="btn btn-primary">Run Vacuum &amp; Optimize Now</button>
+            <button id="btn-sync-clock-now" type="button" class="btn btn-secondary">Sync Clock Now</button>
+            <button id="btn-set-simulate-strike" type="button" class="btn btn-secondary">&#9889; Simulate Test Strike</button>
+          </div>
+
+          <!-- Dark Monospace Live System Console Box -->
+          <div class="system-console-wrap">
+            <div class="system-console-header">
+              <span class="mono">LIVE SYSTEM &amp; SQLITE MAINTENANCE CONSOLE</span>
+              <span id="system-console-status" class="mono">IDLE</span>
+            </div>
+            <pre id="system-console-log" class="system-console-log mono">Ready. Click "Run Vacuum &amp; Optimize Now", "Sync Clock Now", or "Sync / Retrain 1-Year Weather Model" to view live execution telemetry...</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================================================================== -->
+  <!-- MODAL 1: FIRST-RUN ADMIN PASSWORD CREATION (ONE-TIME SETUP)        -->
+  <!-- ================================================================== -->
+  <div id="setup-password-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="setup-pw-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="setup-pw-title">Create Admin Security Password</h3>
+          <div class="modal-subtitle">First-Run Security Lockdown (v{{ version }})</div>
+        </div>
+      </div>
+      <p class="text-muted" style="margin-bottom: 14px;">
+        Protect your SkyScry station against unauthorized modifications over Cloudflare Tunnel. Your password is encrypted using <code>scrypt</code> / <code>PBKDF2-HMAC-SHA256</code> inside <code>data/skyscry.db</code> (never stored in Git). Once created, this prompt will never appear again.
+      </p>
+      <form id="form-setup-password" onsubmit="return false;">
+        <div class="form-group">
+          <label for="setup-pw-input">Create Admin Password (min 6 characters)</label>
+          <input type="password" id="setup-pw-input" minlength="6" autocomplete="new-password" />
+        </div>
+        <div class="form-group">
+          <label for="setup-pw-confirm">Confirm Admin Password</label>
+          <input type="password" id="setup-pw-confirm" minlength="6" autocomplete="new-password" />
+        </div>
+        <div id="setup-pw-feedback" class="form-feedback hidden"></div>
+        <div class="modal-footer">
+          <span class="text-muted">Public visitors retain read-only dashboard access.</span>
+          <button id="btn-submit-setup-pw" type="button" class="btn btn-primary">Encrypt &amp; Save Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- MODAL 2: UNLOCK ADMIN CONTROLS PASSWORD MODAL                      -->
+  <!-- ================================================================== -->
+  <div id="unlock-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="unlock-modal-title">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <div>
+          <h3 id="unlock-modal-title">Unlock Admin Controls</h3>
+          <div class="modal-subtitle">Enter your Admin Security Password to continue</div>
+        </div>
+        <button id="btn-close-unlock-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
+      </div>
+      <form id="form-unlock-admin" onsubmit="return false;">
+        <div class="form-group">
+          <label for="unlock-pw-input">Admin Security Password</label>
+          <input type="password" id="unlock-pw-input" autocomplete="current-password" />
+        </div>
+        <div id="unlock-modal-feedback" class="form-feedback hidden"></div>
+        <div class="modal-footer">
+          <span class="text-muted">Auto-locks after inactivity</span>
+          <div class="modal-footer-right">
+            <button id="btn-cancel-unlock-modal" class="btn btn-secondary" type="button">Cancel</button>
+            <button id="btn-submit-unlock-pw" type="button" class="btn btn-primary">Unlock Session</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- MODAL 3: SENSOR CONFIGURATION MODAL                                -->
+  <!-- ================================================================== -->
+  <div id="sensor-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-title">Configure Sensor Metadata &amp; Visible Metrics</h3>
+          <div id="modal-subtitle" class="modal-subtitle">--</div>
+        </div>
+        <button id="btn-close-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
+      </div>
+
+      <form id="sensor-config-form" onsubmit="return false;">
+        <input type="hidden" id="modal-sensor-key" />
+
+        <div class="form-group">
+          <label for="modal-alias-input">Custom Alias / Station Label</label>
+          <input
+            type="text"
+            id="modal-alias-input"
+            placeholder="Leave blank to use default {model} #{sensor_id}"
+            maxlength="80"
+          />
+          <small class="form-hint">If cleared, the display name strictly defaults to hardware model and ID.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="modal-location-select">Location Classification (Opt-In Trust)</label>
+          <select id="modal-location-select">
+            <option value="ignore">Ignore / Unconfigured (Default - Exclude from Dashboard &amp; Charts)</option>
+            <option value="outdoor">Outdoor (Include in Local Weather Synthesis &amp; Charts)</option>
+            <option value="indoor">Indoor (Include in Indoor Microclimate Summary &amp; Charts)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Visible Metrics (Uncheck to hide broken/unused sub-sensors)</label>
+          <div class="metrics-checkbox-grid">
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="temperature" checked />
+              <span>Temperature</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="humidity" checked />
+              <span>Humidity</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="wind" checked />
+              <span>Wind Speed &amp; Dir</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="rain" checked />
+              <span>Rainfall</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="uv_light" checked />
+              <span>UV / Light</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="vis_metric" value="lightning" checked />
+              <span>Lightning (06045M)</span>
+            </label>
+          </div>
+          <small class="form-hint">Unchecked metrics are hidden on this sensor's card and excluded from charts and weather calculations.</small>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-trusted-checkbox" />
+            <span>Trusted Station (Include visible metrics in local weather synthesis &amp; charts)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-battery-reset-checkbox" />
+            <span>Mark Battery Replaced Today (Resets "Days on current battery" counter to 0d)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="modal-purge-outliers-checkbox" />
+            <span>Purge Historical Outliers for This Sensor on Save</span>
+          </label>
+        </div>
+
+        <div id="modal-feedback" class="form-feedback hidden"></div>
+
+        <div class="modal-footer">
+          <button id="btn-mark-appliance" class="btn btn-secondary" type="button" title="Classify as non-weather appliance/ignore and purge its readings">
+            Mark Appliance / Ignore
+          </button>
+          <div class="modal-footer-right">
+            <button id="btn-clear-alias" class="btn btn-secondary" type="button">Reset Alias</button>
+            <button id="btn-cancel-modal" class="btn btn-secondary" type="button">Cancel</button>
+            <button id="btn-save-modal" class="btn btn-primary" type="button">Save Changes</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- MODAL 4: INTERACTIVE CALENDAR DAY DETAIL POPOVER MODAL             -->
+  <!-- ================================================================== -->
+  <div id="calendar-day-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cal-modal-date-title">
+    <div class="modal-card calendar-day-modal-card">
+      <div class="modal-header cal-modal-header">
+        <div class="cal-modal-title-row">
+          <div id="cal-modal-weather-icon" class="cal-modal-icon-stage" aria-hidden="true"></div>
+          <div>
+            <h3 id="cal-modal-date-title">Saturday, November 7, 2026</h3>
+            <div class="cal-modal-sub-row">
+              <span id="cal-modal-condition-title" class="cal-modal-cond-label">Sunny &amp; Clear</span>
+              <span id="cal-modal-source-badge" class="badge badge-outdoor">Local Sensors</span>
+            </div>
+          </div>
+        </div>
+        <button id="btn-close-cal-modal" class="btn-icon" type="button" aria-label="Close Day Detail Modal">&times;</button>
+      </div>
+
+      <div id="cal-modal-body" class="cal-modal-body">
+        <!-- Populated dynamically by JS for Past/Today Recorded vs Future Forecast/Model days -->
+      </div>
+
+      <div class="modal-footer">
+        <span id="cal-modal-footer-note" class="text-muted">Click any calendar day cell to inspect detailed telemetry or forecast confidence.</span>
+        <button id="btn-dismiss-cal-modal" class="btn btn-primary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- MODAL 5: 365-DAY BASELINE INSPECTOR & SYNTHESIS HOW-IT-WORKS MODAL -->
+  <!-- ================================================================== -->
+  <div id="baseline-inspector-modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="baseline-modal-title">
+    <div class="modal-card baseline-inspector-modal-card">
+      <div class="modal-header">
+        <div class="cal-modal-title-row">
+          <div class="baseline-modal-icon-badge">&#128269;</div>
+          <div>
+            <h3 id="baseline-modal-title">365-Day Baseline &amp; Synthesis Inspector</h3>
+            <div class="text-muted" style="font-size: 0.82rem; margin-top: 2px;">
+              Data Provenance, How Synthesis Works, and 12-Month Climatology Profiles
+            </div>
+          </div>
+        </div>
+        <button id="btn-close-baseline-modal" class="btn-icon" type="button" aria-label="Close Baseline Inspector">&times;</button>
+      </div>
+
+      <div class="modal-body baseline-modal-body">
+        <!-- 1. Data Provenance Box -->
+        <div class="baseline-provenance-box">
+          <div class="stat-callout-label">DATA PROVENANCE &amp; ARCHIVE COVERAGE</div>
+          <div class="provenance-details-grid">
+            <div class="prov-item">
+              <span class="prov-label">Archive Source:</span>
+              <span id="prov-source-val" class="prov-val">ERA5 / NOAA Historical Surface Reanalysis via Open-Meteo Archive + Local SQLite Telemetry</span>
+            </div>
+            <div class="prov-item">
+              <span class="prov-label">Coordinates:</span>
+              <span id="prov-coords-val" class="prov-val mono">--&deg;N, --&deg;W (Elev: -- m)</span>
+            </div>
+            <div class="prov-item">
+              <span class="prov-label">Archive Date Range:</span>
+              <span id="prov-range-val" class="prov-val mono">Past 365 Days</span>
+            </div>
+            <div class="prov-item">
+              <span class="prov-label">Monthly Profiles:</span>
+              <span id="prov-profiles-val" class="prov-val">12 Active Climatological Normals</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. How Synthesis Works: 3-Step Visual Stepper -->
+        <div class="synthesis-stepper-wrap">
+          <div class="stat-callout-label" style="margin-bottom: 8px;">HOW FORECAST SYNTHESIS WORKS (3-STEP ENGINE)</div>
+          <div class="synthesis-steps-grid">
+            <div class="synthesis-step-card">
+              <div class="step-num-badge">1</div>
+              <div class="step-card-content">
+                <div class="step-card-title">Past 365-Day Monthly Norms</div>
+                <div class="step-card-badge">Seasonal Baseline</div>
+                <p class="step-card-desc">
+                  Establishes regional climate normals (seasonal highs, lows, typical barometric pressure, and wet/dry patterns) for every month of the year.
+                </p>
+              </div>
+            </div>
+            <div class="synthesis-step-card">
+              <div class="step-num-badge">2</div>
+              <div class="step-card-content">
+                <div class="step-card-title">Live Local Sensor Deltas</div>
+                <div class="step-card-badge">Immediate Microclimate</div>
+                <p class="step-card-desc">
+                  Calculates real-time 3h/6h barometric velocity, dew point depression, and wind shifts directly from your station to detect incoming fronts and local swings.
+                </p>
+              </div>
+            </div>
+            <div class="synthesis-step-card">
+              <div class="step-num-badge">3</div>
+              <div class="step-card-content">
+                <div class="step-card-title">Multi-Model &amp; Check-In Blending</div>
+                <div class="step-card-badge">Weighted Prediction</div>
+                <p class="step-card-desc">
+                  Blends your chosen external models (NWS, HRRR, GFS, ECMWF) using your customized weights, refined continuously by your ground-truth check-ins.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 12-Month Climatology Table -->
+        <div class="baseline-table-wrap">
+          <div class="stat-callout-label" style="margin-bottom: 6px;">12-MONTH CLIMATOLOGICAL NORMALS TABLE</div>
+          <div class="table-responsive">
+            <table class="data-table baseline-data-table">
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Avg High (&deg;F)</th>
+                  <th>Avg Low (&deg;F)</th>
+                  <th>Mean (&deg;F)</th>
+                  <th>Normal Baro (inHg)</th>
+                  <th>Rainy Days (%)</th>
+                  <th>Normal Precip (in)</th>
+                </tr>
+              </thead>
+              <tbody id="baseline-monthly-tbody">
+                <tr><td colspan="7" class="text-center text-muted">Loading 12-month baseline table...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 4. Baseline Offsets & Re-download Controls -->
+        <div class="baseline-calibration-bar">
+          <div class="calibration-inputs">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="input-baseline-temp-offset">Temp Offset (&deg;F)</label>
+              <input type="number" id="input-baseline-temp-offset" step="0.5" value="0.0" style="width: 100px;" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="input-baseline-baro-offset">Barometer Offset (inHg)</label>
+              <input type="number" id="input-baseline-baro-offset" step="0.01" value="0.00" style="width: 110px;" />
+            </div>
+            <button id="btn-save-baseline-offsets" type="button" class="btn btn-primary btn-sm" style="align-self: flex-end;">Save Offsets</button>
+          </div>
+          <button id="btn-modal-retrain-baseline" type="button" class="btn btn-secondary btn-sm">
+            &#8635; Re-download 365-Day Archive
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <span class="text-muted" style="font-size: 0.8rem;">Data sourced from ERA5 / NOAA archive and local SQLite sensor history.</span>
+        <button id="btn-dismiss-baseline-modal" class="btn btn-secondary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_version or version }}"></script>
+</body>
+</html>

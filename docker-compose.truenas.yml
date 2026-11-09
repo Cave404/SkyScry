@@ -1,0 +1,84 @@
+# ============================================================================
+# SkyScry v0.0.24 — Turnkey TrueNAS SCALE Custom App Stack
+# ============================================================================
+# How to deploy in TrueNAS SCALE:
+#   1. Go to Apps -> Discover Apps -> click the Three Dots (top-right) -> Install via YAML
+#   2. Set Application Name to: skyscry
+#   3. Paste this entire file into the Custom Config YAML editor
+#   4. Set your dataset path (default: /mnt/pool/appdata/skyscry) and optional
+#      CLOUDFLARE_TUNNEL_TOKEN below, then click Save!
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # Service 1: SkyScry 433.92 MHz Weather Daemon & Hosted WebUI
+  # --------------------------------------------------------------------------
+  skyscry:
+    image: ghcr.io/cave404/skyscry:latest
+    pull_policy: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skyscry
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - "/dev/bus/usb:/dev/bus/usb"
+    ports:
+      - "${SKYSCRY_PORT:-8080}:8080"
+    volumes:
+      - "${SKYSCRY_DATA_DIR:-/mnt/pool/appdata/skyscry/data}:/app/data"
+      - "${SKYSCRY_CONFIG_DIR:-/mnt/pool/appdata/skyscry/config}:/app/config"
+      - "/dev/bus/usb:/dev/bus/usb"
+      - "/sys/bus/usb:/sys/bus/usb"
+    environment:
+      - TZ=${TZ:-UTC}
+      - AUTO_UPDATE_ON_START=${AUTO_UPDATE_ON_START:-true}
+      - LATITUDE=${LATITUDE:-}
+      - LONGITUDE=${LONGITUDE:-}
+      - ADMIN_PIN=${ADMIN_PIN:-}
+      - READ_ONLY_PUBLIC=${READ_ONLY_PUBLIC:-false}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - skyscry_net
+
+  # --------------------------------------------------------------------------
+  # Service 2: Cloudflare Tunnel (Zero-Port HTTPS Reverse Proxy)
+  # --------------------------------------------------------------------------
+  # In the Cloudflare Zero Trust Dashboard -> Networks -> Tunnels -> Public Hostname,
+  # point your domain/subdomain to Service URL: http://skyscry:8080
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: skyscry-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TZ=${TZ:-UTC}
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - skyscry
+    networks:
+      - skyscry_net
+
+  # --------------------------------------------------------------------------
+  # Service 3: Watchtower (Automated GHCR Container Image Updater)
+  # --------------------------------------------------------------------------
+  # Automatically polls ghcr.io/cave404/skyscry:latest every hour (3600s)
+  # and seamlessly recreates the skyscry container when a new build is pushed.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: skyscry-watchtower
+    restart: unless-stopped
+    command: --cleanup --label-enable --interval 3600
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - skyscry_net
+
+networks:
+  skyscry_net:
+    driver: bridge
+

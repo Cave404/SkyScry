@@ -1,0 +1,77 @@
+# ============================================================================
+# SkyScry (v0.0.17) — Configuration Template
+# ============================================================================
+# Copy this file to `config/config.yaml` to customize your local deployment:
+#   cp config/config.example.yaml config/config.yaml
+#
+# Note: `config/config.yaml` is git-ignored so local paths and host settings
+# are never committed to version control.
+# Sensor aliases and location types are managed dynamically via the WebUI
+# and persisted directly in SQLite (`sensors` table).
+# ============================================================================
+
+# Automatically check GitHub for SkyScry updates, verify pip dependencies,
+# and verify rtl_433 binaries on startup (can be bypassed with --no-update
+# or AUTO_UPDATE_ON_START=false).
+auto_update: true
+
+sdr:
+  # Explicit path to the rtl_433 binary, or null/empty to auto-resolve via:
+  #   1. SKYSCRY_RTL433_BIN environment variable
+  #   2. System PATH (rtl_433, rtl_433-rtlsdr.exe, rtl_433.exe)
+  #   3. Local ./bin/ directory or repository root
+  binary_path: null
+
+  # Center frequency to tune the RTL-SDR receiver
+  frequency: "433.92M"
+
+  # RTL-SDR device index or serial number (0 = first available dongle)
+  device_index: 0
+
+  # Optional extra CLI arguments passed directly to rtl_433 (e.g., ["-g", "40"])
+  extra_args: []
+
+  # Automatically restart rtl_433 with progressive USB recovery backoff if the stream drops
+  auto_reconnect: true
+  reconnect_delay_seconds: 5.0
+
+database:
+  # SQLite database path (WAL mode enabled automatically; parent dirs created on init)
+  path: "data/skyscry.db"
+
+pipeline:
+  # Sliding time window (in seconds) to suppress redundant 433 MHz burst frames
+  # keyed on (model, sensor_id, msg_type). Most sensors transmit 3 identical frames
+  # within 100-300ms per burst.
+  dedup_window_seconds: 4.0
+
+  # Interval (in seconds) between stale deduplication key pruning passes
+  dedup_prune_interval_seconds: 300.0
+
+location:
+  # Coordinates used for Open-Meteo regional barometric pressure (inHg/hPa)
+  # and 48-hour historical weather backfill (can also be overridden via
+  # LATITUDE and LONGITUDE environment variables or persisted in SQLite).
+  latitude: 0.0
+  longitude: 0.0
+  enable_regional_backfill: true
+  backfill_hours: 48
+  sync_interval_minutes: 15
+
+web:
+  # Enable the built-in WebUI and REST API server
+  enabled: true
+  # Bind address and port for the HTTP server
+  host: "0.0.0.0"
+  port: 8080
+  # Optional Admin PIN for public Cloudflare Tunnel deployments (can also be set
+  # via ADMIN_PIN and READ_ONLY_PUBLIC environment variables). Leave null/empty
+  # for unrestricted local LAN access.
+  admin_pin: null
+  read_only_public: false
+
+logging:
+  # Console log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # Display unit system in console logs: "both", "imperial", or "metric"
+  console_units: "both"

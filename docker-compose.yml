@@ -1,0 +1,34 @@
+services:
+  skyscry:
+    image: ghcr.io/cave404/skyscry:latest
+    pull_policy: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skyscry
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "${SKYSCRY_PORT:-8080}:8080"
+    devices:
+      - "/dev/bus/usb:/dev/bus/usb"
+    volumes:
+      - "${SKYSCRY_DATA_DIR:-./data}:/app/data"
+      - "${SKYSCRY_CONFIG_DIR:-./config}:/app/config"
+      - "/dev/bus/usb:/dev/bus/usb"
+      - "/sys/bus/usb:/sys/bus/usb"
+    environment:
+      - TZ=${TZ:-UTC}
+      - AUTO_UPDATE_ON_START=${AUTO_UPDATE_ON_START:-true}
+      - LATITUDE=${LATITUDE:-}
+      - LONGITUDE=${LONGITUDE:-}
+      - ADMIN_PIN=${ADMIN_PIN:-}
+      - READ_ONLY_PUBLIC=${READ_ONLY_PUBLIC:-false}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - skyscry_net
+
+networks:
+  skyscry_net:
+    driver: bridge
