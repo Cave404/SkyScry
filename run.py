@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main CLI and daemon entrypoint for SkyScry (v0.0.27).
+"""Main CLI and daemon entrypoint for SkyScry (v0.0.29).
 
 Executes the standard-library pre-flight bootstrapper (`src.updater.run_startup_bootstrap`)
 before importing third-party libraries so fresh installs and self-updates never crash.
@@ -452,6 +452,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         default_lat=config.location.latitude,
         default_lon=config.location.longitude,
     )
+    if db is not None:
+        db.set_nws_service(nws_service)
 
     stop_event = threading.Event()
     http_server: Optional[BaseWSGIServer] = None

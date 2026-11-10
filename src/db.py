@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.27)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.29)."""
 
 from __future__ import annotations
 
@@ -67,6 +67,7 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, str] = {
     "forecast_models_config": "",
     "baseline_temp_offset_f": "0.0",
     "baseline_baro_offset_inhg": "0.0",
+    "nwr_stream_url": "",
 }
 
 PUBLIC_SETTINGS_KEYS: frozenset[str] = frozenset(DEFAULT_SYSTEM_SETTINGS.keys())
@@ -120,11 +121,37 @@ CREATE TABLE IF NOT EXISTS lightning_strikes (
     sensor_key TEXT NOT NULL,
     delta_strikes INTEGER NOT NULL,
     distance_mi REAL NOT NULL,
-    rfi INTEGER DEFAULT 0
+    rfi INTEGER DEFAULT 0,
+    confirmed INTEGER DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_lightning_strikes_time
     ON lightning_strikes (timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS weather_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id TEXT UNIQUE NOT NULL,
+    event TEXT NOT NULL,
+    severity TEXT,
+    urgency TEXT,
+    certainty TEXT,
+    headline TEXT,
+    description TEXT,
+    instruction TEXT,
+    area_desc TEXT,
+    sender_name TEXT,
+    onset TEXT,
+    expires TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_weather_alerts_active
+    ON weather_alerts (is_active, onset DESC);
+
+CREATE INDEX IF NOT EXISTS idx_weather_alerts_time
+    ON weather_alerts (onset DESC, expires DESC);
 
 CREATE TABLE IF NOT EXISTS learned_weather_model (
     month INTEGER PRIMARY KEY,
@@ -385,9 +412,23 @@ class WeatherDatabase:
             check_same_thread=False,
         )
         self._conn.row_factory = sqlite3.Row
+        self._nws_service: Optional[Any] = None
         self._configure_connection()
         self._initialize_schema()
         logger.debug("Initialized SQLite WAL database at %s", self.db_path)
+
+    def set_nws_service(self, svc: Any) -> None:
+        """Register NWS weather service instance for smart strike corroboration and PoP lookups."""
+        self._nws_service = svc
+
+    def get_current_pop_percent(self) -> Optional[int]:
+        """Query current probability of precipitation (PoP %) from NWS service if available."""
+        if self._nws_service is not None:
+            try:
+                return self._nws_service.get_current_pop_percent()
+            except Exception:
+                pass
+        return None
 
     def _configure_connection(self) -> None:
         """Enable WAL journal mode and NORMAL synchronization for concurrent read/write performance."""
@@ -446,6 +487,11 @@ class WeatherDatabase:
                 self._ensure_column("sensor_readings", "strike_count", "INTEGER")
                 self._ensure_column("sensor_readings", "storm_dist_mi", "REAL")
                 self._ensure_column("sensor_readings", "rfi_detected", "INTEGER")
+                self._ensure_column("lightning_strikes", "confirmed", "INTEGER DEFAULT 1")
+                self._ensure_column("weather_alerts", "instruction", "TEXT")
+                self._ensure_column("weather_alerts", "area_desc", "TEXT")
+                self._ensure_column("weather_alerts", "sender_name", "TEXT")
+                self._ensure_column("weather_alerts", "is_active", "INTEGER DEFAULT 1")
 
                 now_iso = format_utc_z(datetime.now(timezone.utc))
                 for def_k, def_v in DEFAULT_SYSTEM_SETTINGS.items():
@@ -494,8 +540,9 @@ class WeatherDatabase:
                 self._repair_shifted_timestamps()
                 self._auto_heal_trusted_sensors()
 
-        # Run startup TPMS, barometric outlier, & appliance auto-purge
+        # Run startup TPMS, barometric outlier, appliance auto-purge, and lightning noise gate
         self.expunge_skewed_history()
+        self.auto_classify_isolated_strikes()
         self._auto_heal_trusted_sensors()
 
     def _auto_heal_trusted_sensors(self) -> None:
@@ -606,6 +653,95 @@ class WeatherDatabase:
                 "UPDATE sensor_readings SET timestamp = ? WHERE id = ?;",
                 updates,
             )
+
+    def auto_classify_isolated_strikes(self) -> int:
+        """Retroactively identify single isolated false EMI/static pulses under high pressure (>30.00 inHg) and mark confirmed=0."""
+        with self._lock:
+            if self._conn is None:
+                return 0
+            with self._conn:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, timestamp, delta_strikes, distance_mi
+                    FROM lightning_strikes
+                    WHERE COALESCE(confirmed, 1) = 1
+                    ORDER BY timestamp ASC;
+                    """
+                ).fetchall()
+                if not rows:
+                    return 0
+
+                reclassified = 0
+                for row in rows:
+                    row_id = row["id"]
+                    ts = str(row["timestamp"])
+                    dt = parse_utc_iso(ts)
+                    if dt is None:
+                        continue
+                    delta_s = int(row["delta_strikes"] or 1)
+                    if delta_s >= 3:
+                        continue
+
+                    # Check if any OTHER strike exists within +/- 45 minutes
+                    t_start = format_utc_z(dt - timedelta(minutes=45))
+                    t_end = format_utc_z(dt + timedelta(minutes=45))
+                    other = self._conn.execute(
+                        """
+                        SELECT COUNT(*) AS c FROM lightning_strikes
+                        WHERE id != ? AND timestamp BETWEEN ? AND ?;
+                        """,
+                        (row_id, t_start, t_end),
+                    ).fetchone()
+                    nearby_count = int(other["c"] or 0) if other else 0
+
+                    if nearby_count == 0:
+                        # Check ambient barometric pressure near this event
+                        p_row = self._conn.execute(
+                            """
+                            SELECT pressure_hpa FROM reference_weather_history
+                            WHERE pressure_hpa IS NOT NULL AND pressure_hpa BETWEEN 870.0 AND 1085.0
+                            ORDER BY ABS(STRFTIME('%s', timestamp) - STRFTIME('%s', ?)) ASC
+                            LIMIT 1;
+                            """,
+                            (ts,),
+                        ).fetchone()
+                        p_inhg: Optional[float] = None
+                        if p_row and p_row["pressure_hpa"] is not None:
+                            p_inhg = round(float(p_row["pressure_hpa"]) * HPA_TO_INHG, 2)
+                        else:
+                            baro = self.get_barometer_summary()
+                            p_inhg = baro.get("pressure_inhg")
+
+                        t_24h_before = format_utc_z(dt - timedelta(hours=24))
+                        t_24h_after = format_utc_z(dt + timedelta(hours=24))
+                        total_24h_row = self._conn.execute(
+                            """
+                            SELECT COUNT(*) AS c FROM lightning_strikes
+                            WHERE id != ? AND timestamp BETWEEN ? AND ?;
+                            """,
+                            (row_id, t_24h_before, t_24h_after),
+                        ).fetchone()
+                        other_events_24h = int(total_24h_row["c"] or 0) if total_24h_row else 0
+
+                        is_isolated_high_pressure = False
+                        if p_inhg is not None and p_inhg >= 30.00:
+                            is_isolated_high_pressure = True
+                        elif other_events_24h == 0 and (p_inhg is None or p_inhg > 29.98):
+                            is_isolated_high_pressure = True
+
+                        if is_isolated_high_pressure:
+                            self._conn.execute(
+                                "UPDATE lightning_strikes SET confirmed = 0 WHERE id = ?;",
+                                (row_id,),
+                            )
+                            reclassified += 1
+
+                if reclassified > 0:
+                    logger.info(
+                        "[LIGHTNING NOISE GATE] Auto-classified %d isolated high-pressure static pulse(s) as unconfirmed (confirmed=0).",
+                        reclassified,
+                    )
+                return reclassified
 
     @staticmethod
     def make_sensor_key(model: str, sensor_id: str) -> str:
@@ -1032,15 +1168,93 @@ class WeatherDatabase:
                         dist_mi = 12.0
                     dist_mi = max(1.0, min(25.0, dist_mi))
                     rfi_flag = int(reading.rfi_detected or 0)
+
+                    # Smart Strike Corroboration & Noise Gate:
+                    # 1. Check if another strike occurred within the last 45 minutes
+                    cutoff_45m = format_utc_z(reading.timestamp - timedelta(minutes=45))
+                    recent_row = self._conn.execute(
+                        """
+                        SELECT COUNT(*) AS cnt, COALESCE(SUM(delta_strikes), 0) AS total_delta
+                        FROM lightning_strikes
+                        WHERE timestamp >= ?;
+                        """,
+                        (cutoff_45m,),
+                    ).fetchone()
+                    recent_cnt = int(recent_row["cnt"] or 0) if recent_row else 0
+                    recent_delta = int(recent_row["total_delta"] or 0) if recent_row else 0
+
+                    # 2. Ambient Barometric Pressure (inHg) & Forecast PoP (%)
+                    curr_baro = self.get_barometer_summary()
+                    curr_inhg = curr_baro.get("pressure_inhg")
+                    curr_pop = self.get_current_pop_percent()
+
+                    # Corroborate strike if:
+                    # - Another strike occurred within last 45 minutes
+                    # - OR delta_strikes >= 3 across this or recent packets
+                    # - OR current barometric pressure < 29.95 inHg
+                    # - OR NWS/forecast PoP >= 20%
+                    is_corroborated = False
+                    if recent_cnt > 0:
+                        is_corroborated = True
+                    elif delta_strikes >= 3 or (delta_strikes + recent_delta) >= 3:
+                        is_corroborated = True
+                    elif curr_inhg is not None and curr_inhg < 29.95:
+                        is_corroborated = True
+                    elif curr_pop is not None and curr_pop >= 20:
+                        is_corroborated = True
+
+                    # Unconfirmed Noise Gate:
+                    # If sky is high-pressure clear (pressure >= 30.00 inHg and PoP < 15%)
+                    # and it is a single isolated pulse with no follow-up strike within 30-45 minutes:
+                    is_high_pressure_clear = (
+                        curr_inhg is not None
+                        and curr_inhg >= 30.00
+                        and (curr_pop is None or curr_pop < 15)
+                    )
+
+                    confirmed_val = 1
+                    if not is_corroborated and (is_high_pressure_clear or delta_strikes < 3):
+                        confirmed_val = 0
+                        logger.warning(
+                            "[LIGHTNING NOISE GATE] Filtered uncorroborated static pulse from %s: "
+                            "delta=%d, dist=%.1f mi under %.2f inHg (PoP=%s%%) -> marked unconfirmed (confirmed=0)",
+                            sensor_key,
+                            delta_strikes,
+                            dist_mi,
+                            curr_inhg or 30.00,
+                            curr_pop if curr_pop is not None else 0,
+                        )
+                    else:
+                        logger.info(
+                            "[LIGHTNING CORROBORATED] Confirmed lightning strike from %s: "
+                            "delta=%d, dist=%.1f mi (recent_45m=%d, baro=%.2f inHg, PoP=%s%%)",
+                            sensor_key,
+                            delta_strikes,
+                            dist_mi,
+                            recent_cnt,
+                            curr_inhg or 29.92,
+                            curr_pop if curr_pop is not None else "--",
+                        )
+
                     with self._conn:
                         self._conn.execute(
                             """
                             INSERT INTO lightning_strikes (
-                                timestamp, sensor_key, delta_strikes, distance_mi, rfi
-                            ) VALUES (?, ?, ?, ?, ?);
+                                timestamp, sensor_key, delta_strikes, distance_mi, rfi, confirmed
+                            ) VALUES (?, ?, ?, ?, ?, ?);
                             """,
-                            (utc_ts, sensor_key, delta_strikes, round(dist_mi, 1), rfi_flag),
+                            (utc_ts, sensor_key, delta_strikes, round(dist_mi, 1), rfi_flag, confirmed_val),
                         )
+                        # If corroborated, promote any prior unconfirmed strikes in the last 45m:
+                        if is_corroborated:
+                            self._conn.execute(
+                                """
+                                UPDATE lightning_strikes
+                                SET confirmed = 1
+                                WHERE timestamp >= ? AND confirmed = 0;
+                                """,
+                                (cutoff_45m,),
+                            )
 
             # Ignore storm_dist == 31 / standby distances when delta_strikes == 0
             valid_storm_dist: Optional[float] = None
@@ -1187,6 +1401,10 @@ class WeatherDatabase:
         if "radar_zoom" in updates and updates["radar_zoom"] is not None:
             zoom = max(3, min(14, int(float(updates["radar_zoom"]))))
             to_save.append(("radar_zoom", str(zoom), now_iso))
+
+        if "nwr_stream_url" in updates and updates["nwr_stream_url"] is not None:
+            nwr_url = str(updates["nwr_stream_url"]).strip()[:500]
+            to_save.append(("nwr_stream_url", nwr_url, now_iso))
 
         if "inactivity_timeout_minutes" in updates and updates["inactivity_timeout_minutes"] is not None:
             timeout_m = max(1, min(240, int(float(updates["inactivity_timeout_minutes"]))))
@@ -2200,12 +2418,16 @@ class WeatherDatabase:
             },
         }
 
+    def get_barometer_summary(self) -> dict[str, Any]:
+        """Convenience accessor to compute current barometric telemetry, pressure_inhg, and tendency."""
+        return self._compute_barometric_telemetry_and_forecast()
+
     def _compute_barometric_telemetry_and_forecast(
         self,
-        rf_press_hpa: Optional[float],
-        dew_spread_f: Optional[float],
-        wind_cardinal: Optional[str],
-        rain_30m_mm: float,
+        rf_press_hpa: Optional[float] = None,
+        dew_spread_f: Optional[float] = None,
+        wind_cardinal: Optional[str] = None,
+        rain_30m_mm: float = 0.0,
     ) -> dict[str, Any]:
         """Resolve Barometric Pressure (`inHg` & `hPa`), 3-hour tendency, and 24-hour AcuRite-style forecast."""
         now_utc = datetime.now(timezone.utc)
@@ -2819,24 +3041,26 @@ class WeatherDatabase:
         furthest_dist_24h_mi: Optional[float] = None
         recent_rings: list[dict[str, Any]] = []
         active_storm_mode = False
+        unconfirmed_count_24h = 0
+        last_unconfirmed_time: Optional[str] = None
 
         with self._lock:
             if self._conn is not None:
-                # 1. Real strike counts across time windows
+                # 1. Confirmed strike counts across time windows
                 r_15m = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
                     (cutoff_15m,),
                 ).fetchone()
                 strikes_15m = int(r_15m["c"] or 0) if r_15m else 0
 
                 r_30m = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
                     (cutoff_30m,),
                 ).fetchone()
                 strikes_30m = int(r_30m["c"] or 0) if r_30m else 0
 
                 r_1h = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
                     (cutoff_1h,),
                 ).fetchone()
                 strikes_1h = int(r_1h["c"] or 0) if r_1h else 0
@@ -2848,7 +3072,8 @@ class WeatherDatabase:
                         MIN(distance_mi) AS min_d,
                         MAX(distance_mi) AS max_d
                     FROM lightning_strikes
-                    WHERE timestamp >= ? AND distance_mi >= 1.0 AND distance_mi <= 25.0;
+                    WHERE timestamp >= ? AND distance_mi >= 1.0 AND distance_mi <= 25.0
+                      AND COALESCE(confirmed, 1) = 1;
                     """,
                     (cutoff_24h,),
                 ).fetchone()
@@ -2859,12 +3084,27 @@ class WeatherDatabase:
                     if r_24h["max_d"] is not None:
                         furthest_dist_24h_mi = round(float(r_24h["max_d"]), 1)
 
-                # 2. Last real strike (only valid strikes 1..25 mi)
+                # Unconfirmed static pulses within 24h (filtered noise gate)
+                r_unconfirmed = self._conn.execute(
+                    """
+                    SELECT COALESCE(SUM(delta_strikes), 0) AS c, MAX(timestamp) AS last_ts
+                    FROM lightning_strikes
+                    WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 0;
+                    """,
+                    (cutoff_24h,),
+                ).fetchone()
+                if r_unconfirmed:
+                    unconfirmed_count_24h = int(r_unconfirmed["c"] or 0)
+                    if r_unconfirmed["last_ts"]:
+                        last_unconfirmed_time = str(r_unconfirmed["last_ts"])
+
+                # 2. Last real confirmed strike (only valid strikes 1..25 mi)
                 r_last = self._conn.execute(
                     """
                     SELECT timestamp, distance_mi, rfi
                     FROM lightning_strikes
                     WHERE distance_mi >= 1.0 AND distance_mi <= 25.0
+                      AND COALESCE(confirmed, 1) = 1
                     ORDER BY timestamp DESC, id DESC LIMIT 1;
                     """
                 ).fetchone()
@@ -2931,7 +3171,7 @@ class WeatherDatabase:
                     """
                     SELECT timestamp, distance_mi, delta_strikes, rfi
                     FROM lightning_strikes
-                    WHERE timestamp >= ?
+                    WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1
                     ORDER BY timestamp DESC, id DESC LIMIT 25;
                     """,
                     (cutoff_24h,),
@@ -2976,7 +3216,241 @@ class WeatherDatabase:
             "closest_dist_24h_mi": closest_dist_24h_mi,
             "furthest_dist_24h_mi": furthest_dist_24h_mi,
             "recent_rings": recent_rings,
+            "unconfirmed_count_24h": unconfirmed_count_24h,
+            "last_unconfirmed_time": last_unconfirmed_time,
         }
+
+    def clear_lightning_strikes(self, hours: Optional[int] = 24) -> dict[str, Any]:
+        """Wipe false, unconfirmed, or simulated test strikes from SQLite and synchronize sensor baseline."""
+        now_utc = datetime.now(timezone.utc)
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database connection is closed.")
+            with self._conn:
+                if hours is not None and int(hours) > 0:
+                    cutoff_iso = format_utc_z(now_utc - timedelta(hours=int(hours)))
+                    cur = self._conn.execute(
+                        "DELETE FROM lightning_strikes WHERE timestamp >= ?;",
+                        (cutoff_iso,),
+                    )
+                    deleted = cur.rowcount
+                else:
+                    cur = self._conn.execute("DELETE FROM lightning_strikes;")
+                    deleted = cur.rowcount
+
+                # Synchronize sensor baseline: clear lingering distance/RFI on recent readings
+                self._conn.execute(
+                    """
+                    UPDATE sensor_readings
+                    SET storm_dist_mi = NULL, rfi_detected = 0
+                    WHERE (model LIKE '%6045%' OR model LIKE '%lightning%')
+                      AND timestamp >= ?;
+                    """,
+                    (format_utc_z(now_utc - timedelta(hours=24)),),
+                )
+
+                logger.info(
+                    "[LIGHTNING] Purged %d strike records (past %s hours) and synchronized sensor baseline.",
+                    deleted,
+                    hours or "all",
+                )
+                return {
+                    "ok": True,
+                    "deleted_strikes": deleted,
+                    "hours": hours,
+                    "cleared_at": format_utc_z(now_utc),
+                }
+
+    # ==========================================================================
+    # OFFICIAL NWS WEATHER ALERTS & WARNINGS ARCHIVE
+    # ==========================================================================
+    def sync_weather_alerts(self, active_alert_dicts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Upsert active NWS alerts into `weather_alerts`, deactivate superseded alerts, and preserve historical archive."""
+        now_utc = datetime.now(timezone.utc)
+        now_iso = format_utc_z(now_utc)
+        with self._lock:
+            if self._conn is None:
+                return {"active_count": 0, "deactivated_count": 0}
+            with self._conn:
+                active_ids: set[str] = set()
+                for a in active_alert_dicts:
+                    alert_id = str(a.get("alert_id") or a.get("id") or "").strip()
+                    if not alert_id:
+                        continue
+                    active_ids.add(alert_id)
+                    event = str(a.get("event") or "Weather Alert")
+                    severity = str(a.get("severity") or "Moderate")
+                    urgency = str(a.get("urgency") or "")
+                    certainty = str(a.get("certainty") or "")
+                    headline = str(a.get("headline") or "")
+                    description = str(a.get("description") or "")
+                    instruction = str(a.get("instruction") or "")
+                    area_desc = str(a.get("area_desc") or a.get("areaDesc") or "")
+                    sender_name = str(a.get("sender_name") or a.get("senderName") or "")
+                    onset = str(a.get("onset") or a.get("effective") or now_iso)
+                    expires = str(a.get("expires") or a.get("ends") or "")
+
+                    self._conn.execute(
+                        """
+                        INSERT INTO weather_alerts (
+                            alert_id, event, severity, urgency, certainty,
+                            headline, description, instruction, area_desc, sender_name,
+                            onset, expires, first_seen, last_seen, is_active
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(alert_id) DO UPDATE SET
+                            event = excluded.event,
+                            severity = excluded.severity,
+                            urgency = excluded.urgency,
+                            certainty = excluded.certainty,
+                            headline = excluded.headline,
+                            description = excluded.description,
+                            instruction = excluded.instruction,
+                            area_desc = excluded.area_desc,
+                            sender_name = excluded.sender_name,
+                            onset = excluded.onset,
+                            expires = excluded.expires,
+                            last_seen = excluded.last_seen,
+                            is_active = 1;
+                        """,
+                        (
+                            alert_id, event, severity, urgency, certainty,
+                            headline, description, instruction, area_desc, sender_name,
+                            onset, expires, now_iso, now_iso,
+                        ),
+                    )
+
+                # Mark alerts no longer present in active_ids OR where expires < now as is_active = 0
+                # Preserve test alerts unless they expired or were cleared
+                cur = self._conn.execute(
+                    """
+                    SELECT id, alert_id, expires FROM weather_alerts
+                    WHERE is_active = 1;
+                    """
+                ).fetchall()
+                deactivated = 0
+                for row in cur:
+                    aid = str(row["alert_id"])
+                    exp_str = str(row["expires"] or "")
+                    exp_dt = parse_utc_iso(exp_str) if exp_str else None
+                    is_expired = (exp_dt is not None and exp_dt < now_utc)
+                    is_missing = (aid not in active_ids and not aid.startswith("test-alert"))
+                    if is_missing or is_expired:
+                        self._conn.execute(
+                            "UPDATE weather_alerts SET is_active = 0 WHERE id = ?;",
+                            (row["id"],),
+                        )
+                        deactivated += 1
+
+                return {
+                    "active_count": len(active_ids),
+                    "deactivated_count": deactivated,
+                }
+
+    def get_active_weather_alerts(self) -> list[dict[str, Any]]:
+        """Return all currently active NWS alerts ordered by severity and onset."""
+        now_utc = datetime.now(timezone.utc)
+        with self._lock:
+            if self._conn is None:
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT * FROM weather_alerts
+                WHERE is_active = 1
+                ORDER BY
+                    CASE severity
+                        WHEN 'Extreme' THEN 1
+                        WHEN 'Severe' THEN 2
+                        WHEN 'Moderate' THEN 3
+                        ELSE 4
+                    END,
+                    onset DESC;
+                """
+            ).fetchall()
+            active: list[dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                # Auto-check expiration
+                exp_dt = parse_utc_iso(str(d.get("expires") or ""))
+                if exp_dt is not None and exp_dt < now_utc:
+                    continue
+                active.append(d)
+            return active
+
+    def get_weather_alerts_history(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return past logged weather alerts archived in SQLite."""
+        with self._lock:
+            if self._conn is None:
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT * FROM weather_alerts
+                ORDER BY onset DESC, id DESC
+                LIMIT ?;
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def inject_test_alert(self, sample: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Inject a simulated NWS alert into SQLite to test dashboard banners, voice reader, and calendar."""
+        now_utc = datetime.now(timezone.utc)
+        now_iso = format_utc_z(now_utc)
+        exp_iso = format_utc_z(now_utc + timedelta(hours=4))
+        alert_id = f"test-alert-{int(now_utc.timestamp())}"
+        sample = sample or {}
+        event = sample.get("event", "Severe Thunderstorm Watch")
+        severity = sample.get("severity", "Severe")
+        headline = sample.get(
+            "headline",
+            f"{event} in effect until {format_utc_z(now_utc + timedelta(hours=4))[11:16]} UTC for regional area",
+        )
+        desc = sample.get(
+            "description",
+            "THE NATIONAL WEATHER SERVICE HAS ISSUED A SEVERE THUNDERSTORM WATCH IN EFFECT UNTIL 4 HOURS FROM NOW. "
+            "HAIL TO 1.5 INCHES IN DIAMETER, WIND GUSTS TO 65 MPH, AND FREQUENT DANGEROUS LIGHTNING ARE POSSIBLE.",
+        )
+        instruction = sample.get(
+            "instruction",
+            "PRECAUTIONARY/PREPAREDNESS ACTIONS... REMAIN ALERT FOR APPROACHING STORMS. "
+            "MOVE TO AN INTERIOR ROOM ON THE LOWEST FLOOR OF A STURDY BUILDING IF A WARNING IS ISSUED.",
+        )
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database is closed.")
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO weather_alerts (
+                        alert_id, event, severity, urgency, certainty,
+                        headline, description, instruction, area_desc, sender_name,
+                        onset, expires, first_seen, last_seen, is_active
+                    ) VALUES (?, ?, ?, 'Immediate', 'Observed', ?, ?, ?, 'SkyScry Telemetry Grid', 'NWS Test Office', ?, ?, ?, ?, 1);
+                    """,
+                    (alert_id, event, severity, headline, desc, instruction, now_iso, exp_iso, now_iso, now_iso),
+                )
+        return {
+            "ok": True,
+            "alert_id": alert_id,
+            "event": event,
+            "severity": severity,
+            "headline": headline,
+            "description": desc,
+            "instruction": instruction,
+            "onset": now_iso,
+            "expires": exp_iso,
+            "is_active": 1,
+        }
+
+    def clear_test_alerts(self) -> int:
+        """Clear all simulated test alerts from SQLite."""
+        with self._lock:
+            if self._conn is None:
+                return 0
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM weather_alerts WHERE alert_id LIKE 'test-alert%';"
+                )
+                return cur.rowcount
 
     def upsert_learned_weather_model(self, month_rows: list[dict[str, Any]]) -> int:
         """Persist 12-month learned seasonal normals and pressure-condition thresholds into `learned_weather_model`."""
@@ -4074,6 +4548,7 @@ class WeatherDatabase:
             "nowcast": nowcast_trajectory,
             "reaffirmation": feedback_summary,
             "lightning": lightning_telemetry,
+            "active_alerts": self.get_active_weather_alerts(),
             "barometer": baro,
             "outdoor": outdoor_dict,
             "indoor": {

@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.27)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.29)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.27 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.29 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -178,6 +178,7 @@ def create_app(
 
     eff_pin, eff_ro = _resolve_security_settings(admin_pin, read_only_public)
     security_mgr = SecurityManager(db=db, fallback_pin=eff_pin, read_only_public=eff_ro)
+    app.security_mgr = security_mgr  # type: ignore[attr-defined]
 
     # Persistent 32-byte cryptographic secret_signing_key for Flask HttpOnly, SameSite='Lax' session tokens
     app.secret_key = security_mgr.ensure_secret_signing_key()
@@ -191,6 +192,8 @@ def create_app(
 
     reference_svc = ref_service or ReferenceWeatherService(db=db)
     nws_svc = nws_service or NWSWeatherService(db=db)
+    if hasattr(db, "set_nws_service"):
+        db.set_nws_service(nws_svc)
     climatology_engine = ClimatologyEngine(db=db)
     start_monotonic = time.monotonic()
     started_at_iso = format_utc_z(datetime.now(timezone.utc))
@@ -659,6 +662,45 @@ def create_app(
         """Return AcuRite 06045M Lightning Detector telemetry, strike counts (15m/1h/24h), distance rings, and RFI warning."""
         telemetry = db.get_lightning_telemetry()
         return jsonify({"ok": True, **telemetry})
+
+    @app.route("/api/lightning/clear", methods=["POST"])
+    def api_lightning_clear() -> Response:
+        """Purge false, unconfirmed, or simulated test strikes from the 24h counter and reset the sensor baseline."""
+        body = request.get_json(silent=True) or {}
+        hours_raw = body.get("hours", request.args.get("hours", 24))
+        try:
+            hours = int(hours_raw) if hours_raw is not None else 24
+        except (ValueError, TypeError):
+            hours = 24
+        result = db.clear_lightning_strikes(hours=hours)
+        return jsonify(result)
+
+    @app.route("/api/alerts", methods=["GET"])
+    def api_alerts() -> Response:
+        """Return active NWS weather alerts, archived historical alert bulletins, and configured NWR stream URL."""
+        active = db.get_active_weather_alerts()
+        history = db.get_weather_alerts_history(limit=50)
+        nwr_stream_url = db.get_setting("nwr_stream_url", "")
+        return jsonify(
+            {
+                "ok": True,
+                "active_alerts": active,
+                "recent_history": history,
+                "nwr_stream_url": nwr_stream_url,
+            }
+        )
+
+    @app.route("/api/alerts/test", methods=["POST"])
+    def api_alerts_test() -> Response:
+        """Inject or clear a simulated NWS weather alert to test dashboard banners, voice reader, and calendar ribbons."""
+        body = request.get_json(silent=True) or {}
+        action = str(body.get("action") or "simulate").strip().lower()
+        if action == "clear":
+            cleared_cnt = db.clear_test_alerts()
+            return jsonify({"ok": True, "action": "clear", "cleared_count": cleared_cnt})
+        else:
+            alert_obj = db.inject_test_alert(sample=body.get("alert"))
+            return jsonify({"ok": True, "action": "simulate", "alert": alert_obj})
 
     @app.route("/api/forecast/feedback", methods=["GET", "POST"])
     def api_forecast_feedback() -> tuple[Response, int] | Response:

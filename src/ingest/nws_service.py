@@ -118,6 +118,35 @@ class NWSWeatherService:
             self._cache = None
             self._cache_time = 0.0
 
+    def get_current_pop_percent(self) -> Optional[int]:
+        """Return cached current/upcoming probability of precipitation (PoP %) from NWS forecast."""
+        with self._lock:
+            if not self._cache:
+                return None
+            alerts = self._cache.get("alerts") or []
+            for alert in alerts:
+                event = str(alert.get("event") or "").lower()
+                if "thunderstorm" in event or "tornado" in event or "severe" in event:
+                    return 80
+
+            periods = self._cache.get("forecast_periods") or self._cache.get("forecast") or []
+            if periods and isinstance(periods[0], dict):
+                p0 = periods[0]
+                pop_val = p0.get("pop_percent")
+                if pop_val is None:
+                    pop_val = p0.get("pop_pct")
+                if pop_val is not None:
+                    try:
+                        return int(round(float(pop_val)))
+                    except (ValueError, TypeError):
+                        pass
+                short_f = str(p0.get("short_forecast") or "").lower()
+                if "thunder" in short_f or "storm" in short_f:
+                    return 60
+                if "rain" in short_f or "shower" in short_f:
+                    return 40
+        return None
+
     def geocode_city_state(self, query: str, count: int = 10, timeout: float = 8.0) -> list[dict[str, Any]]:
         """Resolve any City, State/Province/Country or postal query into latitude, longitude, elevation_m, and display_name via Open-Meteo Geocoding API (with Nominatim fallback)."""
         cleaned = str(query or "").strip()
@@ -827,25 +856,39 @@ class NWSWeatherService:
             alerts_url = f"{NWS_BASE_URL}/alerts/active?point={lat_str},{lon_str}"
             alerts_data = self._http_get_json(alerts_url)
             a_features = alerts_data.get("features") if isinstance(alerts_data.get("features"), list) else []
-            for a_feat in a_features[:8]:
+            for a_feat in a_features[:12]:
                 if not isinstance(a_feat, dict):
                     continue
                 ap = a_feat.get("properties") if isinstance(a_feat.get("properties"), dict) else {}
+                a_id = str(ap.get("id") or a_feat.get("id") or "").strip()
+                if not a_id:
+                    continue
+                a_onset = ap.get("onset") or ap.get("effective") or ap.get("sent")
+                a_expires = ap.get("ends") or ap.get("expires")
                 alerts_list.append(
                     {
-                        "id": str(ap.get("id") or ""),
+                        "id": a_id,
+                        "alert_id": a_id,
                         "event": str(ap.get("event") or "Weather Advisory"),
                         "headline": str(ap.get("headline") or ap.get("event") or ""),
                         "severity": str(ap.get("severity") or "Moderate"),
                         "urgency": str(ap.get("urgency") or ""),
                         "certainty": str(ap.get("certainty") or ""),
                         "area_desc": str(ap.get("areaDesc") or ""),
-                        "effective": ap.get("effective"),
-                        "expires": ap.get("expires"),
-                        "description": str(ap.get("description") or "")[:900],
-                        "instruction": str(ap.get("instruction") or "")[:500],
+                        "sender_name": str(ap.get("senderName") or ""),
+                        "onset": a_onset,
+                        "effective": a_onset,
+                        "expires": a_expires,
+                        "description": str(ap.get("description") or ""),
+                        "instruction": str(ap.get("instruction") or ""),
                     }
                 )
+            # Persist alerts to SQLite archive & deactivate superseded entries
+            if hasattr(self.db, "sync_weather_alerts"):
+                try:
+                    self.db.sync_weather_alerts(alerts_list)
+                except Exception as exc:
+                    logger.debug("Error syncing weather alerts to SQLite: %s", exc)
         except Exception as exc:
             logger.debug("NWS active alerts fetch warning: %s", exc)
 

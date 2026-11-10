@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.27)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.29)."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class ClimatologyEngine:
             req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "SkyScry/0.0.27 (https://github.com/Cave404/SkyScry)",
+                    "User-Agent": "SkyScry/0.0.29 (https://github.com/Cave404/SkyScry)",
                     "Accept": "application/json",
                 },
             )
@@ -1052,10 +1052,53 @@ class ClimatologyEngine:
                 wk_days[c_start]["combo"] = None
             c_start = c_end + 1
 
+        # Consecutive NWS Weather Alert Ribbons across week columns
+        alert_ribbons: list[dict[str, Any]] = []
+        a_start = 0
+        while a_start < len(wk_days):
+            day_alerts = wk_days[a_start].get("alerts") or []
+            if day_alerts:
+                top_alert = day_alerts[0]
+                ev = top_alert.get("event") or "Weather Alert"
+                sev = top_alert.get("severity") or "Moderate"
+                a_end = a_start
+                while a_end + 1 < len(wk_days):
+                    next_alerts = wk_days[a_end + 1].get("alerts") or []
+                    if next_alerts and next_alerts[0].get("event") == ev:
+                        a_end += 1
+                    else:
+                        break
+                span_len = a_end - a_start + 1
+                sev_lower = str(sev).lower()
+                ev_lower = str(ev).lower()
+                if "extreme" in sev_lower or "warning" in ev_lower or "severe" in sev_lower:
+                    tone = "crimson"
+                elif "watch" in ev_lower or "moderate" in sev_lower:
+                    tone = "amber"
+                else:
+                    tone = "cyan"
+                alert_ribbon_info = {
+                    "start_col": a_start + leading_slots,
+                    "end_col": a_end + leading_slots,
+                    "span": span_len,
+                    "event": ev,
+                    "severity": sev,
+                    "tone": tone,
+                    "label": f"⚠ {ev}" if span_len == 1 else f"⚠ {ev} ({span_len} Days)",
+                    "headline": top_alert.get("headline") or ev,
+                    "start_date": wk_days[a_start].get("date"),
+                    "end_date": wk_days[a_end].get("date"),
+                }
+                alert_ribbons.append(alert_ribbon_info)
+                a_start = a_end + 1
+            else:
+                a_start += 1
+
         return {
             "week_index": week_idx,
             "days": wk_days,
             "combos": combos,
+            "alert_ribbons": alert_ribbons,
             "leading_empty_slots": leading_slots,
         }
 
@@ -1101,10 +1144,11 @@ class ClimatologyEngine:
             except Exception:
                 pass
 
-        # 1. Query SQLite `daily_summaries` + `sensor_readings` + `lightning_strikes` for `[grid_start_str, grid_end_str]`
+        # 1. Query SQLite `daily_summaries` + `sensor_readings` + `lightning_strikes` + `weather_alerts` for `[grid_start_str, grid_end_str]`
         summaries_by_date: dict[str, dict[str, Any]] = {}
         rf_extra_by_date: dict[str, dict[str, Any]] = {}
         strikes_by_date: dict[str, int] = {}
+        alerts_by_date: dict[str, list[dict[str, Any]]] = {}
 
         if getattr(self.db, "_conn", None) is not None:
             with self.db._lock:
@@ -1148,12 +1192,35 @@ class ClimatologyEngine:
                     FROM lightning_strikes
                     WHERE SUBSTR(timestamp, 1, 10) BETWEEN ? AND ?
                       AND COALESCE(rfi, 0) = 0
+                      AND COALESCE(confirmed, 1) = 1
                     GROUP BY SUBSTR(timestamp, 1, 10);
                     """,
                     (grid_start_str, grid_end_str),
                 ).fetchall()
                 for r in rows_lt:
                     strikes_by_date[str(r["date_str"])] = int(r["total_strikes"] or 0)
+
+                try:
+                    alert_rows = self.db._conn.execute(
+                        """
+                        SELECT alert_id, event, severity, headline, description, instruction, onset, expires
+                        FROM weather_alerts
+                        WHERE SUBSTR(onset, 1, 10) <= ? AND (expires = '' OR SUBSTR(expires, 1, 10) >= ?);
+                        """,
+                        (grid_end_str, grid_start_str),
+                    ).fetchall()
+                    for ar in alert_rows:
+                        a_dict = dict(ar)
+                        on_s = str(ar["onset"] or "")[:10]
+                        exp_s = str(ar["expires"] or "")[:10] if ar["expires"] else on_s
+                        for gd in all_grid_dates:
+                            gd_iso = gd.isoformat()
+                            if on_s <= gd_iso <= exp_s:
+                                if gd_iso not in alerts_by_date:
+                                    alerts_by_date[gd_iso] = []
+                                alerts_by_date[gd_iso].append(a_dict)
+                except Exception as exc:
+                    logger.debug("Calendar weather_alerts query warning: %s", exc)
 
         # If any past dates in the grid lack daily_summaries, fetch Open-Meteo archive for the missing past window
         past_grid_dates = [d.isoformat() for d in all_grid_dates if d <= today_date]
@@ -1397,6 +1464,7 @@ class ClimatologyEngine:
                         "cdd": cdd,
                         "condition_type": cond_type,
                         "condition_label": cond_label,
+                        "alerts": alerts_by_date.get(d_str, []),
                     }
                 )
             else:
@@ -1587,6 +1655,7 @@ class ClimatologyEngine:
                         "condition_label": cond_label,
                         "day_summary": day_summary,
                         "night_summary": night_summary,
+                        "alerts": alerts_by_date.get(d_str, []),
                     }
                 )
 
@@ -1710,7 +1779,7 @@ class ClimatologyEngine:
             url = f"https://api.open-meteo.com/v1/forecast?{params}"
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.27 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.29 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))

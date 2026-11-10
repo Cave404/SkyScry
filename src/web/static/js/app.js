@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.27 — 7-View Frontend Controller
+ * SkyScry v0.0.29 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -266,6 +266,8 @@
   const elOvLtLastTime = document.getElementById("ov-lt-last-time");
   const elOvLtLastDist = document.getElementById("ov-lt-last-dist");
   const elBtnOvSimulateStrike = document.getElementById("btn-ov-simulate-strike");
+  const elBtnOvClearStrikes = document.getElementById("btn-ov-clear-strikes");
+  const elOvLightningNoiseBadge = document.getElementById("ov-lightning-noise-badge");
 
   // Inline Ground-Truth Check-In Bar DOM
   const elOvCheckinBar = document.getElementById("ov-checkin-bar");
@@ -347,6 +349,26 @@
   const elNwsForecastOfficeLabel = document.getElementById("nws-forecast-office-label");
   const elNwsForecastGrid = document.getElementById("nws-forecast-grid");
 
+  // View 5 & Overview: NOAA Weather Radio & NWS Alerts DOM
+  const elDashboardAlertBanner = document.getElementById("dashboard-alert-banner");
+  const elNwrBroadcastCard = document.getElementById("nwr-broadcast-card");
+  const elNwrStreamStatus = document.getElementById("nwr-stream-status");
+  const elNwrPlaybackBadge = document.getElementById("nwr-playback-badge");
+  const elNwrAudioPlayer = document.getElementById("nwr-audio-player");
+  const elBtnNwrToggleStream = document.getElementById("btn-nwr-toggle-stream");
+  const elNwrEqVisualizer = document.getElementById("nwr-eq-visualizer");
+  const elNwrVolumeSlider = document.getElementById("nwr-volume-slider");
+  const elBtnNwrVoiceBroadcast = document.getElementById("btn-nwr-voice-broadcast");
+  const elRadarAlertsSection = document.getElementById("radar-alerts-section");
+  const elBtnRefreshAlerts = document.getElementById("btn-refresh-alerts");
+  const elRadarActiveAlertsContainer = document.getElementById("radar-active-alerts-container");
+  const elRadarAlertsHistoryTbody = document.getElementById("radar-alerts-history-tbody");
+
+  let isNwrStreamPlaying = false;
+  let isVoiceBroadcasting = false;
+  let isSimulatedAlertActive = false;
+  let cachedAlertsData = null;
+
   // View 6: Settings DOM
   const elSettingsLockStateBadge = document.getElementById("settings-lock-state-badge");
   const elFormChangePassword = document.getElementById("form-change-password");
@@ -402,6 +424,9 @@
   const elSetAutoSyncTime = document.getElementById("set-auto-sync-time");
   const elBtnSyncClockNow = document.getElementById("btn-sync-clock-now");
   const elBtnSetSimulateStrike = document.getElementById("btn-set-simulate-strike");
+  const elBtnSetClearStrikes = document.getElementById("btn-set-clear-strikes");
+  const elBtnSetSimulateAlert = document.getElementById("btn-set-simulate-alert");
+  const elSetNwrStreamUrl = document.getElementById("set-nwr-stream-url");
   const elSystemConsoleStatus = document.getElementById("system-console-status");
   const elSystemConsoleLog = document.getElementById("system-console-log");
 
@@ -1469,7 +1494,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.27"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.29"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -2154,6 +2179,9 @@
 
     // Card C: Lightning & Storm Proximity (AcuRite 06045M)
     renderLightningCard(simulatedLightningState || data.lightning || {});
+
+    // Active NWS Alert Banner (High-Visibility Overview Dashboard Header)
+    renderDashboardAlertBanner(data.active_alerts || []);
   }
 
   // ==========================================================================
@@ -2480,6 +2508,448 @@
           })
           .join("");
       }
+    }
+
+    fetchAndRenderAlerts().catch((err) => console.error("Alerts sync error:", err));
+  }
+
+  // ==========================================================================
+  // NWS ACTIVE ALERTS, NOAA WEATHER RADIO (NWR) & SPEECH BROADCASTER ENGINE
+  // ==========================================================================
+  function renderDashboardAlertBanner(activeAlerts) {
+    if (!elDashboardAlertBanner) return;
+    const alerts = Array.isArray(activeAlerts) ? activeAlerts : [];
+    if (alerts.length === 0) {
+      elDashboardAlertBanner.style.display = "none";
+      elDashboardAlertBanner.innerHTML = "";
+      return;
+    }
+
+    // Sort by severity: Extreme (4) > Severe (3) > Moderate (2) > Minor (1)
+    const sevRank = { extreme: 4, severe: 3, moderate: 2, minor: 1 };
+    const sorted = [...alerts].sort((a, b) => {
+      const rA = sevRank[(a.severity || "").toLowerCase()] || 0;
+      const rB = sevRank[(b.severity || "").toLowerCase()] || 0;
+      return rB - rA;
+    });
+    const top = sorted[0];
+
+    const sev = (top.severity || "").toLowerCase();
+    const ev = (top.event || "").toLowerCase();
+    let toneClass = "alert-advisory";
+    let icon = "📢";
+
+    if (sev === "extreme" || sev === "severe" || ev.includes("warning")) {
+      toneClass = "alert-warning";
+      icon = "🚨";
+    } else if (sev === "moderate" || ev.includes("watch")) {
+      toneClass = "alert-watch";
+      icon = "⚡";
+    }
+
+    const expiresStr = top.expires ? `Until ${formatLocalShortTime(top.expires, true)}` : "Active Now";
+    const moreCount = alerts.length - 1;
+
+    elDashboardAlertBanner.className = `dashboard-alert-banner ${toneClass}`;
+    elDashboardAlertBanner.style.display = "flex";
+    elDashboardAlertBanner.innerHTML = `
+      <div class="alert-banner-left">
+        <span class="alert-banner-icon">${icon}</span>
+        <div class="alert-banner-content">
+          <div class="alert-banner-title-row">
+            <span class="alert-banner-event">${escapeHtml(top.event || "Active Weather Alert")}</span>
+            <span class="alert-banner-expires">&bull; ${escapeHtml(expiresStr)}</span>
+            ${moreCount > 0 ? `<span class="badge badge-batt-low">+${moreCount} more active</span>` : ""}
+          </div>
+          <div class="alert-banner-headline" title="${escapeHtml(top.headline || top.event || "")}">
+            ${escapeHtml(top.headline || top.event || "Official National Weather Service alert in effect.")}
+          </div>
+        </div>
+      </div>
+      <div class="alert-banner-actions">
+        <button type="button" class="btn btn-secondary btn-sm btn-alert-action" id="btn-dash-alert-listen" title="Listen to NOAA Weather Radio alert readout">
+          🔊 Listen Aloud
+        </button>
+        <button type="button" class="btn btn-primary btn-sm btn-alert-action" id="btn-dash-alert-view">
+          View Full NWS Bulletin &rarr;
+        </button>
+      </div>
+    `;
+
+    const btnListen = elDashboardAlertBanner.querySelector("#btn-dash-alert-listen");
+    if (btnListen) {
+      btnListen.addEventListener("click", () => speakAlertBulletin(top));
+    }
+    const btnView = elDashboardAlertBanner.querySelector("#btn-dash-alert-view");
+    if (btnView) {
+      btnView.addEventListener("click", () => {
+        switchTab("radar");
+        setTimeout(() => {
+          if (elRadarAlertsSection) {
+            elRadarAlertsSection.scrollIntoView({ behavior: "smooth" });
+          }
+        }, 150);
+      });
+    }
+  }
+
+  async function fetchAndRenderAlerts() {
+    try {
+      const res = await fetch("/api/alerts", { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      cachedAlertsData = data;
+
+      if (data.nwr_stream_url && !userSettings.nwr_stream_url) {
+        userSettings.nwr_stream_url = data.nwr_stream_url;
+      }
+
+      renderRadarAlerts(data.active_alerts || [], data.recent_history || []);
+    } catch (err) {
+      console.error("Failed to fetch alerts:", err);
+      if (elRadarActiveAlertsContainer) {
+        elRadarActiveAlertsContainer.innerHTML = `<div class="text-muted">Error loading official alerts: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  function renderRadarAlerts(activeAlerts, historyAlerts) {
+    if (!elRadarActiveAlertsContainer) return;
+
+    if (!activeAlerts || activeAlerts.length === 0) {
+      elRadarActiveAlertsContainer.innerHTML = `
+        <div class="nws-alert-calm-badge">
+          <span>✅</span>
+          <span>No Active Weather Warnings, Watches, or Advisories in Effect for Your Station Area.</span>
+        </div>
+      `;
+    } else {
+      elRadarActiveAlertsContainer.innerHTML = activeAlerts
+        .map((a) => {
+          const sev = (a.severity || "").toLowerCase();
+          let sevClass = "sev-minor";
+          if (sev === "extreme") sevClass = "sev-extreme";
+          else if (sev === "severe") sevClass = "sev-severe";
+          else if (sev === "moderate") sevClass = "sev-moderate";
+
+          const onsetStr = a.onset ? formatLocalShortTime(a.onset, true) : "--";
+          const expiresStr = a.expires ? formatLocalShortTime(a.expires, true) : "--";
+
+          return `
+            <div class="nws-alert-card ${sevClass}">
+              <div class="nws-alert-top">
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <h4 style="margin: 0; font-size: 15px; font-weight: 700; color: #f8fafc;">⚠️ ${escapeHtml(a.event)}</h4>
+                  <span class="badge ${sevClass === "sev-extreme" || sevClass === "sev-severe" ? "badge-batt-low" : "badge-amber"}">${escapeHtml(a.severity || "Alert")}</span>
+                  ${a.urgency ? `<span class="badge">${escapeHtml(a.urgency)}</span>` : ""}
+                  ${a.certainty ? `<span class="badge">${escapeHtml(a.certainty)}</span>` : ""}
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm btn-read-alert-aloud" data-alert-id="${escapeHtml(a.alert_id || "")}" title="Read official bulletin aloud">
+                  🔊 Read Bulletin
+                </button>
+              </div>
+              <div class="nws-alert-headline">${escapeHtml(a.headline || a.event)}</div>
+              <div class="nws-alert-meta">
+                <strong>Area:</strong> ${escapeHtml(a.area_desc || "Station Region")} &bull; 
+                <strong>Issued By:</strong> ${escapeHtml(a.sender_name || "National Weather Service")} &bull; 
+                <strong>Effective:</strong> ${escapeHtml(onsetStr)} &rarr; ${escapeHtml(expiresStr)}
+              </div>
+              ${a.instruction ? `
+                <div class="nws-alert-instructions">
+                  <strong>Safety Instructions:</strong> ${escapeHtml(a.instruction)}
+                </div>` : ""}
+              ${a.description ? `
+                <details style="margin-top: 10px;">
+                  <summary style="cursor: pointer; color: #38bdf8; font-size: 13px; font-weight: 600;">View Official Full Bulletin Text</summary>
+                  <pre class="nws-alert-desc">${escapeHtml(a.description)}</pre>
+                </details>` : ""}
+            </div>
+          `;
+        })
+        .join("");
+
+      elRadarActiveAlertsContainer.querySelectorAll(".btn-read-alert-aloud").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const alertId = btn.getAttribute("data-alert-id");
+          const targetAlert = activeAlerts.find((al) => al.alert_id === alertId);
+          if (targetAlert) speakAlertBulletin(targetAlert);
+        });
+      });
+    }
+
+    if (elRadarAlertsHistoryTbody) {
+      if (!historyAlerts || historyAlerts.length === 0) {
+        elRadarAlertsHistoryTbody.innerHTML = `
+          <tr><td colspan="6" class="text-center text-muted">No historical weather alerts recorded yet.</td></tr>
+        `;
+      } else {
+        elRadarAlertsHistoryTbody.innerHTML = historyAlerts
+          .map((h) => {
+            const onsetStr = h.onset ? formatLocalShortTime(h.onset, true) : (h.first_seen ? formatLocalShortTime(h.first_seen, true) : "--");
+            const expiresStr = h.expires ? formatLocalShortTime(h.expires, true) : "--";
+            const isAct = Boolean(h.is_active);
+            const sev = (h.severity || "").toLowerCase();
+            const sevBadge = sev === "extreme" || sev === "severe" ? "badge-batt-low" : "badge-amber";
+
+            return `
+              <tr>
+                <td class="mono" style="font-size: 12px;">${escapeHtml(onsetStr)}</td>
+                <td><strong>${escapeHtml(h.event)}</strong></td>
+                <td><span class="badge ${sevBadge}">${escapeHtml(h.severity || "--")}</span></td>
+                <td class="mono" style="font-size: 12px;">${escapeHtml(expiresStr)}</td>
+                <td><span class="badge ${isAct ? "badge-batt-low" : "badge"}">${isAct ? "ACTIVE" : "Expired"}</span></td>
+                <td>
+                  <details>
+                    <summary style="cursor: pointer; color: #38bdf8; font-size: 12px;">Read</summary>
+                    <div style="font-size: 11px; white-space: pre-wrap; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.35); padding: 8px; border-radius: 4px; margin-top: 4px; color: #cbd5e1; min-width: 220px;">
+                      <strong>${escapeHtml(h.headline || h.event)}</strong>\n\n${escapeHtml(h.description || h.instruction || "No bulletin text archived.")}
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+    }
+  }
+
+  // --- Mode A: Live NWR Audio Stream Player ---
+  function updateNwrPlayerUi(playing) {
+    if (elBtnNwrToggleStream) {
+      elBtnNwrToggleStream.innerHTML = playing ? "⏸ Pause Live Stream" : "▶ Play Live NWR Stream";
+      elBtnNwrToggleStream.className = playing ? "btn btn-danger btn-sm" : "btn btn-primary btn-sm";
+    }
+    if (elNwrEqVisualizer) {
+      elNwrEqVisualizer.classList.toggle("is-playing", playing);
+    }
+    if (elNwrPlaybackBadge) {
+      if (playing) {
+        elNwrPlaybackBadge.textContent = "🔴 ON AIR (STREAM)";
+        elNwrPlaybackBadge.className = "badge badge-batt-low";
+      } else if (!isVoiceBroadcasting) {
+        elNwrPlaybackBadge.textContent = "Standby";
+        elNwrPlaybackBadge.className = "badge";
+      }
+    }
+    if (elNwrStreamStatus) {
+      elNwrStreamStatus.textContent = playing
+        ? `Live Stream: ${userSettings.nwr_stream_url || "Icecast Audio"}`
+        : "Dual-Mode Audio Console &bull; Live Stream / Speech Synthesizer";
+    }
+  }
+
+  function handleToggleNwrStream() {
+    const streamUrl = (userSettings.nwr_stream_url || (elSetNwrStreamUrl ? elSetNwrStreamUrl.value : "") || "").trim();
+    if (!streamUrl) {
+      showToast("No NWR Stream URL configured. Add an Icecast / MP3 / M3U8 feed in Settings or use Voice Broadcast.", "info");
+      return;
+    }
+    if (!elNwrAudioPlayer) return;
+
+    if (isNwrStreamPlaying) {
+      elNwrAudioPlayer.pause();
+      elNwrAudioPlayer.src = "";
+      isNwrStreamPlaying = false;
+      updateNwrPlayerUi(false);
+    } else {
+      if (window.speechSynthesis && window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        updateVoiceBroadcastButton(false);
+      }
+      elNwrAudioPlayer.src = streamUrl;
+      elNwrAudioPlayer.load();
+      elNwrAudioPlayer.play().then(() => {
+        isNwrStreamPlaying = true;
+        updateNwrPlayerUi(true);
+      }).catch((err) => {
+        console.error("Failed to play NWR audio stream:", err);
+        showToast("Cannot connect to NWR stream. Check URL or CORS settings.", "error");
+        isNwrStreamPlaying = false;
+        updateNwrPlayerUi(false);
+      });
+    }
+  }
+
+  function handleNwrVolumeChange(evt) {
+    if (elNwrAudioPlayer && evt && evt.target) {
+      elNwrAudioPlayer.volume = Math.max(0, Math.min(1, Number(evt.target.value) / 100));
+    }
+  }
+
+  // --- Mode B: NOAA Weather Radio Voice Broadcaster (Native SpeechSynthesis) ---
+  function updateVoiceBroadcastButton(speaking) {
+    isVoiceBroadcasting = speaking;
+    if (elBtnNwrVoiceBroadcast) {
+      elBtnNwrVoiceBroadcast.innerHTML = speaking
+        ? "⏹ Stop Voice Broadcast"
+        : "🗣️ Broadcast Current Weather & Alerts";
+      elBtnNwrVoiceBroadcast.className = speaking ? "btn btn-danger btn-sm" : "btn btn-secondary btn-sm";
+    }
+    if (elNwrPlaybackBadge) {
+      if (speaking) {
+        elNwrPlaybackBadge.textContent = "🎙️ SYNTHESIZER ON AIR";
+        elNwrPlaybackBadge.className = "badge badge-batt-low";
+      } else if (!isNwrStreamPlaying) {
+        elNwrPlaybackBadge.textContent = "Standby";
+        elNwrPlaybackBadge.className = "badge";
+      }
+    }
+    if (elNwrEqVisualizer) {
+      elNwrEqVisualizer.classList.toggle("is-playing", speaking || isNwrStreamPlaying);
+    }
+  }
+
+  function speakText(text) {
+    if (!("speechSynthesis" in window)) {
+      showToast("Speech synthesis not supported on this browser.", "error");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    if (!text || !text.trim()) return;
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95;
+    utterance.pitch = 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    const engVoice = voices.find(
+      (v) => v.lang && (v.lang.startsWith("en-US") || v.lang.startsWith("en-GB") || v.lang.startsWith("en"))
+    );
+    if (engVoice) utterance.voice = engVoice;
+
+    utterance.onstart = () => updateVoiceBroadcastButton(true);
+    utterance.onend = () => updateVoiceBroadcastButton(false);
+    utterance.onerror = () => updateVoiceBroadcastButton(false);
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function speakAlertBulletin(alert) {
+    if (!alert) return;
+    const parts = [];
+    parts.push(`National Weather Service active alert: ${alert.event}.`);
+    if (alert.headline) parts.push(`${alert.headline}.`);
+    if (alert.instruction) {
+      parts.push(`Safety instructions: ${alert.instruction}.`);
+    } else if (alert.description) {
+      const shortDesc = alert.description.split("\n\n")[0] || alert.description.slice(0, 240);
+      parts.push(shortDesc);
+    }
+    speakText(parts.join(" "));
+  }
+
+  async function broadcastNWRWeatherReport() {
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      updateVoiceBroadcastButton(false);
+      return;
+    }
+    if (isNwrStreamPlaying && elNwrAudioPlayer) {
+      elNwrAudioPlayer.pause();
+      isNwrStreamPlaying = false;
+      updateNwrPlayerUi(false);
+    }
+
+    showToast("Generating NOAA Weather Radio station broadcast...", "info");
+
+    let overview = null;
+    try {
+      const res = await fetch("/api/overview", { headers: getAuthHeaders() });
+      if (res.ok) overview = await res.json();
+    } catch (_) {}
+
+    let nwsData = null;
+    try {
+      const res = await fetch("/api/nws", { headers: getAuthHeaders() });
+      if (res.ok) nwsData = await res.json();
+    } catch (_) {}
+
+    const out = overview?.outdoor || {};
+    const baro = overview?.barometer || {};
+    const activeAlerts = overview?.active_alerts || [];
+    const stName = userSettings.station_name || "SkyScry Weather Station";
+
+    const script = [];
+    script.push(`This is the automated broadcast from ${stName}.`);
+
+    if (activeAlerts.length > 0) {
+      script.push(`Special Weather Warning: There are ${activeAlerts.length} active National Weather Service alert${activeAlerts.length === 1 ? "" : "s"} in effect.`);
+      for (const a of activeAlerts) {
+        script.push(`${a.event}. ${a.headline || ""}.`);
+        if (a.instruction) script.push(a.instruction);
+      }
+    } else {
+      script.push("There are currently no active warnings, watches, or advisories in effect for this station area.");
+    }
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const tempVal = out.temp_f !== null && out.temp_f !== undefined ? Number(out.temp_f).toFixed(1) : null;
+    if (tempVal !== null) {
+      script.push(`At ${timeStr}, the local outdoor temperature is ${tempVal} degrees Fahrenheit.`);
+    }
+    if (out.humidity !== null && out.humidity !== undefined) {
+      const dewVal = out.dew_point_f !== null && out.dew_point_f !== undefined ? Number(out.dew_point_f).toFixed(1) : null;
+      script.push(`Relative humidity is ${Math.round(out.humidity)} percent${dewVal !== null ? `, with a dew point of ${dewVal} degrees` : ""}.`);
+    }
+    if (baro.pressure_inhg) {
+      const trendText = baro.trend_label || "steady";
+      script.push(`The barometric pressure is ${Number(baro.pressure_inhg).toFixed(2)} inches and ${trendText}.`);
+    }
+    if (out.wind_speed_mph !== null && out.wind_speed_mph !== undefined) {
+      const wSpeed = Number(out.wind_speed_mph);
+      if (wSpeed < 1.0) {
+        script.push("Winds are calm.");
+      } else {
+        script.push(`Winds are from the ${out.wind_cardinal || "variable"} at ${wSpeed.toFixed(0)} miles per hour.`);
+      }
+    }
+
+    const periods = nwsData?.forecast || nwsData?.forecast_periods || [];
+    if (periods.length > 0) {
+      const p0 = periods[0];
+      script.push(`National Weather Service forecast for ${p0.name || "today"}: ${p0.detailedForecast || p0.shortForecast || ""}`);
+    }
+
+    speakText(script.join(" "));
+  }
+
+  async function handleSimulateAlertClick(evt) {
+    if (evt && typeof evt.preventDefault === "function") evt.preventDefault();
+    const action = isSimulatedAlertActive ? "clear" : "simulate";
+    try {
+      const res = await fetch("/api/alerts/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      if (action === "simulate") {
+        isSimulatedAlertActive = true;
+        if (elBtnSetSimulateAlert) {
+          elBtnSetSimulateAlert.innerHTML = "🧹 Clear Test Alert";
+        }
+        appendSystemConsoleLog(
+          "Simulated Test Severe Thunderstorm Warning injected into SQLite weather_alerts.",
+          "TEST"
+        );
+        showToast("Test Severe Thunderstorm Warning injected! Check Overview and Radar tabs.", "success");
+      } else {
+        isSimulatedAlertActive = false;
+        if (elBtnSetSimulateAlert) {
+          elBtnSetSimulateAlert.innerHTML = "🚨 Simulate Test Alert";
+        }
+        appendSystemConsoleLog("Test weather alerts cleared from SQLite.", "CLEARED");
+        showToast("Test alerts cleared.", "info");
+      }
+      await refreshAll(true);
+      fetchAndRenderAlerts().catch(() => {});
+    } catch (err) {
+      console.error("Test alert error:", err);
+      showToast(err.message || "Failed to trigger test alert.", "error");
     }
   }
 
@@ -3067,6 +3537,16 @@
     if (elOvLightningRfiBadge) {
       elOvLightningRfiBadge.classList.toggle("hidden", !rfi);
     }
+    const unconfirmedCount = Number(data.unconfirmed_count_24h || 0);
+    if (elOvLightningNoiseBadge) {
+      if (unconfirmedCount > 0 && strikes24h === 0) {
+        elOvLightningNoiseBadge.textContent = `🛡️ Noise Gate (${unconfirmedCount} Filtered)`;
+        elOvLightningNoiseBadge.title = `${unconfirmedCount} isolated pulse(s) filtered as high-pressure EMI/static pops to protect 24h distance rings.`;
+        elOvLightningNoiseBadge.classList.remove("hidden");
+      } else {
+        elOvLightningNoiseBadge.classList.add("hidden");
+      }
+    }
     if (elOvLightningStatusBadge) {
       if (activeStorm) {
         elOvLightningStatusBadge.textContent = "⚡ Storm Active (8s updates)";
@@ -3173,6 +3653,46 @@
       "SIMULATED"
     );
     showToast("Simulated AcuRite 06045M Lightning Rings (Closest: 6 mi, Furthest: 21 mi).");
+  }
+
+  async function handleClearFalseStrikesClick(evt) {
+    if (evt && evt.preventDefault) evt.preventDefault();
+    const btn = (evt && evt.currentTarget) ? evt.currentTarget : elBtnOvClearStrikes;
+    const origHtml = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner-inline"></span> Clearing...`;
+    }
+    simulatedLightningState = null;
+    try {
+      const resp = await fetch("/api/lightning/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hours: 24 }),
+      });
+      const data = await resp.json();
+      appendSystemConsoleLog(
+        `Cleared ${data.deleted_strikes || 0} false/test strike(s) from SQLite. Sensor baseline synchronized.`,
+        "CLEARED"
+      );
+      if (typeof showToast === "function") {
+        showToast("False & test strikes cleared. Sensor baseline reset.", "success");
+      }
+      if (typeof fetchOverviewData === "function") {
+        await fetchOverviewData();
+      }
+    } catch (err) {
+      console.error("Failed to clear false strikes:", err);
+      appendSystemConsoleLog(`Failed to clear false strikes: ${err.message}`, "ERROR");
+      if (typeof showToast === "function") {
+        showToast("Error clearing false strikes.", "error");
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+      }
+    }
   }
 
   async function submitWeatherFeedback(ratingOrCondition, isDirectCondition) {
@@ -3393,6 +3913,7 @@
     if (elSetLongitude && s.longitude !== undefined) elSetLongitude.value = String(s.longitude);
     if (elSetElevation && s.elevation_m !== undefined) elSetElevation.value = String(s.elevation_m);
     if (elSetRadarZoom && s.radar_zoom !== undefined) elSetRadarZoom.value = String(s.radar_zoom);
+    if (elSetNwrStreamUrl && s.nwr_stream_url !== undefined) elSetNwrStreamUrl.value = s.nwr_stream_url || "";
     if (elSetNwsGridReadout) {
       elSetNwsGridReadout.textContent = s.nws_office
         ? `Resolved NWS Grid: WFO ${s.nws_office} (${s.nws_grid_x},${s.nws_grid_y})`
@@ -4750,6 +5271,26 @@
 
     const weeksHtml = weeks
       .map((wk) => {
+        const alertRibbons = wk.alert_ribbons || [];
+        let alertTrackHtml = "";
+        if (alertRibbons.length > 0) {
+          const ribbonsHtml = alertRibbons
+            .map((a) => {
+              const startCol = Math.max(1, Math.min(7, Number(a.start_col || 0) + 1));
+              const spanCols = Math.max(1, Math.min(8 - startCol, Number(a.span || 1)));
+              const toneClass = `tone-${escapeHtml(a.tone || "crimson")}`;
+              return `
+                <div class="cal-alert-ribbon ${toneClass}"
+                     style="grid-column: ${startCol} / span ${spanCols};"
+                     title="${escapeHtml(a.event || 'Weather Alert')}: ${escapeHtml(a.headline || '')}">
+                  <span>⚠️</span>
+                  <span style="overflow: hidden; text-overflow: ellipsis;">${escapeHtml(a.event || 'Alert')}</span>
+                </div>`;
+            })
+            .join("");
+          alertTrackHtml = `<div class="calendar-alert-track">${ribbonsHtml}</div>`;
+        }
+
         const combos = wk.combos || [];
         let comboTrackHtml = "";
         if (combos.length > 0) {
@@ -4866,6 +5407,7 @@
 
         return `
           <div class="calendar-week-block">
+            ${alertTrackHtml}
             ${comboTrackHtml}
             <div class="calendar-week-grid">${emptySlotsHtml}${cellsHtml}</div>
           </div>`;
@@ -5080,7 +5622,43 @@
           </div>`;
       }
 
+      let alertsBoxHtml = "";
+      if (Array.isArray(d.alerts) && d.alerts.length > 0) {
+        alertsBoxHtml = `
+          <div class="cal-modal-alerts-box">
+            <div class="cal-modal-alerts-header">
+              <span>🚨</span>
+              <h4>Official NWS Alerts for this Date (${d.alerts.length})</h4>
+            </div>
+            ${d.alerts
+              .map((al) => {
+                const sev = (al.severity || "moderate").toLowerCase();
+                let sevClass = "severity-minor";
+                if (sev === "extreme" || sev === "severe") sevClass = "severity-severe";
+                else if (sev === "moderate") sevClass = "severity-moderate";
+                return `
+                  <div class="cal-modal-alert-card ${sevClass}">
+                    <div class="cal-modal-alert-event">⚠️ ${escapeHtml(al.event)}</div>
+                    <div class="cal-modal-alert-headline">${escapeHtml(al.headline || al.event)}</div>
+                    <div class="cal-modal-alert-times">
+                      Effective: ${escapeHtml(formatLocalShortTime(al.onset, true) || al.onset || "--")} &rarr; ${escapeHtml(formatLocalShortTime(al.expires, true) || al.expires || "--")}
+                    </div>
+                    ${al.instruction ? `<div class="cal-modal-alert-instructions"><strong>Safety Instructions:</strong> ${escapeHtml(al.instruction)}</div>` : ""}
+                    ${al.description ? `
+                      <details class="cal-modal-alert-details">
+                        <summary>View Official Full Bulletin</summary>
+                        <pre class="cal-modal-alert-text">${escapeHtml(al.description)}</pre>
+                      </details>` : ""}
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+        `;
+      }
+
       elCalModalBody.innerHTML = `
+        ${alertsBoxHtml}
         <div class="cal-modal-dashboard-grid">
           ${card1Html}
           ${card2Html}
@@ -5506,6 +6084,7 @@
         }
       });
       fetchNwsSummary(false).catch((err) => console.error("NWS load error:", err));
+      fetchAndRenderAlerts().catch((err) => console.error("Alerts load error:", err));
     } else if (activeTab === "calendar") {
       fetchAndRenderCalendar(calendarYear, calendarMonth).catch((err) =>
         console.error("Calendar load error:", err)
@@ -5893,10 +6472,12 @@
           longitude: lon,
           elevation_m: elev,
           radar_zoom: elSetRadarZoom ? Number(elSetRadarZoom.value || 7) : 7,
+          nwr_stream_url: elSetNwrStreamUrl ? elSetNwrStreamUrl.value.trim() : "",
         },
         "Location & NWS coordinates saved."
       ).then(() => {
         fetchNwsSummary(true);
+        fetchAndRenderAlerts().catch(() => {});
         initAndRefreshRadarMaps();
       });
     }
@@ -5970,6 +6551,29 @@
     }
     if (elBtnSetSimulateStrike) {
       elBtnSetSimulateStrike.addEventListener("click", triggerSimulatedLightningStrike);
+    }
+    if (elBtnOvClearStrikes) {
+      elBtnOvClearStrikes.addEventListener("click", handleClearFalseStrikesClick);
+    }
+    if (elBtnSetClearStrikes) {
+      elBtnSetClearStrikes.addEventListener("click", handleClearFalseStrikesClick);
+    }
+    if (elBtnSetSimulateAlert) {
+      elBtnSetSimulateAlert.addEventListener("click", handleSimulateAlertClick);
+    }
+    if (elBtnRefreshAlerts) {
+      elBtnRefreshAlerts.addEventListener("click", () => {
+        fetchAndRenderAlerts().then(() => showToast("Official NWS alerts feed refreshed."));
+      });
+    }
+    if (elBtnNwrToggleStream) {
+      elBtnNwrToggleStream.addEventListener("click", handleToggleNwrStream);
+    }
+    if (elNwrVolumeSlider) {
+      elNwrVolumeSlider.addEventListener("input", handleNwrVolumeChange);
+    }
+    if (elBtnNwrVoiceBroadcast) {
+      elBtnNwrVoiceBroadcast.addEventListener("click", broadcastNWRWeatherReport);
     }
     if (elSetBaroWeight && elSetBaroWeightVal) {
       elSetBaroWeight.addEventListener("input", () => {

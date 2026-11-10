@@ -2384,6 +2384,8 @@ code {
 .lightning-card-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 @keyframes strike-ring-pulse {
@@ -5311,5 +5313,445 @@ input[type="password"]:focus {
   }
   .form-row-2 {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ==========================================================================
+   v0.0.29: NWS ALERTS BANNER, NOAA WEATHER RADIO, & CALENDAR ALERT RIBBONS
+   ========================================================================== */
+
+/* 1. Overview Dashboard Active Alert Banner */
+.dashboard-alert-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md, 10px);
+  margin-bottom: 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-alert-banner.alert-warning {
+  background: rgba(153, 27, 27, 0.45);
+  border: 1px solid #ef4444;
+  color: #fee2e2;
+}
+
+.dashboard-alert-banner.alert-watch {
+  background: rgba(180, 83, 9, 0.45);
+  border: 1px solid #f59e0b;
+  color: #fef3c7;
+}
+
+.dashboard-alert-banner.alert-advisory {
+  background: rgba(3, 105, 161, 0.45);
+  border: 1px solid #38bdf8;
+  color: #e0f2fe;
+}
+
+.alert-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+}
+
+.alert-banner-icon {
+  font-size: 26px;
+  line-height: 1;
+  animation: alert-pulse 2s infinite ease-in-out;
+  flex-shrink: 0;
+}
+
+@keyframes alert-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.alert-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.alert-banner-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alert-banner-event {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.alert-banner-expires {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.alert-banner-headline {
+  font-size: 13px;
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.alert-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-alert-action {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+/* 2. NOAA Weather Radio (NWR) Audio Console */
+.nwr-card {
+  background: var(--card-bg, #0f172a);
+  border: 1px solid var(--border-color, #1e293b);
+  border-radius: var(--radius-md, 12px);
+  padding: 16px 20px;
+}
+
+.nwr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.nwr-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nwr-icon {
+  font-size: 24px;
+}
+
+.nwr-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary, #f8fafc);
+}
+
+.nwr-subtext {
+  font-size: 12px;
+}
+
+.nwr-controls-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(51, 65, 85, 0.4);
+  border-radius: 8px;
+}
+
+.nwr-mode-a,
+.nwr-mode-b {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nwr-eq-visualizer {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 20px;
+  padding: 0 4px;
+}
+
+.nwr-eq-visualizer .eq-bar {
+  width: 3px;
+  height: 4px;
+  background: #38bdf8;
+  border-radius: 1px;
+  transition: height 0.15s ease;
+}
+
+.nwr-eq-visualizer.is-playing .eq-bar:nth-child(1) { animation: eq-bounce 0.8s infinite ease-in-out; }
+.nwr-eq-visualizer.is-playing .eq-bar:nth-child(2) { animation: eq-bounce 0.6s infinite ease-in-out 0.1s; }
+.nwr-eq-visualizer.is-playing .eq-bar:nth-child(3) { animation: eq-bounce 1.0s infinite ease-in-out 0.2s; }
+.nwr-eq-visualizer.is-playing .eq-bar:nth-child(4) { animation: eq-bounce 0.7s infinite ease-in-out 0.15s; }
+.nwr-eq-visualizer.is-playing .eq-bar:nth-child(5) { animation: eq-bounce 0.9s infinite ease-in-out 0.25s; }
+
+@keyframes eq-bounce {
+  0%, 100% { height: 4px; }
+  50% { height: 18px; }
+}
+
+.nwr-volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nwr-vol-icon {
+  font-size: 14px;
+  opacity: 0.75;
+}
+
+.nwr-slider {
+  width: 90px;
+  height: 4px;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+/* 3. Official NWS Active Alerts & Archive Cards */
+.radar-alerts-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.nws-alert-card {
+  padding: 16px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  border-left: 4px solid #38bdf8;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.nws-alert-card.sev-extreme,
+.nws-alert-card.sev-severe {
+  border-left-color: #ef4444;
+  background: rgba(153, 27, 27, 0.18);
+}
+
+.nws-alert-card.sev-moderate {
+  border-left-color: #f59e0b;
+  background: rgba(180, 83, 9, 0.18);
+}
+
+.nws-alert-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nws-alert-headline {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 6px;
+}
+
+.nws-alert-meta {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 10px;
+}
+
+.nws-alert-desc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 12px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: var(--font-mono, monospace);
+}
+
+.nws-alert-instructions {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  font-size: 13px;
+  color: #fef3c7;
+}
+
+.nws-alert-calm-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 8px;
+  color: #6ee7b7;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 4. Calendar Alert Ribbons & Modal Alert Callout */
+.calendar-alert-track {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.cal-alert-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.cal-alert-ribbon:hover {
+  transform: translateY(-1px);
+}
+
+.cal-alert-ribbon.tone-crimson {
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.35);
+}
+
+.cal-alert-ribbon.tone-amber {
+  background: rgba(245, 158, 11, 0.85);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.35);
+}
+
+.cal-alert-ribbon.tone-cyan {
+  background: rgba(14, 165, 233, 0.85);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.35);
+}
+
+.cal-modal-alerts-box {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.cal-modal-alerts-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cal-modal-alerts-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f87171;
+}
+
+.cal-modal-alert-card {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  margin-top: 8px;
+}
+
+.cal-modal-alert-card.severity-moderate {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.cal-modal-alert-card.severity-minor {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.cal-modal-alert-event {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.cal-modal-alert-headline {
+  font-size: 12px;
+  color: #cbd5e1;
+  margin: 4px 0;
+}
+
+.cal-modal-alert-times {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.cal-modal-alert-details summary {
+  font-size: 11px;
+  color: #38bdf8;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.cal-modal-alert-text {
+  font-size: 11px;
+  color: #e2e8f0;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.cal-modal-alert-instructions {
+  font-size: 11px;
+  color: #fde68a;
+  margin-top: 6px;
+}
+
+@media (max-width: 768px) {
+  .dashboard-alert-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .alert-banner-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .nwr-controls-strip {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .nwr-mode-a,
+  .nwr-mode-b {
+    width: 100%;
+    justify-content: space-between;
   }
 }
