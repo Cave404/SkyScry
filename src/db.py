@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.24)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.25)."""
 
 from __future__ import annotations
 
@@ -1015,9 +1015,9 @@ class WeatherDatabase:
                         )
 
             # Log delta lightning strikes if new_count > old_count (or 8-bit 0-255 wrap-around)
+            delta_strikes = 0
             if reading.strike_count is not None and prev_strike_count is not None:
                 new_cnt = int(reading.strike_count)
-                delta_strikes = 0
                 if new_cnt > prev_strike_count:
                     delta_strikes = new_cnt - prev_strike_count
                 elif prev_strike_count >= 200 and new_cnt < 50:
@@ -1025,7 +1025,11 @@ class WeatherDatabase:
 
                 # Guard against bogus initial jumps (> 50 strikes in a single packet)
                 if 0 < delta_strikes <= 50:
-                    dist_mi = float(reading.storm_dist_mi) if reading.storm_dist_mi is not None else 12.0
+                    raw_d = reading.storm_dist_mi
+                    if raw_d is not None and 1.0 <= float(raw_d) <= 25.0 and int(round(float(raw_d))) != 31:
+                        dist_mi = float(raw_d)
+                    else:
+                        dist_mi = 12.0
                     dist_mi = max(1.0, min(25.0, dist_mi))
                     rfi_flag = int(reading.rfi_detected or 0)
                     with self._conn:
@@ -1037,6 +1041,16 @@ class WeatherDatabase:
                             """,
                             (utc_ts, sensor_key, delta_strikes, round(dist_mi, 1), rfi_flag),
                         )
+
+            # Ignore storm_dist == 31 / standby distances when delta_strikes == 0
+            valid_storm_dist: Optional[float] = None
+            if (
+                reading.storm_dist_mi is not None
+                and delta_strikes > 0
+                and 1.0 <= float(reading.storm_dist_mi) <= 25.0
+                and int(round(float(reading.storm_dist_mi))) != 31
+            ):
+                valid_storm_dist = round(float(reading.storm_dist_mi), 1)
 
             reading_params = (
                 utc_ts,
@@ -1056,7 +1070,7 @@ class WeatherDatabase:
                 reading.uv_index,
                 reading.lux,
                 reading.strike_count,
-                reading.storm_dist_mi,
+                valid_storm_dist,
                 reading.rfi_detected,
                 reading.rssi,
                 reading.snr,
@@ -2783,7 +2797,6 @@ class WeatherDatabase:
         sensor_name = "AcuRite 06045M Lightning Detector"
         rfi_warning = False
         latest_strike_counter: Optional[int] = None
-        latest_storm_dist_mi: Optional[float] = None
         reporting_cadence_sec = 24
 
         if lightning_sensor is not None:
@@ -2795,16 +2808,13 @@ class WeatherDatabase:
             lr = lightning_sensor.get("latest_reading") or {}
             if lr.get("strike_count") is not None:
                 latest_strike_counter = int(lr["strike_count"])
-            if lr.get("storm_dist_mi") is not None:
-                latest_storm_dist_mi = round(float(lr["storm_dist_mi"]), 1)
-            if lr.get("rfi_detected"):
-                rfi_warning = True
 
         strikes_15m = 0
+        strikes_30m = 0
         strikes_1h = 0
         strikes_24h = 0
         last_strike_time: Optional[str] = None
-        last_strike_dist_mi: Optional[float] = latest_storm_dist_mi
+        last_strike_dist_mi: Optional[float] = None
         closest_dist_24h_mi: Optional[float] = None
         furthest_dist_24h_mi: Optional[float] = None
         recent_rings: list[dict[str, Any]] = []
@@ -2812,27 +2822,7 @@ class WeatherDatabase:
 
         with self._lock:
             if self._conn is not None:
-                if sensor_key:
-                    cad_rows = self._conn.execute(
-                        """
-                        SELECT timestamp, rfi_detected FROM sensor_readings
-                        WHERE COALESCE(sensor_key, model || '_' || sensor_id) = ?
-                        ORDER BY timestamp DESC, id DESC LIMIT 3;
-                        """,
-                        (sensor_key,),
-                    ).fetchall()
-                    if len(cad_rows) >= 2:
-                        dt0 = parse_utc_iso(str(cad_rows[0]["timestamp"]))
-                        dt1 = parse_utc_iso(str(cad_rows[1]["timestamp"]))
-                        if dt0 and dt1:
-                            gap_s = abs((dt0 - dt1).total_seconds())
-                            if 2.0 <= gap_s <= 13.0:
-                                reporting_cadence_sec = 8
-                                active_storm_mode = True
-                    for cr in cad_rows:
-                        if cr["rfi_detected"] and int(cr["rfi_detected"]) != 0:
-                            rfi_warning = True
-
+                # 1. Real strike counts across time windows
                 r_15m = self._conn.execute(
                     "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
                     (cutoff_15m,),
@@ -2843,9 +2833,7 @@ class WeatherDatabase:
                     "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
                     (cutoff_30m,),
                 ).fetchone()
-                if r_30m and int(r_30m["c"] or 0) > 0:
-                    active_storm_mode = True
-                    reporting_cadence_sec = 8
+                strikes_30m = int(r_30m["c"] or 0) if r_30m else 0
 
                 r_1h = self._conn.execute(
                     "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ?;",
@@ -2860,30 +2848,84 @@ class WeatherDatabase:
                         MIN(distance_mi) AS min_d,
                         MAX(distance_mi) AS max_d
                     FROM lightning_strikes
-                    WHERE timestamp >= ?;
+                    WHERE timestamp >= ? AND distance_mi >= 1.0 AND distance_mi <= 25.0;
                     """,
                     (cutoff_24h,),
                 ).fetchone()
-                if r_24h:
-                    strikes_24h = int(r_24h["c"] or 0)
+                if r_24h and int(r_24h["c"] or 0) > 0:
+                    strikes_24h = int(r_24h["c"])
                     if r_24h["min_d"] is not None:
                         closest_dist_24h_mi = round(float(r_24h["min_d"]), 1)
                     if r_24h["max_d"] is not None:
                         furthest_dist_24h_mi = round(float(r_24h["max_d"]), 1)
 
+                # 2. Last real strike (only valid strikes 1..25 mi)
                 r_last = self._conn.execute(
                     """
                     SELECT timestamp, distance_mi, rfi
                     FROM lightning_strikes
+                    WHERE distance_mi >= 1.0 AND distance_mi <= 25.0
                     ORDER BY timestamp DESC, id DESC LIMIT 1;
                     """
                 ).fetchone()
                 if r_last:
                     last_strike_time = str(r_last["timestamp"])
                     if r_last["distance_mi"] is not None:
-                        last_strike_dist_mi = round(float(r_last["distance_mi"]), 1)
-                    if r_last["rfi"] and int(r_last["rfi"]) != 0:
-                        rfi_warning = True
+                        d = float(r_last["distance_mi"])
+                        if 1.0 <= d <= 25.0:
+                            last_strike_dist_mi = round(d, 1)
+
+                # 3. Storm Active (8s Updates) Mode:
+                # Set active_storm_mode = True ONLY when at least 1 real lightning strike
+                # (delta_strikes > 0) has been recorded within the last 30 minutes
+                # (or when ussb / active bit is explicitly 1 AND strikes_1h > 0).
+                # Otherwise, always display NORMAL (24S UPDATES) (24s normal cadence).
+                flag_active = False
+                if lightning_sensor:
+                    lr = lightning_sensor.get("latest_reading") or {}
+                    if lr.get("active_storm_mode") is not None:
+                        flag_active = bool(lr.get("active_storm_mode"))
+
+                if strikes_30m > 0 or (flag_active and strikes_1h > 0):
+                    active_storm_mode = True
+                    reporting_cadence_sec = 8
+                else:
+                    active_storm_mode = False
+                    reporting_cadence_sec = 24
+
+                # 4. Debounced RFI Interference:
+                # Only trigger the RFI INTERFERENCE badge if rfi == 1 is reported continuously
+                # across at least 3 consecutive distinct transmission intervals (> 60 seconds)
+                # while delta_strikes == 0 (strikes_1h == 0) — ignoring single-packet RF bit flips or startup pulses!
+                if sensor_key and strikes_1h == 0:
+                    recent_rfi_rows = self._conn.execute(
+                        """
+                        SELECT timestamp, rfi_detected FROM sensor_readings
+                        WHERE COALESCE(sensor_key, model || '_' || sensor_id) = ?
+                        ORDER BY timestamp DESC, id DESC LIMIT 15;
+                        """,
+                        (sensor_key,),
+                    ).fetchall()
+
+                    distinct_intervals = []
+                    last_event_dt = None
+                    for row in recent_rfi_rows:
+                        ts_dt = parse_utc_iso(str(row["timestamp"]))
+                        if ts_dt is None:
+                            continue
+                        if last_event_dt is None or abs((last_event_dt - ts_dt).total_seconds()) >= 15.0:
+                            distinct_intervals.append(row)
+                            last_event_dt = ts_dt
+                        if len(distinct_intervals) >= 5:
+                            break
+
+                    if len(distinct_intervals) >= 3:
+                        dt0 = parse_utc_iso(str(distinct_intervals[0]["timestamp"]))
+                        dt2 = parse_utc_iso(str(distinct_intervals[2]["timestamp"]))
+                        time_span = abs((dt0 - dt2).total_seconds()) if dt0 and dt2 else 0.0
+                        all_3_rfi = all(int(r["rfi_detected"] or 0) == 1 for r in distinct_intervals[:3])
+                        if all_3_rfi and time_span >= 55.0:
+                            rfi_warning = True
 
                 ring_rows = self._conn.execute(
                     """

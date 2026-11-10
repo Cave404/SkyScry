@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.24)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.25)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.24 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.25 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()

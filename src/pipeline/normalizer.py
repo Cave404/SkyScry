@@ -245,6 +245,8 @@ class PacketNormalizer:
     ) -> None:
         self.deduplicator = deduplicator or BurstDeduplicator(window_seconds=dedup_window_seconds)
         self._last_cadence_mono: dict[tuple[str, str], float] = {}
+        self._last_strike_count: dict[tuple[str, str], int] = {}
+        self._rfi_distinct_intervals: dict[tuple[str, str], list[float]] = {}
 
     @staticmethod
     def has_weather_telemetry(payload: dict[str, Any]) -> bool:
@@ -428,7 +430,7 @@ class PacketNormalizer:
     def _normalize_storm_dist_mi(payload: dict[str, Any]) -> Optional[float]:
         """Extract lightning storm distance in miles, clamped to valid [1.0, 25.0] miles when active.
 
-        AcuRite 06045M sends `31` (0x1f) when no storm is active / out-of-range.
+        AcuRite 06045M sends `31` (0x1f) or >= 26 when no storm is active / standby / out-of-range.
         """
         dist_mi: Optional[float] = None
         for key in ("storm_dist", "strike_distance", "storm_dist_mi"):
@@ -441,7 +443,7 @@ class PacketNormalizer:
             for key_km in ("storm_dist_km", "strike_distance_km"):
                 val_km = _to_float(payload.get(key_km))
                 if val_km is not None:
-                    if int(round(val_km)) == 31 or val_km <= 0:
+                    if int(round(val_km)) == 31 or val_km <= 0 or val_km > 40.23:
                         return None
                     dist_mi = val_km / 1.609344
                     break
@@ -449,8 +451,9 @@ class PacketNormalizer:
         if dist_mi is None:
             return None
 
-        # 31 (0x1f) or 0 is AcuRite 06045M sentinel for out-of-range / no active storm
-        if int(round(dist_mi)) == 31 or dist_mi <= 0.0:
+        # 31 (0x1f), <= 0.0, or >= 26.0 is AcuRite 06045M sentinel for out-of-range / no active storm / standby
+        rounded_int = int(round(dist_mi))
+        if rounded_int >= 26 or rounded_int <= 0 or dist_mi <= 0.0 or dist_mi >= 26.0:
             return None
 
         return round(max(1.0, min(25.0, float(dist_mi))), 1)
@@ -533,25 +536,55 @@ class PacketNormalizer:
         noise_val = _to_float(payload.get("noise"))
 
         strike_count = self._normalize_strike_count(payload)
-        storm_dist_mi = self._normalize_storm_dist_mi(payload)
+        raw_storm_dist_mi = self._normalize_storm_dist_mi(payload)
+
+        cadence_key = (model, sensor_id)
+        prev_strike_cnt = self._last_strike_count.get(cadence_key)
+        delta_strikes = 0
+        if strike_count is not None:
+            if prev_strike_cnt is not None:
+                if strike_count > prev_strike_cnt:
+                    delta_strikes = strike_count - prev_strike_cnt
+                elif prev_strike_cnt >= 200 and strike_count < 50:
+                    delta_strikes = (256 - prev_strike_cnt) + strike_count
+            self._last_strike_count[cadence_key] = strike_count
+
+        # Treat storm_dist_mi as valid ONLY if 1 <= storm_dist <= 25 AND delta_strikes > 0!
+        storm_dist_mi: Optional[float] = None
+        if raw_storm_dist_mi is not None and 1.0 <= raw_storm_dist_mi <= 25.0 and delta_strikes > 0:
+            storm_dist_mi = raw_storm_dist_mi
+
         is_lightning_sensor = (
             "6045" in model.lower()
             or "lightning" in model.lower()
             or strike_count is not None
-            or storm_dist_mi is not None
+            or raw_storm_dist_mi is not None
         )
-        rfi_detected = self._normalize_rfi_detected(payload, is_lightning_sensor=is_lightning_sensor)
+        raw_rfi = self._normalize_rfi_detected(payload, is_lightning_sensor=is_lightning_sensor)
+        rfi_detected = 0 if is_lightning_sensor else raw_rfi
 
         active_storm_mode: Optional[bool] = None
         if is_lightning_sensor:
             now_mono = time.monotonic()
-            cadence_key = (model, sensor_id)
-            prev_mono = self._last_cadence_mono.get(cadence_key)
-            self._last_cadence_mono[cadence_key] = now_mono
-            rapid_cadence = prev_mono is not None and 4.0 <= (now_mono - prev_mono) <= 14.0
+            # Debounce RFI interference across at least 3 consecutive distinct intervals (> 60s)
+            rfi_history = self._rfi_distinct_intervals.setdefault(cadence_key, [])
+            if raw_rfi == 1 and delta_strikes == 0:
+                if not rfi_history or (now_mono - rfi_history[-1]) >= 15.0:
+                    rfi_history.append(now_mono)
+                    if len(rfi_history) > 5:
+                        rfi_history.pop(0)
+                if len(rfi_history) >= 3 and (rfi_history[-1] - rfi_history[0]) >= 55.0:
+                    rfi_detected = 1
+                else:
+                    rfi_detected = 0
+            else:
+                self._rfi_distinct_intervals[cadence_key] = []
+                rfi_detected = 0
+
+            # Storm Active Mode: ONLY when real lightning strike (delta_strikes > 0) has occurred
             raw_active = payload.get("active", payload.get("storm_mode"))
             flag_active = bool(raw_active) if isinstance(raw_active, (bool, int)) else False
-            active_storm_mode = bool(rapid_cadence or flag_active or (storm_dist_mi is not None))
+            active_storm_mode = bool(delta_strikes > 0 or (flag_active and delta_strikes > 0))
 
         return NormalizedReading(
             timestamp=self._parse_timestamp(payload.get("time")),

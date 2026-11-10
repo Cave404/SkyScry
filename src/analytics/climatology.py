@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.24)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.25)."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class ClimatologyEngine:
             req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "SkyScry/0.0.24 (https://github.com/Cave404/SkyScry)",
+                    "User-Agent": "SkyScry/0.0.25 (https://github.com/Cave404/SkyScry)",
                     "Accept": "application/json",
                 },
             )
@@ -1648,7 +1648,7 @@ class ClimatologyEngine:
             url = f"https://api.open-meteo.com/v1/forecast?{params}"
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.24 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.25 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))

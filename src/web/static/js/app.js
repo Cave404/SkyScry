@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.24 — 7-View Frontend Controller
+ * SkyScry v0.0.25 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -85,8 +85,11 @@
   const elBtnNavDrawerToggle = document.getElementById("btn-nav-drawer-toggle");
   const elBtnNavDrawerClose = document.getElementById("btn-nav-drawer-close");
   const elNavDrawer = document.getElementById("nav-drawer");
-  const elNavDrawerBackdrop = document.getElementById("nav-drawer-backdrop");
+  const elNavDrawerBackdrop = document.getElementById("nav-backdrop") || document.getElementById("nav-drawer-backdrop");
   const elTopBarActiveView = document.getElementById("top-bar-active-view");
+  const elTopBarStationTitle = document.getElementById("top-bar-station-title");
+  const elDrawerSettingsLock = document.getElementById("drawer-settings-lock");
+  const elDrawerGitSha = document.getElementById("drawer-git-sha");
   const elBtnDrawerAuth = document.getElementById("btn-drawer-auth");
   const elDrawerAuthText = document.getElementById("drawer-auth-text");
   const elDrawerAuthIcon = document.getElementById("drawer-auth-icon");
@@ -626,9 +629,12 @@
   // ==========================================================================
   // SECURITY, FIRST-RUN PASSWORD SETUP & SESSION LOCK/UNLOCK FLOW
   // ==========================================================================
+  const SVG_LOCK_CLOSED = `<svg class="lock-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
+  const SVG_LOCK_OPEN = `<svg class="lock-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 9.9-1"></path></svg>`;
+
   function updateAuthHeaderUi() {
     if (elTopbarAuthIndicator) {
-      elTopbarAuthIndicator.textContent = authState.unlocked ? "🔓" : "🔒";
+      elTopbarAuthIndicator.innerHTML = authState.unlocked ? SVG_LOCK_OPEN : SVG_LOCK_CLOSED;
     }
     if (elPopoverAuthStatus) {
       elPopoverAuthStatus.textContent = authState.unlocked ? "Unlocked (Admin)" : "Locked (Read-Only)";
@@ -641,10 +647,10 @@
     }
     if (elBtnAuthPill) {
       if (authState.unlocked) {
-        elBtnAuthPill.innerHTML = '<span class="lock-icon">🔓</span> <span class="lock-label">UNLOCKED</span>';
+        elBtnAuthPill.innerHTML = `${SVG_LOCK_OPEN} <span class="lock-label">UNLOCKED</span>`;
         elBtnAuthPill.className = "topbar-icon-btn status-unlocked";
       } else {
-        elBtnAuthPill.innerHTML = '<span class="lock-icon">🔒</span> <span class="lock-label">LOCKED</span>';
+        elBtnAuthPill.innerHTML = `${SVG_LOCK_CLOSED} <span class="lock-label">LOCKED</span>`;
         elBtnAuthPill.className = "topbar-icon-btn status-locked";
       }
     }
@@ -656,7 +662,11 @@
       elDrawerAuthText.textContent = authState.unlocked ? "Lock Admin Session" : "Unlock Admin Controls";
     }
     if (elDrawerAuthIcon) {
-      elDrawerAuthIcon.textContent = authState.unlocked ? "🔓" : "🔒";
+      elDrawerAuthIcon.innerHTML = authState.unlocked ? SVG_LOCK_OPEN : SVG_LOCK_CLOSED;
+    }
+    if (elDrawerSettingsLock) {
+      elDrawerSettingsLock.innerHTML = authState.unlocked ? SVG_LOCK_OPEN : SVG_LOCK_CLOSED;
+      elDrawerSettingsLock.title = authState.unlocked ? "Session Unlocked" : "Admin Locked";
     }
     if (elSettingsLockStateBadge) {
       if (authState.unlocked) {
@@ -1326,10 +1336,16 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.24"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.25"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
+    }
+    if (elDrawerGitSha) {
+      elDrawerGitSha.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
+    }
+    if (elTopBarStationTitle && userSettings.station_name) {
+      elTopBarStationTitle.textContent = userSettings.station_name;
     }
     if (elPopoverRtl433Ver) {
       elPopoverRtl433Ver.textContent = data.rtl433_version ? `rtl_433:${data.rtl433_version}` : "rtl_433";
@@ -1374,6 +1390,9 @@
 
     if (settings.station_name) {
       userSettings = Object.assign(userSettings, settings);
+      if (elTopBarStationTitle) {
+        elTopBarStationTitle.textContent = settings.station_name;
+      }
       if (elOvStationEyebrow) {
         elOvStationEyebrow.textContent = `${settings.station_name.toUpperCase()} — OUTDOOR ENSEMBLE`;
       }
@@ -3234,6 +3253,7 @@
     }
     if (elSetStationName) elSetStationName.value = s.station_name || "";
     if (elHeaderStationTitle) elHeaderStationTitle.textContent = s.station_name || "SkyScry";
+    if (elTopBarStationTitle) elTopBarStationTitle.textContent = s.station_name || "SkyScry";
     if (elOvStationEyebrow) elOvStationEyebrow.textContent = `${s.station_name || "Local Station"} • Outdoor Telemetry`;
     if (elThCorrobLocalName) elThCorrobLocalName.textContent = s.station_name || "Local Sensors";
     if (elSetLatitude && s.latitude !== undefined) elSetLatitude.value = String(s.latitude);
@@ -5253,12 +5273,12 @@
   // NAVIGATION & POLLING ORCHESTRATION
   // ==========================================================================
   const TAB_TITLES = {
-    overview: "Overview",
-    charts: "Charts & Climate",
-    sensors: "Sensors",
-    logs: "SQLite Logs",
-    radar: "Radar & NWS",
+    overview: "Overview Dashboard",
     calendar: "Weather Calendar",
+    charts: "Historical Charts & Climatology",
+    radar: "Radar & NWS Forecast",
+    sensors: "Sensors Manager",
+    logs: "SQLite Log Explorer",
     settings: "Settings",
   };
 
@@ -5321,7 +5341,7 @@
       p.classList.toggle("active", p.id === `view-${tabName}`);
     });
     if (elTopBarActiveView) {
-      elTopBarActiveView.textContent = TAB_TITLES[tabName] || "Overview";
+      elTopBarActiveView.textContent = TAB_TITLES[tabName] || "Overview Dashboard";
     }
     activeTab = tabName;
 
@@ -5513,7 +5533,7 @@
       elBtnDrawerAuth.addEventListener("click", () => {
         closeNavDrawer();
         if (authState.unlocked) {
-          switchTab("settings");
+          handleLockNowClick();
         } else {
           requireUnlockedOrPrompt(() => {});
         }
