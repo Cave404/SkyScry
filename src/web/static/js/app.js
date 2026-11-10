@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.26 — 7-View Frontend Controller
+ * SkyScry v0.0.27 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -949,28 +949,32 @@
     }
     if (parentBox) parentBox.style.display = "";
 
-    svgEl.setAttribute("viewBox", "0 0 600 175");
+    svgEl.setAttribute("viewBox", "0 0 800 230");
     svgEl.setAttribute("preserveAspectRatio", "none");
 
     const allVals = tVals.concat(dVals);
-    const minV = Math.min(...allVals);
-    const maxV = Math.max(...allVals);
-    const span = Math.max(2.0, maxV - minV);
-    const w = 600;
-    const h = 175;
-    const padLeft = 36;
-    const padRight = 18;
-    const padTop = 26;
-    const padBottom = 28;
-    const drawW = w - padLeft - padRight; // 546
-    const drawH = h - padTop - padBottom; // 121
-    const yBase = padTop + drawH;         // 147
+    const minVal = Math.min(...allVals);
+    const maxVal = Math.max(...allVals);
+    const yMin = Math.floor(minVal - 2);
+    const yMax = Math.ceil(maxVal + 2);
+    const span = Math.max(2.0, yMax - yMin);
+    const midVal = Math.round((yMax + yMin) / 2);
+
+    const w = 800;
+    const h = 230;
+    const padTop = 32;
+    const padBottom = 34;
+    const padLeft = 40;
+    const padRight = 24;
+    const drawW = w - padLeft - padRight; // 736
+    const drawH = h - padTop - padBottom; // 164
+    const yBase = padTop + drawH;         // 196
 
     function calcX(idx, total) {
       return padLeft + (idx / Math.max(1, total - 1)) * drawW;
     }
     function calcY(v) {
-      return padTop + (1.0 - (v - minV) / span) * drawH;
+      return padTop + (1.0 - (v - yMin) / span) * drawH;
     }
 
     let dewMarkup = "";
@@ -986,7 +990,7 @@
       const dewArea = `${firstX},${yBase} ${dewPolyline} ${lastX},${yBase}`;
       dewMarkup = `
         <polygon points="${dewArea}" fill="url(#heroDualDewGrad)" />
-        <polyline points="${dewPolyline}" fill="none" stroke="#10b981" stroke-width="2.0" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="${dewPolyline}" fill="none" stroke="#10b981" stroke-width="2.2" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
       `;
     }
 
@@ -1014,7 +1018,7 @@
       const tempArea = `${firstX},${yBase} ${tempPolyline} ${lastX},${yBase}`;
       tempMarkup = `
         <polygon points="${tempArea}" fill="url(#heroDualTempGrad)" />
-        <polyline points="${tempPolyline}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="${tempPolyline}" fill="none" stroke="#38bdf8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
       `;
 
       function getTimeForIndex(pointsArr, idx, total) {
@@ -1044,45 +1048,44 @@
     // High & Low Callout Markers Directly on the Curve
     let calloutsMarkup = "";
     if (highPt) {
-      const clampedHighX = Math.max(85, Math.min(515, highPt.x));
-      const highLabelY = Math.max(15, highPt.y - 10);
+      const clampedHighX = Math.max(90, Math.min(w - padRight - 80, highPt.x));
+      const highLabelY = Math.max(16, highPt.y - 12);
       const highText = `▲ High: ${highPt.val.toFixed(1)}°F (${highPt.timeStr})`;
       calloutsMarkup += `
         <!-- High Peak Callout -->
-        <circle cx="${highPt.x.toFixed(1)}" cy="${highPt.y.toFixed(1)}" r="4.5" fill="#fbbf24" stroke="#ffffff" stroke-width="1.8" filter="url(#glowAmber)" />
-        <rect x="${(clampedHighX - 70).toFixed(1)}" y="${(highLabelY - 11).toFixed(1)}" width="140" height="15" rx="3.5" fill="rgba(15, 23, 42, 0.88)" stroke="rgba(251, 191, 36, 0.7)" stroke-width="0.8" />
-        <text x="${clampedHighX.toFixed(1)}" y="${highLabelY.toFixed(1)}" fill="#fde68a" font-size="8.8" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(highText)}</text>
+        <circle cx="${highPt.x.toFixed(1)}" cy="${highPt.y.toFixed(1)}" r="5" fill="#fbbf24" stroke="#ffffff" stroke-width="2" filter="url(#glowAmber)" />
+        <rect x="${(clampedHighX - 78).toFixed(1)}" y="${(highLabelY - 12).toFixed(1)}" width="156" height="17" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(251, 191, 36, 0.75)" stroke-width="1" />
+        <text x="${clampedHighX.toFixed(1)}" y="${(highLabelY + 1).toFixed(1)}" fill="#fde68a" font-size="10.5" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(highText)}</text>
       `;
     }
     if (lowPt) {
-      const clampedLowX = Math.max(85, Math.min(515, lowPt.x));
-      const lowLabelY = (lowPt.y > yBase - 18) ? (lowPt.y - 10) : (lowPt.y + 15);
+      const clampedLowX = Math.max(90, Math.min(w - padRight - 80, lowPt.x));
+      const lowLabelY = (lowPt.y > yBase - 22) ? (lowPt.y - 12) : (lowPt.y + 18);
       const lowText = `▼ Low: ${lowPt.val.toFixed(1)}°F (${lowPt.timeStr})`;
       calloutsMarkup += `
         <!-- Low Peak Callout -->
-        <circle cx="${lowPt.x.toFixed(1)}" cy="${lowPt.y.toFixed(1)}" r="4.5" fill="#38bdf8" stroke="#ffffff" stroke-width="1.8" filter="url(#glowCyan)" />
-        <rect x="${(clampedLowX - 70).toFixed(1)}" y="${(lowLabelY - 11).toFixed(1)}" width="140" height="15" rx="3.5" fill="rgba(15, 23, 42, 0.88)" stroke="rgba(56, 189, 248, 0.7)" stroke-width="0.8" />
-        <text x="${clampedLowX.toFixed(1)}" y="${lowLabelY.toFixed(1)}" fill="#7dd3fc" font-size="8.8" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(lowText)}</text>
+        <circle cx="${lowPt.x.toFixed(1)}" cy="${lowPt.y.toFixed(1)}" r="5" fill="#38bdf8" stroke="#ffffff" stroke-width="2" filter="url(#glowCyan)" />
+        <rect x="${(clampedLowX - 78).toFixed(1)}" y="${(lowLabelY - 12).toFixed(1)}" width="156" height="17" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(56, 189, 248, 0.75)" stroke-width="1" />
+        <text x="${clampedLowX.toFixed(1)}" y="${(lowLabelY + 1).toFixed(1)}" fill="#7dd3fc" font-size="10.5" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(lowText)}</text>
       `;
     }
 
-    // Subtle Horizontal Grid Lines & Left Y-Axis Scale
+    // 3 Subtle Horizontal Dashed Guide Lines Across Graph with Clear High-Contrast Labels
     const yTop = padTop;
     const yMid = padTop + drawH / 2;
     const yBot = yBase;
-    const midVal = (maxV + minV) / 2.0;
 
     const yGridMarkup = `
-      <line x1="${padLeft}" y1="${yTop.toFixed(1)}" x2="${w - padRight}" y2="${yTop.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.75" stroke-dasharray="2 3" />
-      <line x1="${padLeft}" y1="${yMid.toFixed(1)}" x2="${w - padRight}" y2="${yMid.toFixed(1)}" stroke="rgba(51, 65, 85, 0.35)" stroke-width="0.75" stroke-dasharray="2 3" />
-      <line x1="${padLeft}" y1="${yBot.toFixed(1)}" x2="${w - padRight}" y2="${yBot.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.75" />
+      <line x1="${padLeft}" y1="${yTop.toFixed(1)}" x2="${w - padRight}" y2="${yTop.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
+      <line x1="${padLeft}" y1="${yMid.toFixed(1)}" x2="${w - padRight}" y2="${yMid.toFixed(1)}" stroke="rgba(51, 65, 85, 0.35)" stroke-width="0.85" stroke-dasharray="3 4" />
+      <line x1="${padLeft}" y1="${yBot.toFixed(1)}" x2="${w - padRight}" y2="${yBot.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
 
-      <text x="${padLeft - 6}" y="${(yTop + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(maxV)}°</text>
-      <text x="${padLeft - 6}" y="${(yMid + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(midVal)}°</text>
-      <text x="${padLeft - 6}" y="${(yBot + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(minV)}°</text>
+      <text x="${padLeft - 8}" y="${(yTop + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${yMax}°</text>
+      <text x="${padLeft - 8}" y="${(yMid + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${midVal}°</text>
+      <text x="${padLeft - 8}" y="${(yBot + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${yMin}°</text>
     `;
 
-    // 24-Hour Timeframe Markers Along Bottom X-Axis
+    // 24-Hour Timeframe Markers Along Bottom X-Axis (Baseline y = 218)
     let xAxisMarkup = "";
     const nowMs = Date.now();
     for (let k = 0; k < 5; k++) {
@@ -1105,8 +1108,8 @@
       }
 
       xAxisMarkup += `
-        <line x1="${tickX.toFixed(1)}" y1="${yBase}" x2="${tickX.toFixed(1)}" y2="${(yBase + 4).toFixed(1)}" stroke="#475569" stroke-width="1" />
-        <text x="${textX.toFixed(1)}" y="${(yBase + 16).toFixed(1)}" fill="#94a3b8" font-size="9" font-weight="600" text-anchor="${anchor}" font-family="var(--font-sans, sans-serif)">${escapeHtml(label)}</text>
+        <line x1="${tickX.toFixed(1)}" y1="${yBase}" x2="${tickX.toFixed(1)}" y2="${(yBase + 5).toFixed(1)}" stroke="#475569" stroke-width="1" />
+        <text x="${textX.toFixed(1)}" y="218" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="${anchor}" font-family="var(--font-sans, sans-serif)">${escapeHtml(label)}</text>
       `;
     }
 
@@ -1121,10 +1124,10 @@
           <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
         </linearGradient>
         <filter id="glowAmber" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#fbbf24" flood-opacity="0.8" />
+          <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#fbbf24" flood-opacity="0.8" />
         </filter>
         <filter id="glowCyan" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#38bdf8" flood-opacity="0.8" />
+          <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#38bdf8" flood-opacity="0.8" />
         </filter>
       </defs>
       ${yGridMarkup}
@@ -1135,7 +1138,7 @@
     `;
 
     if (elSparklineRangePill) {
-      elSparklineRangePill.textContent = `H: ${maxV.toFixed(1)}° | L: ${minV.toFixed(1)}°`;
+      elSparklineRangePill.textContent = `H: ${maxVal.toFixed(1)}° | L: ${minVal.toFixed(1)}°`;
     }
   }
 
@@ -1466,7 +1469,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.26"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.27"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";

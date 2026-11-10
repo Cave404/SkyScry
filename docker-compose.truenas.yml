@@ -1,5 +1,5 @@
 # ============================================================================
-# SkyScry v0.0.26 — Turnkey TrueNAS SCALE Custom App Stack
+# SkyScry v0.0.27 — Turnkey TrueNAS SCALE Custom App Stack
 # ============================================================================
 # How to deploy in TrueNAS SCALE:
 #   1. Go to Apps -> Discover Apps -> click the Three Dots (top-right) -> Install via YAML

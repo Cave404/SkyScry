@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.26)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.27)."""
 
 from __future__ import annotations
 
