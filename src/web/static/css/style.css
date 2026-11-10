@@ -1723,13 +1723,13 @@ code {
 
 .sparkline-svg-container {
   width: 100%;
-  height: 75px;
+  height: 165px;
   position: relative;
 }
 
 .hero-trend-svg {
   width: 100%;
-  height: 75px;
+  height: 165px;
   display: block;
 }
 
@@ -3604,6 +3604,14 @@ input[type="text"]:focus {
   gap: 4px;
 }
 
+.calendar-empty-slot {
+  background: transparent !important;
+  border: none !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+  min-height: 120px;
+}
+
 /* Spanning Consecutive Weather Combo Highlight Ribbons */
 .calendar-combo-track {
   display: grid;
@@ -3741,15 +3749,18 @@ input[type="text"]:focus {
 .cal-day-top {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px;
   width: 100%;
 }
 
 .cal-day-num-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
 }
 
 .cal-day-num,
@@ -3777,14 +3788,16 @@ input[type="text"]:focus {
 #view-calendar .cal-day-source-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
+  gap: 3.5px;
+  font-size: 0.68rem;
   font-weight: 700;
-  padding: 2px 6px;
+  padding: 1.5px 5.5px;
   border-radius: 999px;
   white-space: nowrap;
   line-height: 1.2;
   font-family: var(--font-sans, sans-serif);
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .cal-day-source-badge .cal-source-dot,
@@ -3893,17 +3906,20 @@ input[type="text"]:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   padding-top: 6px;
   border-top: 1px solid #263554;
   width: 100%;
+  box-sizing: border-box;
 }
 
 .cal-temp-pair {
   display: inline-flex;
   align-items: baseline;
-  gap: 3px;
+  gap: 2px;
   font-family: var(--font-mono, monospace);
+  white-space: nowrap;
 }
 
 .cal-temp-high,
@@ -3928,15 +3944,112 @@ input[type="text"]:focus {
 
 .cal-rain-pill {
   font-family: var(--font-mono, monospace);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 700;
   color: #38bdf8;
   background: rgba(56, 189, 248, 0.18);
   border: 1px solid rgba(56, 189, 248, 0.4);
-  padding: 2px 6px;
+  padding: 1.5px 5.5px;
   border-radius: 999px;
   white-space: nowrap;
   line-height: 1.2;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Weather Calendar Desktop Weekday Prefix Suppression */
+@media (min-width: 769px) {
+  .cal-day-weekday {
+    display: none !important;
+  }
+}
+
+/* Weather Calendar Mobile 2-Column Responsive Grid (Zero Horizontal Overflow) */
+@media (max-width: 768px) {
+  .calendar-board-card {
+    padding: 10px 8px !important;
+    overflow-x: hidden !important;
+  }
+
+  .calendar-weekdays-header {
+    display: none !important;
+  }
+
+  .calendar-combo-track {
+    display: none !important;
+  }
+
+  .calendar-weeks-container {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  .calendar-week-block {
+    display: contents !important;
+  }
+
+  .calendar-week-grid {
+    display: contents !important;
+  }
+
+  .calendar-empty-slot {
+    display: none !important;
+  }
+
+  .cal-day-weekday {
+    display: inline-block !important;
+    font-size: 0.82rem !important;
+    font-weight: 700 !important;
+    color: #94a3b8 !important;
+    margin-right: 3px !important;
+  }
+
+  .calendar-day-cell,
+  .cal-day-cell,
+  #view-calendar .calendar-day-cell,
+  #view-calendar .cal-day-cell {
+    min-height: 116px !important;
+    padding: 7px !important;
+    border-radius: 8px !important;
+  }
+
+  .cal-day-icon-wrap,
+  .cal-day-icon,
+  #view-calendar .cal-day-icon-wrap,
+  #view-calendar .cal-day-icon {
+    width: 34px !important;
+    height: 34px !important;
+    min-width: 34px !important;
+    min-height: 34px !important;
+  }
+
+  .cal-day-icon-wrap svg,
+  .cal-day-icon svg,
+  #view-calendar .cal-day-icon-wrap svg,
+  #view-calendar .cal-day-icon svg {
+    width: 34px !important;
+    height: 34px !important;
+    min-width: 34px !important;
+    min-height: 34px !important;
+  }
+
+  .cal-day-top {
+    gap: 3px !important;
+  }
+
+  .cal-day-source-badge,
+  #view-calendar .cal-day-source-badge {
+    font-size: 0.64rem !important;
+    padding: 1px 4.5px !important;
+  }
+
+  .cal-rain-pill {
+    font-size: 0.7rem !important;
+    padding: 1px 4.5px !important;
+  }
 }
 
 /* ==========================================================================

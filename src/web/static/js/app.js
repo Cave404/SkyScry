@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.25 — 7-View Frontend Controller
+ * SkyScry v0.0.26 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -949,41 +949,164 @@
     }
     if (parentBox) parentBox.style.display = "";
 
+    svgEl.setAttribute("viewBox", "0 0 600 175");
+    svgEl.setAttribute("preserveAspectRatio", "none");
+
     const allVals = tVals.concat(dVals);
     const minV = Math.min(...allVals);
     const maxV = Math.max(...allVals);
-    const span = Math.max(1.0, maxV - minV);
-    const w = 420;
-    const h = 85;
-    const padY = 12;
+    const span = Math.max(2.0, maxV - minV);
+    const w = 600;
+    const h = 175;
+    const padLeft = 36;
+    const padRight = 18;
+    const padTop = 26;
+    const padBottom = 28;
+    const drawW = w - padLeft - padRight; // 546
+    const drawH = h - padTop - padBottom; // 121
+    const yBase = padTop + drawH;         // 147
+
+    function calcX(idx, total) {
+      return padLeft + (idx / Math.max(1, total - 1)) * drawW;
+    }
+    function calcY(v) {
+      return padTop + (1.0 - (v - minV) / span) * drawH;
+    }
 
     let dewMarkup = "";
     if (dVals.length >= 2) {
-      const coords = dVals.map((v, idx) => {
-        const x = (idx / (dVals.length - 1)) * w;
-        const y = h - padY - ((v - minV) / span) * (h - padY * 2);
+      const dewCoords = dVals.map((v, idx) => {
+        const x = calcX(idx, dVals.length);
+        const y = calcY(v);
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       });
-      const polyline = coords.join(" ");
-      const area = `0,${h} ${polyline} ${w},${h}`;
+      const dewPolyline = dewCoords.join(" ");
+      const firstX = calcX(0, dVals.length).toFixed(1);
+      const lastX = calcX(dVals.length - 1, dVals.length).toFixed(1);
+      const dewArea = `${firstX},${yBase} ${dewPolyline} ${lastX},${yBase}`;
       dewMarkup = `
-        <polygon points="${area}" fill="url(#heroDualDewGrad)" />
-        <polyline points="${polyline}" fill="none" stroke="#10b981" stroke-width="2.0" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
+        <polygon points="${dewArea}" fill="url(#heroDualDewGrad)" />
+        <polyline points="${dewPolyline}" fill="none" stroke="#10b981" stroke-width="2.0" stroke-dasharray="3 3" stroke-linecap="round" stroke-linejoin="round" />
       `;
     }
 
     let tempMarkup = "";
+    let highPt = null;
+    let lowPt = null;
     if (tVals.length >= 2) {
-      const coords = tVals.map((v, idx) => {
-        const x = (idx / (tVals.length - 1)) * w;
-        const y = h - padY - ((v - minV) / span) * (h - padY * 2);
+      let maxT = -Infinity;
+      let minT = Infinity;
+      let maxIdx = 0;
+      let minIdx = 0;
+      tVals.forEach((v, idx) => {
+        if (v > maxT) { maxT = v; maxIdx = idx; }
+        if (v < minT) { minT = v; minIdx = idx; }
+      });
+
+      const tempCoords = tVals.map((v, idx) => {
+        const x = calcX(idx, tVals.length);
+        const y = calcY(v);
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       });
-      const polyline = coords.join(" ");
-      const area = `0,${h} ${polyline} ${w},${h}`;
+      const tempPolyline = tempCoords.join(" ");
+      const firstX = calcX(0, tVals.length).toFixed(1);
+      const lastX = calcX(tVals.length - 1, tVals.length).toFixed(1);
+      const tempArea = `${firstX},${yBase} ${tempPolyline} ${lastX},${yBase}`;
       tempMarkup = `
-        <polygon points="${area}" fill="url(#heroDualTempGrad)" />
-        <polyline points="${polyline}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+        <polygon points="${tempArea}" fill="url(#heroDualTempGrad)" />
+        <polyline points="${tempPolyline}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+      `;
+
+      function getTimeForIndex(pointsArr, idx, total) {
+        if (Array.isArray(pointsArr) && pointsArr[idx] && typeof pointsArr[idx] === "object") {
+          const ts = pointsArr[idx].t || pointsArr[idx].time || pointsArr[idx].timestamp;
+          if (ts) return formatShortTime(ts);
+        }
+        const hoursAgo = (total - 1 - idx) * (24.0 / Math.max(1, total - 1));
+        const d = new Date(Date.now() - hoursAgo * 3600 * 1000);
+        return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      }
+
+      highPt = {
+        x: calcX(maxIdx, tVals.length),
+        y: calcY(maxT),
+        val: maxT,
+        timeStr: getTimeForIndex(tempPoints, maxIdx, tVals.length),
+      };
+      lowPt = {
+        x: calcX(minIdx, tVals.length),
+        y: calcY(minT),
+        val: minT,
+        timeStr: getTimeForIndex(tempPoints, minIdx, tVals.length),
+      };
+    }
+
+    // High & Low Callout Markers Directly on the Curve
+    let calloutsMarkup = "";
+    if (highPt) {
+      const clampedHighX = Math.max(85, Math.min(515, highPt.x));
+      const highLabelY = Math.max(15, highPt.y - 10);
+      const highText = `▲ High: ${highPt.val.toFixed(1)}°F (${highPt.timeStr})`;
+      calloutsMarkup += `
+        <!-- High Peak Callout -->
+        <circle cx="${highPt.x.toFixed(1)}" cy="${highPt.y.toFixed(1)}" r="4.5" fill="#fbbf24" stroke="#ffffff" stroke-width="1.8" filter="url(#glowAmber)" />
+        <rect x="${(clampedHighX - 70).toFixed(1)}" y="${(highLabelY - 11).toFixed(1)}" width="140" height="15" rx="3.5" fill="rgba(15, 23, 42, 0.88)" stroke="rgba(251, 191, 36, 0.7)" stroke-width="0.8" />
+        <text x="${clampedHighX.toFixed(1)}" y="${highLabelY.toFixed(1)}" fill="#fde68a" font-size="8.8" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(highText)}</text>
+      `;
+    }
+    if (lowPt) {
+      const clampedLowX = Math.max(85, Math.min(515, lowPt.x));
+      const lowLabelY = (lowPt.y > yBase - 18) ? (lowPt.y - 10) : (lowPt.y + 15);
+      const lowText = `▼ Low: ${lowPt.val.toFixed(1)}°F (${lowPt.timeStr})`;
+      calloutsMarkup += `
+        <!-- Low Peak Callout -->
+        <circle cx="${lowPt.x.toFixed(1)}" cy="${lowPt.y.toFixed(1)}" r="4.5" fill="#38bdf8" stroke="#ffffff" stroke-width="1.8" filter="url(#glowCyan)" />
+        <rect x="${(clampedLowX - 70).toFixed(1)}" y="${(lowLabelY - 11).toFixed(1)}" width="140" height="15" rx="3.5" fill="rgba(15, 23, 42, 0.88)" stroke="rgba(56, 189, 248, 0.7)" stroke-width="0.8" />
+        <text x="${clampedLowX.toFixed(1)}" y="${lowLabelY.toFixed(1)}" fill="#7dd3fc" font-size="8.8" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(lowText)}</text>
+      `;
+    }
+
+    // Subtle Horizontal Grid Lines & Left Y-Axis Scale
+    const yTop = padTop;
+    const yMid = padTop + drawH / 2;
+    const yBot = yBase;
+    const midVal = (maxV + minV) / 2.0;
+
+    const yGridMarkup = `
+      <line x1="${padLeft}" y1="${yTop.toFixed(1)}" x2="${w - padRight}" y2="${yTop.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.75" stroke-dasharray="2 3" />
+      <line x1="${padLeft}" y1="${yMid.toFixed(1)}" x2="${w - padRight}" y2="${yMid.toFixed(1)}" stroke="rgba(51, 65, 85, 0.35)" stroke-width="0.75" stroke-dasharray="2 3" />
+      <line x1="${padLeft}" y1="${yBot.toFixed(1)}" x2="${w - padRight}" y2="${yBot.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.75" />
+
+      <text x="${padLeft - 6}" y="${(yTop + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(maxV)}°</text>
+      <text x="${padLeft - 6}" y="${(yMid + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(midVal)}°</text>
+      <text x="${padLeft - 6}" y="${(yBot + 3).toFixed(1)}" fill="#64748b" font-size="9" font-weight="700" text-anchor="end" font-family="var(--font-mono, monospace)">${Math.round(minV)}°</text>
+    `;
+
+    // 24-Hour Timeframe Markers Along Bottom X-Axis
+    let xAxisMarkup = "";
+    const nowMs = Date.now();
+    for (let k = 0; k < 5; k++) {
+      const tickX = padLeft + (k / 4.0) * drawW;
+      const hoursAgo = (4 - k) * 6;
+      const tickDate = new Date(nowMs - hoursAgo * 3600 * 1000);
+      const hour12 = tickDate.toLocaleTimeString([], { hour: "numeric" });
+      let label = hour12;
+      let anchor = "middle";
+      let textX = tickX;
+
+      if (k === 0) {
+        label = `24h ago (${hour12})`;
+        anchor = "start";
+        textX = padLeft;
+      } else if (k === 4) {
+        label = "Now";
+        anchor = "end";
+        textX = w - padRight;
+      }
+
+      xAxisMarkup += `
+        <line x1="${tickX.toFixed(1)}" y1="${yBase}" x2="${tickX.toFixed(1)}" y2="${(yBase + 4).toFixed(1)}" stroke="#475569" stroke-width="1" />
+        <text x="${textX.toFixed(1)}" y="${(yBase + 16).toFixed(1)}" fill="#94a3b8" font-size="9" font-weight="600" text-anchor="${anchor}" font-family="var(--font-sans, sans-serif)">${escapeHtml(label)}</text>
       `;
     }
 
@@ -997,11 +1120,18 @@
           <stop offset="0%" stop-color="#10b981" stop-opacity="0.25" />
           <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
         </linearGradient>
+        <filter id="glowAmber" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#fbbf24" flood-opacity="0.8" />
+        </filter>
+        <filter id="glowCyan" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#38bdf8" flood-opacity="0.8" />
+        </filter>
       </defs>
-      <line x1="0" y1="${padY}" x2="${w}" y2="${padY}" stroke="#334155" stroke-width="0.75" stroke-dasharray="2 4" />
-      <line x1="0" y1="${h - padY}" x2="${w}" y2="${h - padY}" stroke="#334155" stroke-width="0.75" stroke-dasharray="2 4" />
+      ${yGridMarkup}
       ${dewMarkup}
       ${tempMarkup}
+      ${calloutsMarkup}
+      ${xAxisMarkup}
     `;
 
     if (elSparklineRangePill) {
@@ -1336,7 +1466,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.25"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.26"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -4637,10 +4767,20 @@
           comboTrackHtml = `<div class="calendar-combo-track">${ribbonsHtml}</div>`;
         }
 
-        const cellsHtml = (wk.days || [])
+        const emptySlotsCount = Number(wk.leading_empty_slots || 0);
+        let emptySlotsHtml = "";
+        if (emptySlotsCount > 0) {
+          for (let s = 0; s < emptySlotsCount; s++) {
+            emptySlotsHtml += `<div class="calendar-empty-slot" aria-hidden="true"></div>`;
+          }
+        }
+
+        const validDays = (wk.days || []).filter((d) => d && d.in_month);
+        if (validDays.length === 0 && emptySlotsCount === 0) return "";
+
+        const cellsHtml = validDays
           .map((d) => {
             const classes = ["calendar-day-cell", "cal-day-cell"];
-            if (!d.in_month) classes.push("outside-month");
             if (d.is_today) classes.push("is-today");
             if (d.is_future) classes.push("is-future");
             else classes.push("is-past-or-today");
@@ -4699,6 +4839,7 @@
                       aria-label="${escapeHtml(d.full_date_label || d.date)}: ${escapeHtml(d.condition_label || "")}, High ${highStr}, Low ${lowStr}">
                 <div class="cal-day-top">
                   <div class="cal-day-num-wrap">
+                    <span class="cal-day-weekday">${escapeHtml(d.weekday_short || d.weekday || "")}</span>
                     <span class="cal-day-num">${d.day}</span>
                     ${d.is_today ? '<span class="cal-today-pill">TODAY</span>' : ""}
                   </div>
@@ -4723,7 +4864,7 @@
         return `
           <div class="calendar-week-block">
             ${comboTrackHtml}
-            <div class="calendar-week-grid">${cellsHtml}</div>
+            <div class="calendar-week-grid">${emptySlotsHtml}${cellsHtml}</div>
           </div>`;
       })
       .join("");

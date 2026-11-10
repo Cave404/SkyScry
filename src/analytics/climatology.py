@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.25)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.26)."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class ClimatologyEngine:
             req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "SkyScry/0.0.25 (https://github.com/Cave404/SkyScry)",
+                    "User-Agent": "SkyScry/0.0.26 (https://github.com/Cave404/SkyScry)",
                     "Accept": "application/json",
                 },
             )
@@ -1007,6 +1007,58 @@ class ClimatologyEngine:
             logger.debug("Open-Meteo archive range fetch warning: %s", exc)
             return {}
 
+    @staticmethod
+    def _build_week_dict(
+        wk_days: list[dict[str, Any]],
+        week_idx: int,
+        leading_slots: int,
+        combo_label_map: dict[str, tuple[str, str]],
+    ) -> dict[str, Any]:
+        """Group days into a week row with leading slot offsets and consecutive combo ribbons."""
+        combos: list[dict[str, Any]] = []
+        c_start = 0
+        while c_start < len(wk_days):
+            c_type = wk_days[c_start].get("condition_type")
+            c_end = c_start
+            while c_end + 1 < len(wk_days) and wk_days[c_end + 1].get("condition_type") == c_type:
+                c_end += 1
+            span_len = c_end - c_start + 1
+            if span_len >= 2:
+                base_title, tone = combo_label_map.get(str(c_type), ("Weather Streak", "blue"))
+                combo_info = {
+                    "start_col": c_start + leading_slots,
+                    "end_col": c_end + leading_slots,
+                    "span": span_len,
+                    "condition_type": c_type,
+                    "tone": tone,
+                    "label": f"{base_title} ({span_len} Days)",
+                    "start_date": wk_days[c_start].get("date"),
+                    "end_date": wk_days[c_end].get("date"),
+                }
+                combos.append(combo_info)
+                for col_i in range(c_start, c_end + 1):
+                    pos = "middle"
+                    if col_i == c_start:
+                        pos = "start"
+                    elif col_i == c_end:
+                        pos = "end"
+                    wk_days[col_i]["combo"] = {
+                        "position": pos,
+                        "span": span_len,
+                        "tone": tone,
+                        "label": combo_info["label"] if col_i == c_start else "",
+                    }
+            else:
+                wk_days[c_start]["combo"] = None
+            c_start = c_end + 1
+
+        return {
+            "week_index": week_idx,
+            "days": wk_days,
+            "combos": combos,
+            "leading_empty_slots": leading_slots,
+        }
+
     def get_weather_calendar(
         self,
         year: Optional[int] = None,
@@ -1023,12 +1075,12 @@ class ClimatologyEngine:
         target_year = max(2020, min(2035, target_year))
         target_month = max(1, min(12, target_month))
 
-        # Build Sunday-first 6-week (or 5-week) calendar grid including leading/trailing padding days
-        cal = calendar.Calendar(firstweekday=6)  # 6 = Sunday
-        month_weeks = cal.monthdatescalendar(target_year, target_month)
-        all_grid_dates: list[date] = [d for wk in month_weeks for d in wk]
+        # Build month dates strictly for the requested target_month (no prev/next month dates!)
+        _, num_days = calendar.monthrange(target_year, target_month)
+        all_grid_dates: list[date] = [date(target_year, target_month, day_num) for day_num in range(1, num_days + 1)]
         grid_start_str = all_grid_dates[0].isoformat()
         grid_end_str = all_grid_dates[-1].isoformat()
+        first_weekday_offset = (all_grid_dates[0].weekday() + 1) % 7  # 0=Sun, 1=Mon, ..., 6=Sat
 
         # Sync recent daily_summaries so Today & recent days are fresh
         try:
@@ -1305,6 +1357,9 @@ class ClimatologyEngine:
                         "day": d_obj.day,
                         "month": d_obj.month,
                         "year": d_obj.year,
+                        "weekday_idx": (d_obj.weekday() + 1) % 7,
+                        "weekday_short": d_obj.strftime("%a"),
+                        "weekday": d_obj.strftime("%a"),
                         "weekday_name": d_obj.strftime("%A"),
                         "full_date_label": f"{d_obj.strftime('%A')}, {d_obj.strftime('%B')} {d_obj.day}, {d_obj.year}",
                         "in_month": in_month,
@@ -1503,6 +1558,9 @@ class ClimatologyEngine:
                         "day": d_obj.day,
                         "month": d_obj.month,
                         "year": d_obj.year,
+                        "weekday_idx": (d_obj.weekday() + 1) % 7,
+                        "weekday_short": d_obj.strftime("%a"),
+                        "weekday": d_obj.strftime("%a"),
                         "weekday_name": d_obj.strftime("%A"),
                         "full_date_label": f"{d_obj.strftime('%A')}, {d_obj.strftime('%B')} {d_obj.day}, {d_obj.year}",
                         "in_month": in_month,
@@ -1544,48 +1602,50 @@ class ClimatologyEngine:
             "windy": ("Breezy Stretch", "teal"),
         }
 
+        # 4. Group strictly current-month days into Sunday-first weekly rows
+        combo_label_map = {
+            "sunny": ("Sunny Streak", "gold"),
+            "partly_cloudy": ("Fair & Mild Pattern", "amber"),
+            "cloudy": ("Overcast Stretch", "slate"),
+            "rain": ("Wet Pattern", "blue"),
+            "storm": ("Stormy Pattern", "violet"),
+            "fog": ("Foggy Stretch", "teal"),
+            "snow": ("Wintry Stretch", "cyan"),
+            "windy": ("Breezy Stretch", "teal"),
+        }
+
         weeks_out: list[dict[str, Any]] = []
-        for wk_idx in range(0, len(days_list), 7):
-            wk_days = days_list[wk_idx : wk_idx + 7]
-            combos: list[dict[str, Any]] = []
-            c_start = 0
-            while c_start < len(wk_days):
-                c_type = wk_days[c_start]["condition_type"]
-                c_end = c_start
-                while c_end + 1 < len(wk_days) and wk_days[c_end + 1]["condition_type"] == c_type:
-                    c_end += 1
-                span_len = c_end - c_start + 1
-                if span_len >= 2:
-                    base_title, tone = combo_label_map.get(c_type, ("Weather Streak", "blue"))
-                    combo_info = {
-                        "start_col": c_start,
-                        "end_col": c_end,
-                        "span": span_len,
-                        "condition_type": c_type,
-                        "tone": tone,
-                        "label": f"{base_title} ({span_len} Days)",
-                    }
-                    combos.append(combo_info)
-                    for col_i in range(c_start, c_end + 1):
-                        pos = "middle"
-                        if col_i == c_start:
-                            pos = "start"
-                        elif col_i == c_end:
-                            pos = "end"
-                        wk_days[col_i]["combo"] = {
-                            "position": pos,
-                            "span": span_len,
-                            "tone": tone,
-                            "label": combo_info["label"] if col_i == c_start else "",
-                        }
-                else:
-                    wk_days[c_start]["combo"] = None
-                c_start = c_end + 1
+        cur_week_days: list[dict[str, Any]] = []
+        is_first_week = True
 
-            weeks_out.append({"week_index": wk_idx // 7, "days": wk_days, "combos": combos})
+        for d_item in days_list:
+            cur_week_days.append(d_item)
+            # Sunday-first: Saturday (weekday_idx == 6) ends the week row
+            if d_item.get("weekday_idx") == 6:
+                weeks_out.append(
+                    self._build_week_dict(
+                        cur_week_days,
+                        len(weeks_out),
+                        first_weekday_offset if is_first_week else 0,
+                        combo_label_map,
+                    )
+                )
+                cur_week_days = []
+                is_first_week = False
 
-        # 5. Compute Monthly Summary Strip Statistics (strictly across `in_month` days)
-        in_month_days = [d for d in days_list if d.get("in_month")]
+        if cur_week_days:
+            # Final week of the month (strictly ends on the last day of the month; NO trailing next-month days!)
+            weeks_out.append(
+                self._build_week_dict(
+                    cur_week_days,
+                    len(weeks_out),
+                    first_weekday_offset if is_first_week else 0,
+                    combo_label_map,
+                )
+            )
+
+        # 5. Compute Monthly Summary Strip Statistics (strictly across current month days)
+        in_month_days = days_list
         highs_m = [float(d["high_f"]) for d in in_month_days if d.get("high_f") is not None]
         lows_m = [float(d["low_f"]) for d in in_month_days if d.get("low_f") is not None]
         recorded_rain = sum(float(d.get("rain_in") or 0.0) for d in in_month_days if not d.get("is_future"))
@@ -1603,6 +1663,8 @@ class ClimatologyEngine:
             "month_name": month_name,
             "month_label": f"{month_name} {target_year}",
             "today": today_str,
+            "leading_empty_slots": first_weekday_offset,
+            "days_in_month": num_days,
             "summary": {
                 "avg_high_f": round(sum(highs_m) / len(highs_m), 1) if highs_m else None,
                 "avg_low_f": round(sum(lows_m) / len(lows_m), 1) if lows_m else None,
@@ -1648,7 +1710,7 @@ class ClimatologyEngine:
             url = f"https://api.open-meteo.com/v1/forecast?{params}"
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.25 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.26 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
