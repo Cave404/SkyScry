@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.29 — 7-View Frontend Controller
+ * SkyScry v0.0.30 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -94,6 +94,8 @@
   const elDrawerAuthText = document.getElementById("drawer-auth-text");
   const elDrawerAuthIcon = document.getElementById("drawer-auth-icon");
   const elSparklineRangePill = document.getElementById("sparkline-range-pill");
+  let cachedSparklineTempPoints = null;
+  let cachedSparklineDewPoints = null;
   const elOvWindBearingVal = document.getElementById("ov-wind-bearing-val");
 
   // System Status Popover DOM
@@ -266,7 +268,7 @@
   const elOvLtLastTime = document.getElementById("ov-lt-last-time");
   const elOvLtLastDist = document.getElementById("ov-lt-last-dist");
   const elBtnOvSimulateStrike = document.getElementById("btn-ov-simulate-strike");
-  const elBtnOvClearStrikes = document.getElementById("btn-ov-clear-strikes");
+  const elBtnOvClearStrikes = document.getElementById("btn-clear-strikes") || document.getElementById("btn-ov-clear-strikes");
   const elOvLightningNoiseBadge = document.getElementById("ov-lightning-noise-badge");
 
   // Inline Ground-Truth Check-In Bar DOM
@@ -964,6 +966,8 @@
 
   function renderDualSvgSparkline(svgEl, tempPoints, dewPoints) {
     if (!svgEl) return;
+    cachedSparklineTempPoints = tempPoints;
+    cachedSparklineDewPoints = dewPoints;
     const parentBox = svgEl.closest(".hero-sparkline-panel");
     const tVals = extractNumericSeries(tempPoints);
     const dVals = extractNumericSeries(dewPoints);
@@ -974,8 +978,15 @@
     }
     if (parentBox) parentBox.style.display = "";
 
-    svgEl.setAttribute("viewBox", "0 0 800 230");
-    svgEl.setAttribute("preserveAspectRatio", "none");
+    svgEl.removeAttribute("preserveAspectRatio");
+
+    const container = svgEl.closest(".hero-chart-container") || svgEl.parentElement || parentBox || svgEl;
+    const W = Math.max(320, Math.round(container.clientWidth || (svgEl.getBoundingClientRect ? svgEl.getBoundingClientRect().width : 0) || 900));
+    const H = window.innerWidth <= 768 ? 210 : 250;
+
+    svgEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svgEl.setAttribute("width", "100%");
+    svgEl.setAttribute("height", String(H));
 
     const allVals = tVals.concat(dVals);
     const minVal = Math.min(...allVals);
@@ -985,15 +996,13 @@
     const span = Math.max(2.0, yMax - yMin);
     const midVal = Math.round((yMax + yMin) / 2);
 
-    const w = 800;
-    const h = 230;
-    const padTop = 32;
+    const padTop = 36;
     const padBottom = 34;
-    const padLeft = 40;
+    const padLeft = 44;
     const padRight = 24;
-    const drawW = w - padLeft - padRight; // 736
-    const drawH = h - padTop - padBottom; // 164
-    const yBase = padTop + drawH;         // 196
+    const drawW = Math.max(10, W - padLeft - padRight);
+    const drawH = Math.max(10, H - padTop - padBottom);
+    const yBase = padTop + drawH;
 
     function calcX(idx, total) {
       return padLeft + (idx / Math.max(1, total - 1)) * drawW;
@@ -1070,28 +1079,28 @@
       };
     }
 
-    // High & Low Callout Markers Directly on the Curve
+    // High & Low Callout Markers Directly on the Curve (1:1 unskewed aspect ratio)
     let calloutsMarkup = "";
     if (highPt) {
-      const clampedHighX = Math.max(90, Math.min(w - padRight - 80, highPt.x));
-      const highLabelY = Math.max(16, highPt.y - 12);
+      const clampedHighX = Math.max(padLeft + 80, Math.min(W - padRight - 80, highPt.x));
+      const highLabelY = Math.max(18, highPt.y - 14);
       const highText = `▲ High: ${highPt.val.toFixed(1)}°F (${highPt.timeStr})`;
       calloutsMarkup += `
         <!-- High Peak Callout -->
         <circle cx="${highPt.x.toFixed(1)}" cy="${highPt.y.toFixed(1)}" r="5" fill="#fbbf24" stroke="#ffffff" stroke-width="2" filter="url(#glowAmber)" />
-        <rect x="${(clampedHighX - 78).toFixed(1)}" y="${(highLabelY - 12).toFixed(1)}" width="156" height="17" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(251, 191, 36, 0.75)" stroke-width="1" />
-        <text x="${clampedHighX.toFixed(1)}" y="${(highLabelY + 1).toFixed(1)}" fill="#fde68a" font-size="10.5" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(highText)}</text>
+        <rect x="${(clampedHighX - 80).toFixed(1)}" y="${(highLabelY - 12).toFixed(1)}" width="160" height="18" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(251, 191, 36, 0.75)" stroke-width="1" />
+        <text x="${clampedHighX.toFixed(1)}" y="${(highLabelY + 2).toFixed(1)}" fill="#fde68a" font-size="11" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(highText)}</text>
       `;
     }
     if (lowPt) {
-      const clampedLowX = Math.max(90, Math.min(w - padRight - 80, lowPt.x));
-      const lowLabelY = (lowPt.y > yBase - 22) ? (lowPt.y - 12) : (lowPt.y + 18);
+      const clampedLowX = Math.max(padLeft + 80, Math.min(W - padRight - 80, lowPt.x));
+      const lowLabelY = (lowPt.y > yBase - 24) ? (lowPt.y - 14) : (lowPt.y + 18);
       const lowText = `▼ Low: ${lowPt.val.toFixed(1)}°F (${lowPt.timeStr})`;
       calloutsMarkup += `
         <!-- Low Peak Callout -->
         <circle cx="${lowPt.x.toFixed(1)}" cy="${lowPt.y.toFixed(1)}" r="5" fill="#38bdf8" stroke="#ffffff" stroke-width="2" filter="url(#glowCyan)" />
-        <rect x="${(clampedLowX - 78).toFixed(1)}" y="${(lowLabelY - 12).toFixed(1)}" width="156" height="17" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(56, 189, 248, 0.75)" stroke-width="1" />
-        <text x="${clampedLowX.toFixed(1)}" y="${(lowLabelY + 1).toFixed(1)}" fill="#7dd3fc" font-size="10.5" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(lowText)}</text>
+        <rect x="${(clampedLowX - 80).toFixed(1)}" y="${(lowLabelY - 12).toFixed(1)}" width="160" height="18" rx="4" fill="rgba(15, 23, 42, 0.92)" stroke="rgba(56, 189, 248, 0.75)" stroke-width="1" />
+        <text x="${clampedLowX.toFixed(1)}" y="${(lowLabelY + 2).toFixed(1)}" fill="#7dd3fc" font-size="11" font-weight="700" text-anchor="middle" font-family="var(--font-sans, sans-serif)">${escapeHtml(lowText)}</text>
       `;
     }
 
@@ -1101,18 +1110,19 @@
     const yBot = yBase;
 
     const yGridMarkup = `
-      <line x1="${padLeft}" y1="${yTop.toFixed(1)}" x2="${w - padRight}" y2="${yTop.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
-      <line x1="${padLeft}" y1="${yMid.toFixed(1)}" x2="${w - padRight}" y2="${yMid.toFixed(1)}" stroke="rgba(51, 65, 85, 0.35)" stroke-width="0.85" stroke-dasharray="3 4" />
-      <line x1="${padLeft}" y1="${yBot.toFixed(1)}" x2="${w - padRight}" y2="${yBot.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
+      <line x1="${padLeft}" y1="${yTop.toFixed(1)}" x2="${W - padRight}" y2="${yTop.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
+      <line x1="${padLeft}" y1="${yMid.toFixed(1)}" x2="${W - padRight}" y2="${yMid.toFixed(1)}" stroke="rgba(51, 65, 85, 0.35)" stroke-width="0.85" stroke-dasharray="3 4" />
+      <line x1="${padLeft}" y1="${yBot.toFixed(1)}" x2="${W - padRight}" y2="${yBot.toFixed(1)}" stroke="rgba(51, 65, 85, 0.45)" stroke-width="0.85" stroke-dasharray="3 4" />
 
       <text x="${padLeft - 8}" y="${(yTop + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${yMax}°</text>
       <text x="${padLeft - 8}" y="${(yMid + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${midVal}°</text>
       <text x="${padLeft - 8}" y="${(yBot + 4).toFixed(1)}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="end" font-family="var(--font-mono, monospace)">${yMin}°</text>
     `;
 
-    // 24-Hour Timeframe Markers Along Bottom X-Axis (Baseline y = 218)
+    // 24-Hour Timeframe Markers Along Bottom X-Axis
     let xAxisMarkup = "";
     const nowMs = Date.now();
+    const xLabelY = Math.min(H - 8, yBase + 22);
     for (let k = 0; k < 5; k++) {
       const tickX = padLeft + (k / 4.0) * drawW;
       const hoursAgo = (4 - k) * 6;
@@ -1129,12 +1139,12 @@
       } else if (k === 4) {
         label = "Now";
         anchor = "end";
-        textX = w - padRight;
+        textX = W - padRight;
       }
 
       xAxisMarkup += `
         <line x1="${tickX.toFixed(1)}" y1="${yBase}" x2="${tickX.toFixed(1)}" y2="${(yBase + 5).toFixed(1)}" stroke="#475569" stroke-width="1" />
-        <text x="${textX.toFixed(1)}" y="218" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="${anchor}" font-family="var(--font-sans, sans-serif)">${escapeHtml(label)}</text>
+        <text x="${textX.toFixed(1)}" y="${xLabelY}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="${anchor}" font-family="var(--font-sans, sans-serif)">${escapeHtml(label)}</text>
       `;
     }
 
@@ -1494,7 +1504,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.29"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.30"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -3664,23 +3674,32 @@
       btn.innerHTML = `<span class="spinner-inline"></span> Clearing...`;
     }
     simulatedLightningState = null;
+    renderLightningCard({
+      strikes_15m: 0,
+      strikes_30m: 0,
+      strikes_1h: 0,
+      strikes_24h: 0,
+      last_strike_time: null,
+      last_strike_dist_mi: null,
+      closest_dist_24h_mi: null,
+      furthest_dist_24h_mi: null,
+      recent_rings: [],
+    });
     try {
       const resp = await fetch("/api/lightning/clear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hours: 24 }),
+        body: JSON.stringify({}),
       });
       const data = await resp.json();
       appendSystemConsoleLog(
-        `Cleared ${data.deleted_strikes || 0} false/test strike(s) from SQLite. Sensor baseline synchronized.`,
+        `Cleared ${data.deleted_strikes || 0} strike record(s) from SQLite. Sensor baseline synchronized.`,
         "CLEARED"
       );
       if (typeof showToast === "function") {
-        showToast("False & test strikes cleared. Sensor baseline reset.", "success");
+        showToast("Lightning strikes cleared. Sensor baseline reset.", "success");
       }
-      if (typeof fetchOverviewData === "function") {
-        await fetchOverviewData();
-      }
+      await fetchOverview();
     } catch (err) {
       console.error("Failed to clear false strikes:", err);
       appendSystemConsoleLog(`Failed to clear false strikes: ${err.message}`, "ERROR");
@@ -6714,6 +6733,17 @@
         window.open(`/api/readings?${params.toString()}`, "_blank");
       });
     }
+
+    // Debounced resize listener for responsive 1:1 SVG sparkline rendering without distortion
+    let sparklineResizeDebounce = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(sparklineResizeDebounce);
+      sparklineResizeDebounce = setTimeout(() => {
+        if (elOvHeroSparklineSvg && cachedSparklineTempPoints) {
+          renderDualSvgSparkline(elOvHeroSparklineSvg, cachedSparklineTempPoints, cachedSparklineDewPoints);
+        }
+      }, 150);
+    });
 
     // Initial startup: load persisted SQLite system_settings first so saved coordinates are active immediately
     if (elHeroIcon) {

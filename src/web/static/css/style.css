@@ -1725,8 +1725,8 @@ code {
 .hero-chart-container,
 .sparkline-card {
   width: 100%;
-  min-height: 235px;
-  height: 240px;
+  min-height: 240px;
+  height: 250px;
   position: relative;
   box-sizing: border-box;
 }
@@ -1905,8 +1905,8 @@ code {
   .sparkline-svg-container,
   .hero-chart-container,
   .sparkline-card {
-    min-height: 195px !important;
-    height: 195px !important;
+    min-height: 210px !important;
+    height: 210px !important;
   }
 }
 
@@ -5317,7 +5317,7 @@ input[type="password"]:focus {
 }
 
 /* ==========================================================================
-   v0.0.29: NWS ALERTS BANNER, NOAA WEATHER RADIO, & CALENDAR ALERT RIBBONS
+   v0.0.30: NWS ALERTS BANNER, NOAA WEATHER RADIO, & CALENDAR ALERT RIBBONS
    ========================================================================== */
 
 /* 1. Overview Dashboard Active Alert Banner */

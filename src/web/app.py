@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.29)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.30)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.29 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.30 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -667,11 +667,11 @@ def create_app(
     def api_lightning_clear() -> Response:
         """Purge false, unconfirmed, or simulated test strikes from the 24h counter and reset the sensor baseline."""
         body = request.get_json(silent=True) or {}
-        hours_raw = body.get("hours", request.args.get("hours", 24))
+        hours_raw = body.get("hours", request.args.get("hours"))
         try:
-            hours = int(hours_raw) if hours_raw is not None else 24
+            hours = int(hours_raw) if hours_raw is not None else None
         except (ValueError, TypeError):
-            hours = 24
+            hours = None
         result = db.clear_lightning_strikes(hours=hours)
         return jsonify(result)
 

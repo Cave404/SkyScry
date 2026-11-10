@@ -655,7 +655,10 @@ class WeatherDatabase:
             )
 
     def auto_classify_isolated_strikes(self) -> int:
-        """Retroactively identify single isolated false EMI/static pulses under high pressure (>30.00 inHg) and mark confirmed=0."""
+        """Startup Auto-Purge of Isolated Fair-Weather Static Pops (v0.0.30):
+        Identify and set confirmed = 0 on any row in lightning_strikes where the total number
+        of distinct strike rows within ±30 minutes is <= 1 AND delta_strikes <= 2.
+        This immediately clears stuck false static pops (e.g. isolated 17 mi readings) on startup."""
         with self._lock:
             if self._conn is None:
                 return 0
@@ -664,7 +667,7 @@ class WeatherDatabase:
                     """
                     SELECT id, timestamp, delta_strikes, distance_mi
                     FROM lightning_strikes
-                    WHERE COALESCE(confirmed, 1) = 1
+                    WHERE confirmed = 1 OR confirmed IS NULL
                     ORDER BY timestamp ASC;
                     """
                 ).fetchall()
@@ -679,12 +682,12 @@ class WeatherDatabase:
                     if dt is None:
                         continue
                     delta_s = int(row["delta_strikes"] or 1)
-                    if delta_s >= 3:
+                    if delta_s > 2:
                         continue
 
-                    # Check if any OTHER strike exists within +/- 45 minutes
-                    t_start = format_utc_z(dt - timedelta(minutes=45))
-                    t_end = format_utc_z(dt + timedelta(minutes=45))
+                    # Check if any OTHER strike exists within +/- 30 minutes
+                    t_start = format_utc_z(dt - timedelta(minutes=30))
+                    t_end = format_utc_z(dt + timedelta(minutes=30))
                     other = self._conn.execute(
                         """
                         SELECT COUNT(*) AS c FROM lightning_strikes
@@ -695,50 +698,15 @@ class WeatherDatabase:
                     nearby_count = int(other["c"] or 0) if other else 0
 
                     if nearby_count == 0:
-                        # Check ambient barometric pressure near this event
-                        p_row = self._conn.execute(
-                            """
-                            SELECT pressure_hpa FROM reference_weather_history
-                            WHERE pressure_hpa IS NOT NULL AND pressure_hpa BETWEEN 870.0 AND 1085.0
-                            ORDER BY ABS(STRFTIME('%s', timestamp) - STRFTIME('%s', ?)) ASC
-                            LIMIT 1;
-                            """,
-                            (ts,),
-                        ).fetchone()
-                        p_inhg: Optional[float] = None
-                        if p_row and p_row["pressure_hpa"] is not None:
-                            p_inhg = round(float(p_row["pressure_hpa"]) * HPA_TO_INHG, 2)
-                        else:
-                            baro = self.get_barometer_summary()
-                            p_inhg = baro.get("pressure_inhg")
-
-                        t_24h_before = format_utc_z(dt - timedelta(hours=24))
-                        t_24h_after = format_utc_z(dt + timedelta(hours=24))
-                        total_24h_row = self._conn.execute(
-                            """
-                            SELECT COUNT(*) AS c FROM lightning_strikes
-                            WHERE id != ? AND timestamp BETWEEN ? AND ?;
-                            """,
-                            (row_id, t_24h_before, t_24h_after),
-                        ).fetchone()
-                        other_events_24h = int(total_24h_row["c"] or 0) if total_24h_row else 0
-
-                        is_isolated_high_pressure = False
-                        if p_inhg is not None and p_inhg >= 30.00:
-                            is_isolated_high_pressure = True
-                        elif other_events_24h == 0 and (p_inhg is None or p_inhg > 29.98):
-                            is_isolated_high_pressure = True
-
-                        if is_isolated_high_pressure:
-                            self._conn.execute(
-                                "UPDATE lightning_strikes SET confirmed = 0 WHERE id = ?;",
-                                (row_id,),
-                            )
-                            reclassified += 1
+                        self._conn.execute(
+                            "UPDATE lightning_strikes SET confirmed = 0 WHERE id = ?;",
+                            (row_id,),
+                        )
+                        reclassified += 1
 
                 if reclassified > 0:
                     logger.info(
-                        "[LIGHTNING NOISE GATE] Auto-classified %d isolated high-pressure static pulse(s) as unconfirmed (confirmed=0).",
+                        "[LIGHTNING NOISE GATE] Auto-classified %d isolated static pulse(s) (delta<=2, 0 nearby within ±30m) as unconfirmed (confirmed=0).",
                         reclassified,
                     )
                 return reclassified
@@ -1169,16 +1137,16 @@ class WeatherDatabase:
                     dist_mi = max(1.0, min(25.0, dist_mi))
                     rfi_flag = int(reading.rfi_detected or 0)
 
-                    # Smart Strike Corroboration & Noise Gate:
-                    # 1. Check if another strike occurred within the last 45 minutes
-                    cutoff_45m = format_utc_z(reading.timestamp - timedelta(minutes=45))
+                    # Smart Strike Corroboration & Noise Gate (v0.0.30):
+                    # 1. Check if another strike occurred within the last 30 minutes
+                    cutoff_30m = format_utc_z(reading.timestamp - timedelta(minutes=30))
                     recent_row = self._conn.execute(
                         """
                         SELECT COUNT(*) AS cnt, COALESCE(SUM(delta_strikes), 0) AS total_delta
                         FROM lightning_strikes
                         WHERE timestamp >= ?;
                         """,
-                        (cutoff_45m,),
+                        (cutoff_30m,),
                     ).fetchone()
                     recent_cnt = int(recent_row["cnt"] or 0) if recent_row else 0
                     recent_delta = int(recent_row["total_delta"] or 0) if recent_row else 0
@@ -1188,53 +1156,54 @@ class WeatherDatabase:
                     curr_inhg = curr_baro.get("pressure_inhg")
                     curr_pop = self.get_current_pop_percent()
 
-                    # Corroborate strike if:
-                    # - Another strike occurred within last 45 minutes
-                    # - OR delta_strikes >= 3 across this or recent packets
-                    # - OR current barometric pressure < 29.95 inHg
-                    # - OR NWS/forecast PoP >= 20%
+                    # Incoming Packet Rule:
+                    # When a new strike delta arrives from Acurite-6045M,
+                    # if current barometric pressure >= 30.00 inHg and no other strike packet was received
+                    # in the last 30 minutes (and delta_strikes <= 2), insert it with confirmed = 0 (pending confirmation)
+                    # and only promote it to confirmed = 1 if a second strike packet arrives within 30 minutes!
                     is_corroborated = False
-                    if recent_cnt > 0:
-                        is_corroborated = True
-                    elif delta_strikes >= 3 or (delta_strikes + recent_delta) >= 3:
-                        is_corroborated = True
-                    elif curr_inhg is not None and curr_inhg < 29.95:
-                        is_corroborated = True
-                    elif curr_pop is not None and curr_pop >= 20:
-                        is_corroborated = True
+                    confirmed_val = 1
 
-                    # Unconfirmed Noise Gate:
-                    # If sky is high-pressure clear (pressure >= 30.00 inHg and PoP < 15%)
-                    # and it is a single isolated pulse with no follow-up strike within 30-45 minutes:
-                    is_high_pressure_clear = (
-                        curr_inhg is not None
-                        and curr_inhg >= 30.00
-                        and (curr_pop is None or curr_pop < 15)
+                    is_high_pressure_static = (
+                        (curr_inhg is not None and curr_inhg >= 30.00)
+                        and recent_cnt == 0
+                        and delta_strikes <= 2
                     )
 
-                    confirmed_val = 1
-                    if not is_corroborated and (is_high_pressure_clear or delta_strikes < 3):
+                    if is_high_pressure_static:
                         confirmed_val = 0
+                        is_corroborated = False
                         logger.warning(
-                            "[LIGHTNING NOISE GATE] Filtered uncorroborated static pulse from %s: "
-                            "delta=%d, dist=%.1f mi under %.2f inHg (PoP=%s%%) -> marked unconfirmed (confirmed=0)",
+                            "[LIGHTNING NOISE GATE] Filtered uncorroborated high-pressure static pulse from %s: "
+                            "delta=%d, dist=%.1f mi under %.2f inHg -> marked pending confirmation (confirmed=0)",
                             sensor_key,
                             delta_strikes,
                             dist_mi,
                             curr_inhg or 30.00,
-                            curr_pop if curr_pop is not None else 0,
                         )
-                    else:
-                        logger.info(
-                            "[LIGHTNING CORROBORATED] Confirmed lightning strike from %s: "
-                            "delta=%d, dist=%.1f mi (recent_45m=%d, baro=%.2f inHg, PoP=%s%%)",
+                    elif recent_cnt > 0:
+                        # Second strike packet arrived within 30 minutes -> promote to confirmed = 1!
+                        is_corroborated = True
+                        confirmed_val = 1
+                    elif delta_strikes >= 3 or (delta_strikes + recent_delta) >= 3:
+                        is_corroborated = True
+                        confirmed_val = 1
+                    elif (curr_inhg is not None and curr_inhg < 29.95) or (curr_pop is not None and curr_pop >= 20):
+                        is_corroborated = True
+                        confirmed_val = 1
+                    elif delta_strikes <= 2 and recent_cnt == 0:
+                        confirmed_val = 0
+                        is_corroborated = False
+                        logger.warning(
+                            "[LIGHTNING NOISE GATE] Filtered isolated pulse from %s: "
+                            "delta=%d, dist=%.1f mi -> marked unconfirmed (confirmed=0)",
                             sensor_key,
                             delta_strikes,
                             dist_mi,
-                            recent_cnt,
-                            curr_inhg or 29.92,
-                            curr_pop if curr_pop is not None else "--",
                         )
+                    else:
+                        is_corroborated = True
+                        confirmed_val = 1
 
                     with self._conn:
                         self._conn.execute(
@@ -1245,15 +1214,15 @@ class WeatherDatabase:
                             """,
                             (utc_ts, sensor_key, delta_strikes, round(dist_mi, 1), rfi_flag, confirmed_val),
                         )
-                        # If corroborated, promote any prior unconfirmed strikes in the last 45m:
-                        if is_corroborated:
+                        # If a second strike packet arrives within 30 minutes, promote any prior unconfirmed strikes in the last 30m:
+                        if is_corroborated and recent_cnt > 0:
                             self._conn.execute(
                                 """
                                 UPDATE lightning_strikes
                                 SET confirmed = 1
                                 WHERE timestamp >= ? AND confirmed = 0;
                                 """,
-                                (cutoff_45m,),
+                                (cutoff_30m,),
                             )
 
             # Ignore storm_dist == 31 / standby distances when delta_strikes == 0
@@ -3048,19 +3017,19 @@ class WeatherDatabase:
             if self._conn is not None:
                 # 1. Confirmed strike counts across time windows
                 r_15m = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND confirmed = 1;",
                     (cutoff_15m,),
                 ).fetchone()
                 strikes_15m = int(r_15m["c"] or 0) if r_15m else 0
 
                 r_30m = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND confirmed = 1;",
                     (cutoff_30m,),
                 ).fetchone()
                 strikes_30m = int(r_30m["c"] or 0) if r_30m else 0
 
                 r_1h = self._conn.execute(
-                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1;",
+                    "SELECT COALESCE(SUM(delta_strikes), 0) AS c FROM lightning_strikes WHERE timestamp >= ? AND confirmed = 1;",
                     (cutoff_1h,),
                 ).fetchone()
                 strikes_1h = int(r_1h["c"] or 0) if r_1h else 0
@@ -3073,7 +3042,7 @@ class WeatherDatabase:
                         MAX(distance_mi) AS max_d
                     FROM lightning_strikes
                     WHERE timestamp >= ? AND distance_mi >= 1.0 AND distance_mi <= 25.0
-                      AND COALESCE(confirmed, 1) = 1;
+                      AND confirmed = 1;
                     """,
                     (cutoff_24h,),
                 ).fetchone()
@@ -3083,13 +3052,17 @@ class WeatherDatabase:
                         closest_dist_24h_mi = round(float(r_24h["min_d"]), 1)
                     if r_24h["max_d"] is not None:
                         furthest_dist_24h_mi = round(float(r_24h["max_d"]), 1)
+                else:
+                    strikes_24h = 0
+                    closest_dist_24h_mi = None
+                    furthest_dist_24h_mi = None
 
                 # Unconfirmed static pulses within 24h (filtered noise gate)
                 r_unconfirmed = self._conn.execute(
                     """
                     SELECT COALESCE(SUM(delta_strikes), 0) AS c, MAX(timestamp) AS last_ts
                     FROM lightning_strikes
-                    WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 0;
+                    WHERE timestamp >= ? AND confirmed = 0;
                     """,
                     (cutoff_24h,),
                 ).fetchone()
@@ -3104,7 +3077,7 @@ class WeatherDatabase:
                     SELECT timestamp, distance_mi, rfi
                     FROM lightning_strikes
                     WHERE distance_mi >= 1.0 AND distance_mi <= 25.0
-                      AND COALESCE(confirmed, 1) = 1
+                      AND confirmed = 1
                     ORDER BY timestamp DESC, id DESC LIMIT 1;
                     """
                 ).fetchone()
@@ -3171,7 +3144,7 @@ class WeatherDatabase:
                     """
                     SELECT timestamp, distance_mi, delta_strikes, rfi
                     FROM lightning_strikes
-                    WHERE timestamp >= ? AND COALESCE(confirmed, 1) = 1
+                    WHERE timestamp >= ? AND confirmed = 1
                     ORDER BY timestamp DESC, id DESC LIMIT 25;
                     """,
                     (cutoff_24h,),
@@ -3220,14 +3193,14 @@ class WeatherDatabase:
             "last_unconfirmed_time": last_unconfirmed_time,
         }
 
-    def clear_lightning_strikes(self, hours: Optional[int] = 24) -> dict[str, Any]:
+    def clear_lightning_strikes(self, hours: Optional[int] = None) -> dict[str, Any]:
         """Wipe false, unconfirmed, or simulated test strikes from SQLite and synchronize sensor baseline."""
         now_utc = datetime.now(timezone.utc)
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database connection is closed.")
             with self._conn:
-                if hours is not None and int(hours) > 0:
+                if hours is not None and int(hours) > 0 and int(hours) < 24:
                     cutoff_iso = format_utc_z(now_utc - timedelta(hours=int(hours)))
                     cur = self._conn.execute(
                         "DELETE FROM lightning_strikes WHERE timestamp >= ?;",
@@ -3238,21 +3211,18 @@ class WeatherDatabase:
                     cur = self._conn.execute("DELETE FROM lightning_strikes;")
                     deleted = cur.rowcount
 
-                # Synchronize sensor baseline: clear lingering distance/RFI on recent readings
+                # Synchronize sensor baseline: clear lingering distance/RFI on all lightning readings
                 self._conn.execute(
                     """
                     UPDATE sensor_readings
                     SET storm_dist_mi = NULL, rfi_detected = 0
-                    WHERE (model LIKE '%6045%' OR model LIKE '%lightning%')
-                      AND timestamp >= ?;
-                    """,
-                    (format_utc_z(now_utc - timedelta(hours=24)),),
+                    WHERE (model LIKE '%6045%' OR model LIKE '%lightning%');
+                    """
                 )
 
                 logger.info(
-                    "[LIGHTNING] Purged %d strike records (past %s hours) and synchronized sensor baseline.",
+                    "[LIGHTNING] Purged %d strike records and synchronized sensor baseline.",
                     deleted,
-                    hours or "all",
                 )
                 return {
                     "ok": True,
