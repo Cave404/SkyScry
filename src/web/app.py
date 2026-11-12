@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.33)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.34)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.33 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.34 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -1095,6 +1095,15 @@ def create_app(
         """Return all discovered 433 MHz sensors in deterministic order with RF & battery lifecycle info."""
         sensors = db.get_all_sensors()
         return jsonify({"ok": True, "count": len(sensors), "sensors": sensors})
+
+    @app.route("/api/sensors/configure", methods=["POST"])
+    @admin_guard
+    def api_configure_sensor() -> tuple[Response, int] | Response:
+        """Backwards/spec-compatible endpoint to update sensor metadata by JSON `sensor_key`."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not str(body.get("sensor_key") or "").strip():
+            return jsonify({"ok": False, "error": "Request body must include non-empty 'sensor_key'."}), 400
+        return api_update_sensor(str(body["sensor_key"]).strip())
 
     @app.route("/api/sensors/<path:sensor_key>", methods=["POST", "PATCH"])
     @admin_guard

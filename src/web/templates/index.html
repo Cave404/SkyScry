@@ -813,13 +813,17 @@
             <div class="lightning-header-badges">
               <span id="ov-lightning-noise-badge" class="hidden"></span>
               <span id="ov-lightning-rfi-badge" class="hidden"></span>
+              <button type="button" id="btn-ov-lt-sat-toggle" class="btn-pill-toggle" title="Toggle 25-mile satellite imagery underlay" aria-pressed="true">&#128752;&#65039; Satellite</button>
               <span id="ov-lightning-status-badge" class="badge">Standby &bull; 24s</span>
             </div>
           </div>
 
           <div class="lightning-card-layout">
-            <!-- Left: Static Local Area Range-Ring Visualizer (1 to 25 Mile Detection Radar) -->
-            <div class="lightning-radar-wrap">
+            <!-- Left: Interactive Local Area Range-Ring Visualizer (1 to 25 Mile Detection Radar) -->
+            <div id="ov-lightning-radar-trigger" class="lightning-radar-wrap clickable-radar" role="button" tabindex="0" title="Click to expand 25-mile satellite proximity radar" aria-label="Expand 25-mile satellite lightning proximity radar">
+              <div class="lightning-sat-clip">
+                <img id="ov-lightning-sat-img" class="lightning-sat-img hidden" alt="25-mile local satellite map underlay" loading="lazy" />
+              </div>
               <svg id="ov-lightning-radar-svg" viewBox="0 0 200 200" class="lightning-radar-svg" xmlns="http://www.w3.org/2000/svg" aria-label="1 to 25 Mile Lightning Range-Ring Radar">
                 <defs>
                   <radialGradient id="ltRadarBg" cx="50%" cy="50%" r="50%">
@@ -1100,7 +1104,7 @@
           </p>
         </div>
         <label class="checkbox-label">
-          <input type="checkbox" id="toggle-show-ignored" checked />
+          <input type="checkbox" id="toggle-show-ignored" />
           <span>Show Ignored / Unconfigured Sensors</span>
         </label>
       </div>
@@ -2054,6 +2058,94 @@
       <div class="modal-footer">
         <span class="text-muted" style="font-size: 0.8rem;">Data sourced from ERA5 / NOAA archive and local SQLite sensor history.</span>
         <button id="btn-dismiss-baseline-modal" class="btn btn-secondary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 6: Expanded 25-Mile Satellite Lightning Proximity Radar -->
+  <div id="lightning-radar-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="lt-modal-title" aria-hidden="true">
+    <div class="modal-card lt-modal-card">
+      <div class="modal-header lt-modal-header">
+        <div>
+          <h3 id="lt-modal-title">Lightning Strike Proximity Radar (25-Mile Range)</h3>
+          <div id="lt-modal-subtitle" class="modal-subtitle">Station-centered 25 mi detection envelope &amp; satellite terrain reference</div>
+        </div>
+        <div class="lt-modal-header-actions">
+          <span id="lt-modal-status-badge" class="badge">Standby &bull; 24s</span>
+          <button type="button" id="btn-lt-modal-sat-toggle" class="btn-pill-toggle" aria-pressed="true">&#128752;&#65039; Satellite View</button>
+          <button type="button" id="btn-close-lt-modal" class="lt-modal-close-btn" aria-label="Close lightning proximity radar">&times;</button>
+        </div>
+      </div>
+
+      <div class="lt-modal-body">
+        <div class="lt-modal-stage">
+          <div id="lt-modal-radar-wrap" class="lightning-radar-wrap lt-modal-radar-wrap">
+            <div class="lightning-sat-clip">
+              <img id="lt-modal-sat-img" class="lightning-sat-img hidden" alt="25-mile local satellite map underlay" />
+            </div>
+            <svg id="lt-modal-radar-svg" viewBox="0 0 400 400" class="lightning-radar-svg lt-modal-radar-svg" xmlns="http://www.w3.org/2000/svg" aria-label="Expanded 25-Mile Lightning Proximity Radar">
+              <defs>
+                <radialGradient id="ltModalRadarBg" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#0f172a" />
+                  <stop offset="100%" stop-color="#060b14" />
+                </radialGradient>
+              </defs>
+              <circle cx="200" cy="200" r="180" fill="url(#ltModalRadarBg)" stroke="#334155" stroke-width="2" />
+              <!-- 5, 10, 15, 20, 25 mile concentric reference rings (180/25 = 7.2 px/mi) -->
+              <circle cx="200" cy="200" r="36" fill="none" stroke="rgba(148, 163, 184, 0.35)" stroke-width="1" stroke-dasharray="3,4" />
+              <circle cx="200" cy="200" r="72" fill="none" stroke="rgba(148, 163, 184, 0.35)" stroke-width="1" stroke-dasharray="3,4" />
+              <circle cx="200" cy="200" r="108" fill="none" stroke="rgba(148, 163, 184, 0.35)" stroke-width="1" stroke-dasharray="3,4" />
+              <circle cx="200" cy="200" r="144" fill="none" stroke="rgba(148, 163, 184, 0.38)" stroke-width="1" stroke-dasharray="3,4" />
+              <circle cx="200" cy="200" r="180" fill="none" stroke="rgba(148, 163, 184, 0.45)" stroke-width="1.2" />
+              <!-- Cardinal crosshair ticks -->
+              <line x1="200" y1="20" x2="200" y2="380" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1" />
+              <line x1="20" y1="200" x2="380" y2="200" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1" />
+              <text x="200" y="13" text-anchor="middle" fill="#ef4444" font-size="12" font-weight="800" class="lt-radar-svg-halo">N</text>
+              <text x="390" y="204" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="700" class="lt-radar-svg-halo">E</text>
+              <text x="200" y="395" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="700" class="lt-radar-svg-halo">S</text>
+              <text x="10" y="204" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="700" class="lt-radar-svg-halo">W</text>
+              <!-- Haloed mileage labels -->
+              <text x="200" y="162" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="600" class="lt-radar-svg-halo">5 mi</text>
+              <text x="200" y="126" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="600" class="lt-radar-svg-halo">10 mi</text>
+              <text x="200" y="90" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="600" class="lt-radar-svg-halo">15 mi</text>
+              <text x="200" y="54" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="600" class="lt-radar-svg-halo">20 mi</text>
+              <text x="200" y="30" text-anchor="middle" fill="#f8fafc" font-size="10" font-weight="700" class="lt-radar-svg-halo">25 mi</text>
+              <!-- Dynamic strike rings -->
+              <g id="lt-modal-dynamic-rings"></g>
+              <!-- Glowing center station marker -->
+              <circle cx="200" cy="200" r="8" fill="rgba(56, 189, 248, 0.25)" />
+              <circle cx="200" cy="200" r="4" fill="#38bdf8" stroke="#ffffff" stroke-width="1.5" />
+            </svg>
+          </div>
+          <div class="lt-modal-legend">
+            <span><i class="lt-legend-swatch lt-swatch-closest"></i>--- Closest</span>
+            <span><i class="lt-legend-swatch lt-swatch-furthest"></i>&bull;&bull;&bull; Furthest</span>
+            <span><i class="lt-legend-swatch lt-swatch-recent"></i>&#9889; Recent</span>
+          </div>
+        </div>
+
+        <div class="lt-modal-stats-strip">
+          <div class="lt-modal-stat-box">
+            <span class="lt-modal-stat-label">Strikes (1h / 24h)</span>
+            <span id="lt-modal-strikes" class="lt-modal-stat-val">0 / 0</span>
+          </div>
+          <div class="lt-modal-stat-box">
+            <span class="lt-modal-stat-label">Closest Strike (mi)</span>
+            <span id="lt-modal-closest" class="lt-modal-stat-val">--</span>
+          </div>
+          <div class="lt-modal-stat-box">
+            <span class="lt-modal-stat-label">Furthest Strike (mi)</span>
+            <span id="lt-modal-furthest" class="lt-modal-stat-val">--</span>
+          </div>
+          <div class="lt-modal-stat-box">
+            <span class="lt-modal-stat-label">Last Strike Time &amp; Dist</span>
+            <span id="lt-modal-last" class="lt-modal-stat-val">None (24h)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="lt-modal-footer">
+        <button type="button" id="btn-dismiss-lt-modal" class="btn btn-secondary">Close</button>
       </div>
     </div>
   </div>

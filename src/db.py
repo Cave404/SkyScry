@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.33)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.34)."""
 
 from __future__ import annotations
 
@@ -520,9 +520,33 @@ class WeatherDatabase:
         )
         self._conn.row_factory = sqlite3.Row
         self._nws_service: Optional[Any] = None
+        self._sensor_status_cache: dict[str, tuple[str, int]] = {}
         self._configure_connection()
         self._initialize_schema()
         logger.debug("Initialized SQLite WAL database at %s", self.db_path)
+
+    def _refresh_sensor_status_cache(self) -> None:
+        """Reload `(location_type, is_trusted)` cache from the `sensors` table."""
+        with self._lock:
+            if self._conn is None:
+                return
+            rows = self._conn.execute(
+                "SELECT sensor_key, location_type, is_trusted FROM sensors;"
+            ).fetchall()
+            self._sensor_status_cache = {
+                str(r["sensor_key"]): (str(r["location_type"] or "ignore"), int(r["is_trusted"] or 0))
+                for r in rows
+            }
+
+    def is_sensor_ignored(self, model: str, sensor_id: str) -> bool:
+        """Return True when a sensor is known-ignored/untrusted (fast in-memory lookup)."""
+        sensor_key = f"{model}_{sensor_id}"
+        with self._lock:
+            cached = self._sensor_status_cache.get(sensor_key)
+            if cached is None:
+                return False
+            loc_type, trusted = cached
+            return loc_type == "ignore" or int(trusted) == 0
 
     def set_nws_service(self, svc: Any) -> None:
         """Register NWS weather service instance for smart strike corroboration and PoP lookups."""
@@ -586,6 +610,7 @@ class WeatherDatabase:
                 self._ensure_column("sensors", "battery_low_at", "TEXT")
                 self._ensure_column("sensors", "estimated_battery_days", "INTEGER")
                 self._ensure_column("sensors", "sensor_key", "TEXT")
+                self._ensure_column("sensors", "last_temp_f", "REAL")
 
                 self._ensure_column("sensor_readings", "snr", "REAL")
                 self._ensure_column("sensor_readings", "noise", "REAL")
@@ -660,6 +685,34 @@ class WeatherDatabase:
         self.expunge_skewed_history()
         self.auto_classify_isolated_strikes()
         self._auto_heal_trusted_sensors()
+
+        # v0.0.34: Never retain readings or battery/outlier calculations for ignored/untrusted sensors
+        with self._lock:
+            if self._conn is not None:
+                with self._conn:
+                    self._conn.execute(
+                        """
+                        DELETE FROM sensor_readings
+                        WHERE COALESCE(sensor_key, model || '_' || sensor_id) IN (
+                            SELECT sensor_key
+                            FROM sensors
+                            WHERE location_type = 'ignore' OR is_trusted = 0
+                        );
+                        """
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE sensors
+                        SET packet_count = 0,
+                            expunged_count = 0,
+                            last_expunged_reason = NULL,
+                            battery_changed_at = NULL,
+                            battery_low_at = NULL,
+                            estimated_battery_days = NULL
+                        WHERE location_type = 'ignore' OR is_trusted = 0;
+                        """
+                    )
+                self._refresh_sensor_status_cache()
 
     def _auto_heal_trusted_sensors(self) -> None:
         """Ensure sensors configured as outdoor or indoor are trusted, and auto-restore known weather stations if fleet was wiped."""
@@ -1320,6 +1373,69 @@ class WeatherDatabase:
                 """,
                 (sensor_key,),
             ).fetchone()
+
+            # v0.0.34: Short-circuit new or ignored/untrusted sensors BEFORE outlier,
+            # battery-cycle, lightning, or sensor_readings storage logic.
+            if existing is None:
+                utc_disc = format_utc_z(reading.timestamp)
+                with self._conn:
+                    self._conn.execute(
+                        """
+                        INSERT INTO sensors (
+                            sensor_key, model, sensor_id, channel, alias,
+                            location_type, is_trusted, first_seen, last_seen,
+                            battery_ok, last_snr, last_noise, last_rssi, last_temp_f,
+                            packet_count, expunged_count, battery_changed_at, battery_low_at,
+                            estimated_battery_days
+                        ) VALUES (?, ?, ?, ?, '', 'ignore', 0, ?, ?, ?, ?, ?, ?, ?, 0, 0, NULL, NULL, NULL);
+                        """,
+                        (
+                            sensor_key,
+                            reading.model,
+                            reading.sensor_id,
+                            reading.channel,
+                            utc_disc,
+                            utc_disc,
+                            reading.battery_ok,
+                            reading.snr,
+                            reading.noise,
+                            reading.rssi,
+                            reading.temp_f,
+                        ),
+                    )
+                self._sensor_status_cache[sensor_key] = ("ignore", 0)
+                return None
+
+            existing_loc = str(existing["location_type"] or "ignore")
+            existing_trusted = int(existing["is_trusted"] or 0)
+            self._sensor_status_cache[sensor_key] = (existing_loc, existing_trusted)
+            if existing_loc == "ignore" or existing_trusted == 0:
+                utc_disc = format_utc_z(reading.timestamp)
+                with self._conn:
+                    self._conn.execute(
+                        """
+                        UPDATE sensors
+                        SET last_seen = ?,
+                            channel = COALESCE(?, channel),
+                            battery_ok = COALESCE(?, battery_ok),
+                            last_snr = COALESCE(?, last_snr),
+                            last_noise = COALESCE(?, last_noise),
+                            last_rssi = COALESCE(?, last_rssi),
+                            last_temp_f = COALESCE(?, last_temp_f)
+                        WHERE sensor_key = ?;
+                        """,
+                        (
+                            utc_disc,
+                            reading.channel,
+                            reading.battery_ok,
+                            reading.snr,
+                            reading.noise,
+                            reading.rssi,
+                            reading.temp_f,
+                            sensor_key,
+                        ),
+                    )
+                return None
 
             # 3. Rate-of-Change Spike Filter & Dynamic Outdoor Consensus Median Filter
             if reading.temp_f is not None:
@@ -2159,6 +2275,7 @@ class WeatherDatabase:
             s.battery_changed_at,
             s.battery_low_at,
             s.estimated_battery_days,
+            s.last_temp_f,
             r.id AS reading_id,
             r.timestamp AS reading_timestamp,
             r.temp_c,
@@ -2181,7 +2298,10 @@ class WeatherDatabase:
         LEFT JOIN sensor_readings r ON r.id = (
             SELECT sr.id
             FROM sensor_readings sr
-            WHERE sr.model = s.model AND sr.sensor_id = s.sensor_id
+            WHERE sr.model = s.model
+              AND sr.sensor_id = s.sensor_id
+              AND s.is_trusted = 1
+              AND s.location_type IN ('outdoor', 'indoor')
             ORDER BY sr.timestamp DESC, sr.id DESC
             LIMIT 1
         )
@@ -2203,18 +2323,64 @@ class WeatherDatabase:
             battery_val = raw.get("battery_ok")
             battery_bool = bool(int(battery_val) != 0) if battery_val is not None else None
             hidden_metrics = _parse_hidden_metrics(raw.get("hidden_metrics"))
+            location_type = str(raw.get("location_type") or "ignore")
+            is_trusted = bool(int(raw.get("is_trusted") or 0) != 0)
+            is_active = location_type in ("outdoor", "indoor") and is_trusted
 
             first_seen_dt = parse_utc_iso(raw.get("first_seen"))
             last_seen_dt = parse_utc_iso(raw.get("last_seen"))
+            last_rssi = raw.get("last_rssi") if raw.get("last_rssi") is not None else raw.get("rssi")
+            last_snr = raw.get("last_snr") if raw.get("last_snr") is not None else raw.get("snr")
+            last_noise = raw.get("last_noise") if raw.get("last_noise") is not None else raw.get("noise")
+
+            if not is_active:
+                # v0.0.34: Skip battery-cycle math, dew-point calculations, and sensor_readings
+                # processing for ignored/untrusted sensors; keep lightweight RF identity only.
+                lightweight_reading: Optional[dict[str, Any]] = None
+                if raw.get("last_temp_f") is not None:
+                    lightweight_reading = {
+                        "temp_f": round(float(raw["last_temp_f"]), 1),
+                        "rssi": last_rssi,
+                        "timestamp": format_utc_z(last_seen_dt) if last_seen_dt else raw["last_seen"],
+                    }
+                results.append(
+                    {
+                        "sensor_key": raw["sensor_key"],
+                        "model": raw["model"],
+                        "sensor_id": raw["sensor_id"],
+                        "channel": raw["channel"],
+                        "alias": alias,
+                        "display_name": display_name,
+                        "location_type": location_type,
+                        "is_trusted": is_trusted,
+                        "hidden_metrics": hidden_metrics,
+                        "first_seen": format_utc_z(first_seen_dt) if first_seen_dt else raw["first_seen"],
+                        "last_seen": format_utc_z(last_seen_dt) if last_seen_dt else raw["last_seen"],
+                        "battery_tracking": False,
+                        "battery_ok": battery_bool,
+                        "battery_changed_at": None,
+                        "battery_low_at": None,
+                        "days_on_current_battery": None,
+                        "estimated_battery_days": None,
+                        "packet_count": 0,
+                        "expunged_count": 0,
+                        "last_expunged_reason": None,
+                        "last_temp_f": raw.get("last_temp_f"),
+                        "last_rssi": last_rssi,
+                        "last_snr": last_snr,
+                        "last_noise": last_noise,
+                        "signal_quality": compute_signal_quality(last_snr, last_rssi),
+                        "signal_bars": compute_signal_bars(last_snr, last_rssi),
+                        "latest_reading": lightweight_reading,
+                    }
+                )
+                continue
+
             batt_changed_dt = parse_utc_iso(raw.get("battery_changed_at")) or first_seen_dt
 
             days_on_current_battery: Optional[int] = None
             if batt_changed_dt is not None:
                 days_on_current_battery = max(0, int((now_utc - batt_changed_dt).total_seconds() // 86400))
-
-            last_rssi = raw.get("last_rssi") if raw.get("last_rssi") is not None else raw.get("rssi")
-            last_snr = raw.get("last_snr") if raw.get("last_snr") is not None else raw.get("snr")
-            last_noise = raw.get("last_noise") if raw.get("last_noise") is not None else raw.get("noise")
 
             latest_reading: Optional[dict[str, Any]] = None
             if raw.get("reading_id") is not None:
@@ -2250,11 +2416,12 @@ class WeatherDatabase:
                     "channel": raw["channel"],
                     "alias": alias,
                     "display_name": display_name,
-                    "location_type": raw.get("location_type") or "ignore",
-                    "is_trusted": bool(int(raw.get("is_trusted") or 0) != 0),
+                    "location_type": location_type,
+                    "is_trusted": is_trusted,
                     "hidden_metrics": hidden_metrics,
                     "first_seen": format_utc_z(first_seen_dt) if first_seen_dt else raw["first_seen"],
                     "last_seen": format_utc_z(last_seen_dt) if last_seen_dt else raw["last_seen"],
+                    "battery_tracking": True,
                     "battery_ok": battery_bool,
                     "battery_changed_at": format_utc_z(batt_changed_dt) if batt_changed_dt else None,
                     "battery_low_at": raw.get("battery_low_at"),
@@ -2263,6 +2430,7 @@ class WeatherDatabase:
                     "packet_count": int(raw.get("packet_count") or 0),
                     "expunged_count": int(raw.get("expunged_count") or 0),
                     "last_expunged_reason": raw.get("last_expunged_reason"),
+                    "last_temp_f": raw.get("last_temp_f"),
                     "last_rssi": last_rssi,
                     "last_snr": last_snr,
                     "last_noise": last_noise,
@@ -2330,7 +2498,14 @@ class WeatherDatabase:
 
             batt_changed_at = existing["battery_changed_at"]
             batt_low_at = existing["battery_low_at"]
-            if mark_battery_replaced:
+            if resolved_location == "ignore" or resolved_trusted == 0:
+                batt_changed_at = None
+                batt_low_at = None
+            elif mark_battery_replaced or (
+                batt_changed_at is None
+                and resolved_location in ("outdoor", "indoor")
+                and resolved_trusted == 1
+            ):
                 batt_changed_at = format_utc_z(datetime.now(timezone.utc))
                 batt_low_at = None
 
@@ -2357,8 +2532,32 @@ class WeatherDatabase:
                     ),
                 )
 
-            if purge_sensor_outliers:
+            if resolved_location == "ignore" or resolved_trusted == 0:
+                with self._conn:
+                    self._conn.execute(
+                        """
+                        DELETE FROM sensor_readings
+                        WHERE sensor_key = ? OR (model || '_' || sensor_id) = ?;
+                        """,
+                        (sensor_key, sensor_key),
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE sensors
+                        SET packet_count = 0,
+                            expunged_count = 0,
+                            last_expunged_reason = NULL,
+                            battery_changed_at = NULL,
+                            battery_low_at = NULL,
+                            estimated_battery_days = NULL
+                        WHERE sensor_key = ?;
+                        """,
+                        (sensor_key,),
+                    )
+            elif purge_sensor_outliers:
                 self.expunge_skewed_history(target_sensor_key=sensor_key)
+
+            self._sensor_status_cache[sensor_key] = (resolved_location, resolved_trusted)
 
         for sensor in self.get_all_sensors():
             if sensor["sensor_key"] == sensor_key:

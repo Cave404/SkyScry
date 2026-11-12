@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.33)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.34)."""
 
 from __future__ import annotations
 

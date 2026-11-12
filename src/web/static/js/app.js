@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.33 — 7-View Frontend Controller
+ * SkyScry v0.0.34 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -274,6 +274,28 @@
   const elBtnOvClearStrikes = document.getElementById("btn-clear-strikes") || document.getElementById("btn-ov-clear-strikes");
   const elOvLightningNoiseBadge = document.getElementById("ov-lightning-noise-badge");
   const elOvLtNoiseCaption = document.getElementById("ov-lt-noise-caption");
+  const elBtnOvLtSatToggle = document.getElementById("btn-ov-lt-sat-toggle");
+  const elOvLtRadarTrigger = document.getElementById("ov-lightning-radar-trigger");
+  const elOvLtSatImg = document.getElementById("ov-lightning-sat-img");
+
+  // Expanded 25-Mile Satellite Lightning Radar Modal DOM
+  const elLtModalBackdrop = document.getElementById("lightning-radar-modal");
+  const elLtModalSubtitle = document.getElementById("lt-modal-subtitle");
+  const elLtModalStatusBadge = document.getElementById("lt-modal-status-badge");
+  const elBtnLtModalSatToggle = document.getElementById("btn-lt-modal-sat-toggle");
+  const elBtnCloseLtModal = document.getElementById("btn-close-lt-modal");
+  const elBtnDismissLtModal = document.getElementById("btn-dismiss-lt-modal");
+  const elLtModalRadarWrap = document.getElementById("lt-modal-radar-wrap");
+  const elLtModalSatImg = document.getElementById("lt-modal-sat-img");
+  const elLtModalDynamicRings = document.getElementById("lt-modal-dynamic-rings");
+  const elLtModalStrikes = document.getElementById("lt-modal-strikes");
+  const elLtModalClosest = document.getElementById("lt-modal-closest");
+  const elLtModalFurthest = document.getElementById("lt-modal-furthest");
+  const elLtModalLast = document.getElementById("lt-modal-last");
+
+  const LT_SAT_STORAGE_KEY = "skyscry_lt_satellite_enabled";
+  let lastLightningState = {};
+  let ltModalHistoryPushed = false;
 
   // Inline Ground-Truth Check-In Bar DOM
   const elOvCheckinBar = document.getElementById("ov-checkin-bar");
@@ -1539,7 +1561,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.33"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.34"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -3587,8 +3609,243 @@
     elSystemConsoleLog.scrollTop = elSystemConsoleLog.scrollHeight;
   }
 
+  function isLightningSatelliteEnabled() {
+    try {
+      const saved = localStorage.getItem(LT_SAT_STORAGE_KEY);
+      if (saved === "0" || saved === "false") return false;
+      if (saved === "1" || saved === "true") return true;
+    } catch (_) {}
+    return true;
+  }
+
+  function getLightningSatelliteUrl(lat, lon) {
+    const numLat = Number(lat);
+    const numLon = Number(lon);
+    if (!Number.isFinite(numLat) || !Number.isFinite(numLon)) return null;
+    if (Math.abs(numLat) < 0.001 && Math.abs(numLon) < 0.001) return null;
+    const dLat = 25.0 / 69.0;
+    const cosLat = Math.max(0.1, Math.cos((numLat * Math.PI) / 180));
+    const dLon = 25.0 / (69.17 * cosLat);
+    const bbox = [
+      (numLon - dLon).toFixed(5),
+      (numLat - dLat).toFixed(5),
+      (numLon + dLon).toFixed(5),
+      (numLat + dLat).toFixed(5),
+    ].join(",");
+    return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox=${bbox}&bboxSR=4326&size=500,500&f=image`;
+  }
+
+  function updateLightningSatelliteVisuals() {
+    const satUrl = getLightningSatelliteUrl(userSettings.latitude, userSettings.longitude);
+    const hasCoords = Boolean(satUrl);
+    const satEnabled = hasCoords && isLightningSatelliteEnabled();
+
+    [elBtnOvLtSatToggle, elBtnLtModalSatToggle].forEach((btn) => {
+      if (!btn) return;
+      btn.classList.toggle("active", satEnabled);
+      btn.setAttribute("aria-pressed", String(satEnabled));
+      btn.disabled = !hasCoords;
+      btn.title = hasCoords
+        ? "Toggle 25-mile satellite imagery underlay"
+        : "Configure station latitude & longitude in Settings to enable satellite underlay";
+    });
+
+    const pairs = [
+      { img: elOvLtSatImg, wrap: elOvLtRadarTrigger },
+      { img: elLtModalSatImg, wrap: elLtModalRadarWrap },
+    ];
+    pairs.forEach(({ img, wrap }) => {
+      if (!img || !wrap) return;
+      if (satEnabled && satUrl) {
+        if (img.getAttribute("data-sat-url") !== satUrl) {
+          img.setAttribute("data-sat-url", satUrl);
+          img.src = satUrl;
+        }
+        img.classList.remove("hidden");
+        wrap.classList.add("has-satellite");
+      } else {
+        img.classList.add("hidden");
+        wrap.classList.remove("has-satellite");
+      }
+    });
+
+    if (elLtModalSubtitle) {
+      elLtModalSubtitle.textContent = hasCoords
+        ? `Station-centered 25 mi detection envelope (${Number(userSettings.latitude).toFixed(3)}, ${Number(userSettings.longitude).toFixed(3)})`
+        : "Station-centered 25 mi detection envelope (set lat/lon in Settings for satellite underlay)";
+    }
+  }
+
+  function setLightningSatelliteEnabled(enabled) {
+    try {
+      localStorage.setItem(LT_SAT_STORAGE_KEY, enabled ? "1" : "0");
+    } catch (_) {}
+    updateLightningSatelliteVisuals();
+  }
+
+  function syncLightningRadarModal(lt) {
+    const data = lt || {};
+    const paired = Boolean(data.sensor_paired ?? data.sensor_online ?? data.sensor_key);
+    const activeStorm = Boolean(data.active_storm_mode);
+    const rfi = Boolean(data.rfi_detected ?? data.rfi_warning);
+    const strikes1h = Number(data.strikes_1h || 0);
+    const strikes24h = Number(data.strikes_24h || 0);
+    const closestVal = data.closest_strike_mi ?? data.closest_dist_24h_mi;
+    const furthestVal = data.furthest_strike_mi ?? data.furthest_dist_24h_mi;
+    const closestMi =
+      closestVal !== null && closestVal !== undefined ? Number(closestVal) : null;
+    const furthestMi =
+      furthestVal !== null && furthestVal !== undefined ? Number(furthestVal) : null;
+    const recentStrikes = Array.isArray(data.recent_strikes)
+      ? data.recent_strikes
+      : Array.isArray(data.recent_rings)
+      ? data.recent_rings
+      : [];
+    const lastTs = data.last_strike_ts || data.last_strike_time;
+    const lastDistVal = data.last_strike_dist_mi;
+
+    if (elLtModalStatusBadge) {
+      if (rfi) {
+        elLtModalStatusBadge.textContent = "⚠ RFI Interference";
+        elLtModalStatusBadge.className = "badge badge-batt-low";
+      } else if (activeStorm) {
+        elLtModalStatusBadge.textContent = "⚡ Storm Active • 8s";
+        elLtModalStatusBadge.className = "badge badge-batt-low";
+      } else if (paired) {
+        elLtModalStatusBadge.textContent = "Normal • 24s";
+        elLtModalStatusBadge.className = "badge badge-batt-ok";
+      } else {
+        elLtModalStatusBadge.textContent = "Awaiting 06045M";
+        elLtModalStatusBadge.className = "badge";
+      }
+    }
+
+    if (elLtModalStrikes) {
+      elLtModalStrikes.textContent = `${strikes1h} / ${strikes24h}`;
+    }
+    if (elLtModalClosest) {
+      elLtModalClosest.textContent = closestMi !== null && Number.isFinite(closestMi) ? `${closestMi.toFixed(0)} mi` : "--";
+    }
+    if (elLtModalFurthest) {
+      elLtModalFurthest.textContent = furthestMi !== null && Number.isFinite(furthestMi) ? `${furthestMi.toFixed(0)} mi` : "--";
+    }
+    if (elLtModalLast) {
+      if (lastTs) {
+        const distPart = lastDistVal !== null && lastDistVal !== undefined ? ` @ ${Number(lastDistVal).toFixed(0)} mi` : "";
+        elLtModalLast.textContent = `${formatRelativeSeconds(lastTs)}${distPart}`;
+      } else {
+        elLtModalLast.textContent = "None (24h)";
+      }
+    }
+
+    if (elLtModalDynamicRings) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const fragments = [];
+      const cx = 200;
+      const cy = 200;
+      const pxPerMile = 180 / 25; // 7.2 px per mile
+
+      if (furthestMi !== null && Number.isFinite(furthestMi) && furthestMi > 0) {
+        const clamped = Math.max(1, Math.min(25, furthestMi));
+        const rPx = (clamped * pxPerMile).toFixed(1);
+        fragments.push(
+          `<circle cx="${cx}" cy="${cy}" r="${rPx}" fill="none" stroke="#c084fc" stroke-width="2" stroke-dasharray="2,4" stroke-opacity="0.9" />`
+        );
+      }
+
+      if (closestMi !== null && Number.isFinite(closestMi) && closestMi > 0) {
+        const clamped = Math.max(1, Math.min(25, closestMi));
+        const rPx = (clamped * pxPerMile).toFixed(1);
+        fragments.push(
+          `<circle cx="${cx}" cy="${cy}" r="${rPx}" fill="rgba(56, 189, 248, 0.06)" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="6,4" stroke-opacity="0.95" />`
+        );
+      }
+
+      const nowMs = Date.now();
+      recentStrikes.slice(0, 6).forEach((ring, idx) => {
+        const distVal = Number(
+          typeof ring === "object" && ring !== null
+            ? ring.storm_dist_mi ?? ring.dist_mi ?? ring.distance_mi ?? closestMi
+            : ring
+        );
+        if (!Number.isFinite(distVal) || distVal <= 0) return;
+        const clamped = Math.max(1, Math.min(25, distVal));
+        const rPx = (clamped * pxPerMile).toFixed(1);
+        let ageMins = idx * 8;
+        if (typeof ring === "object" && ring !== null) {
+          if (ring.age_minutes !== undefined && ring.age_minutes !== null) {
+            ageMins = Number(ring.age_minutes) || 0;
+          } else if (ring.timestamp) {
+            const tsMs = Date.parse(ring.timestamp);
+            if (Number.isFinite(tsMs)) ageMins = Math.max(0, (nowMs - tsMs) / 60000);
+          }
+        }
+        const opacity = Math.max(0.28, Math.min(0.95, 1.0 - ageMins / 180)).toFixed(2);
+        const pulseCls = idx === 0 ? ' class="strike-ring-animated"' : "";
+        fragments.push(
+          `<circle cx="${cx}" cy="${cy}" r="${rPx}"${pulseCls} fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-opacity="${opacity}" />`
+        );
+        if (idx === 0) {
+          const lblY = Math.max(22, cy - Number(rPx) - 6).toFixed(1);
+          fragments.push(
+            `<text x="${cx}" y="${lblY}" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" class="lt-radar-svg-halo">⚡ ${clamped.toFixed(0)} mi</text>`
+          );
+        }
+      });
+
+      elLtModalDynamicRings.setAttribute("data-ns", svgNs);
+      elLtModalDynamicRings.innerHTML = fragments.join("");
+    }
+  }
+
+  function openLightningRadarModal() {
+    if (!elLtModalBackdrop) return;
+    const wasHidden = elLtModalBackdrop.classList.contains("hidden");
+    syncLightningRadarModal(lastLightningState);
+    updateLightningSatelliteVisuals();
+    elLtModalBackdrop.classList.remove("hidden");
+    elLtModalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+    if (
+      wasHidden &&
+      !ltModalHistoryPushed &&
+      window.history &&
+      typeof window.history.pushState === "function"
+    ) {
+      try {
+        window.history.pushState({ modal: "lightning-radar" }, "");
+        ltModalHistoryPushed = true;
+      } catch (_) {}
+    }
+  }
+
+  function closeLightningRadarModal(fromPopState = false) {
+    if (!elLtModalBackdrop) return;
+    elLtModalBackdrop.classList.add("hidden");
+    elLtModalBackdrop.setAttribute("aria-hidden", "true");
+    syncBodyModalOpenState();
+
+    if (!fromPopState && ltModalHistoryPushed) {
+      ltModalHistoryPushed = false;
+      if (
+        window.history &&
+        window.history.state &&
+        window.history.state.modal === "lightning-radar"
+      ) {
+        try {
+          window.history.back();
+        } catch (_) {}
+      }
+    } else if (fromPopState) {
+      ltModalHistoryPushed = false;
+    }
+  }
+
   function renderLightningCard(lt) {
     const data = lt || {};
+    lastLightningState = data;
+    updateLightningSatelliteVisuals();
+    syncLightningRadarModal(data);
     const paired = Boolean(data.sensor_paired ?? data.sensor_online ?? data.sensor_key);
     const activeStorm = Boolean(data.active_storm_mode);
     const rfi = Boolean(data.rfi_detected ?? data.rfi_warning);
@@ -4256,7 +4513,12 @@
     const displayName =
       sensor.alias && sensor.alias.trim() !== "" ? sensor.alias.trim() : defaultHardwareId;
 
+    const locType = (sensor.location_type || "unassigned").toLowerCase();
+    const isIgnored =
+      sensor.battery_tracking === false || locType === "ignore" || !sensor.is_trusted;
+
     cardEl.classList.toggle("untrusted", !sensor.is_trusted);
+    cardEl.classList.toggle("sensor-ignored-compact", isIgnored);
 
     const subtitleParts = [`KEY: ${sensor.sensor_key}`];
     if (sensor.alias) subtitleParts.unshift(defaultHardwareId);
@@ -4269,7 +4531,6 @@
     const slotSub = cardEl.querySelector('[data-slot="subtitle"]');
     if (slotSub.textContent !== subtitleText) slotSub.textContent = subtitleText;
 
-    const locType = (sensor.location_type || "unassigned").toLowerCase();
     let locBadgeClass = "badge";
     if (locType === "indoor") locBadgeClass += " badge-indoor";
     else if (locType === "outdoor") locBadgeClass += " badge-outdoor";
@@ -4295,17 +4556,34 @@
 
     const slotTemp = cardEl.querySelector('[data-slot="temp"]');
     let tempHtml = `<span class="text-muted">Temp Hidden</span>`;
-    if (!hidden.has("temperature")) {
+    if (isIgnored) {
+      const ignoredTempF = r.temp_f ?? sensor.last_temp_f;
+      tempHtml =
+        ignoredTempF !== null && ignoredTempF !== undefined
+          ? `<span class="text-muted">Last ID Temp: ${Number(ignoredTempF).toFixed(1)}&deg;F</span>`
+          : `<span class="text-muted">Ignored (Not Stored)</span>`;
+    } else if (!hidden.has("temperature")) {
+      const resolvedTempC =
+        r.temp_c !== null && r.temp_c !== undefined
+          ? Number(r.temp_c)
+          : r.temp_f !== null && r.temp_f !== undefined
+            ? ((Number(r.temp_f) - 32) * 5) / 9
+            : null;
       tempHtml =
         r.temp_f !== null && r.temp_f !== undefined
-          ? `${Number(r.temp_f).toFixed(1)}&deg;F <span class="temp-sub">(${Number(r.temp_c).toFixed(1)}&deg;C)</span>`
+          ? `${Number(r.temp_f).toFixed(1)}&deg;F${resolvedTempC !== null ? ` <span class="temp-sub">(${resolvedTempC.toFixed(1)}&deg;C)</span>` : ""}`
           : `--&deg;F`;
     }
     if (slotTemp.innerHTML !== tempHtml) slotTemp.innerHTML = tempHtml;
 
     const slotRh = cardEl.querySelector('[data-slot="rh"]');
     let rhText = "";
-    if (!hidden.has("humidity")) {
+    if (isIgnored) {
+      rhText =
+        sensor.last_rssi !== null && sensor.last_rssi !== undefined
+          ? `RSSI ${Number(sensor.last_rssi).toFixed(1)} dB`
+          : "Storage Disabled";
+    } else if (!hidden.has("humidity")) {
       rhText =
         r.humidity !== null && r.humidity !== undefined
           ? `RH ${Number(r.humidity).toFixed(0)}%`
@@ -4384,19 +4662,21 @@
     if (slotRf.innerHTML !== rfLabel) slotRf.innerHTML = rfLabel;
 
     const slotPkt = cardEl.querySelector('[data-slot="pkt-count"]');
-    const pktText = `${Number(sensor.packet_count || 0).toLocaleString()} pkts`;
+    const pktText = isIgnored ? "0 pkts stored" : `${Number(sensor.packet_count || 0).toLocaleString()} pkts`;
     if (slotPkt.textContent !== pktText) slotPkt.textContent = pktText;
 
     const slotBattDays = cardEl.querySelector('[data-slot="batt-days"]');
-    const daysText =
-      sensor.days_on_current_battery !== null && sensor.days_on_current_battery !== undefined
+    const daysText = isIgnored
+      ? "Battery tracking disabled"
+      : sensor.days_on_current_battery !== null && sensor.days_on_current_battery !== undefined
         ? `Days on current battery: ${sensor.days_on_current_battery}d`
         : `Battery tracking active`;
     if (slotBattDays.textContent !== daysText) slotBattDays.textContent = daysText;
 
     const slotBattEst = cardEl.querySelector('[data-slot="batt-est"]');
-    const estText =
-      sensor.estimated_battery_days !== null && sensor.estimated_battery_days !== undefined
+    const estText = isIgnored
+      ? "Ignored sensor"
+      : sensor.estimated_battery_days !== null && sensor.estimated_battery_days !== undefined
         ? `Est. life: ~${sensor.estimated_battery_days}d`
         : `Cycle: monitoring`;
     if (slotBattEst.textContent !== estText) slotBattEst.textContent = estText;
@@ -6524,6 +6804,7 @@
       if (evt.key === "Escape") {
         closeStatusPopover();
         closeCalendarDayModal();
+        closeLightningRadarModal();
         closeBaselineModal();
         if (elNavDrawer && elNavDrawer.classList.contains("open")) {
           closeNavDrawer();
@@ -6561,7 +6842,55 @@
       if (elCalModalBackdrop && !elCalModalBackdrop.classList.contains("hidden")) {
         closeCalendarDayModal(true);
       }
+      if (elLtModalBackdrop && !elLtModalBackdrop.classList.contains("hidden")) {
+        closeLightningRadarModal(true);
+      }
     });
+
+    // v0.0.34: Satellite Lightning Proximity Underlay & Expandable Modal Listeners
+    if (elBtnOvLtSatToggle) {
+      elBtnOvLtSatToggle.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        setLightningSatelliteEnabled(!isLightningSatelliteEnabled());
+      });
+    }
+    if (elBtnLtModalSatToggle) {
+      elBtnLtModalSatToggle.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        setLightningSatelliteEnabled(!isLightningSatelliteEnabled());
+      });
+    }
+    if (elOvLtRadarTrigger) {
+      elOvLtRadarTrigger.addEventListener("click", () => openLightningRadarModal());
+      elOvLtRadarTrigger.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          openLightningRadarModal();
+        }
+      });
+    }
+    if (elBtnCloseLtModal) {
+      elBtnCloseLtModal.addEventListener("click", () => closeLightningRadarModal(false));
+    }
+    if (elBtnDismissLtModal) {
+      elBtnDismissLtModal.addEventListener("click", () => closeLightningRadarModal(false));
+    }
+    if (elLtModalBackdrop) {
+      elLtModalBackdrop.addEventListener("click", (evt) => {
+        if (evt.target === elLtModalBackdrop) closeLightningRadarModal(false);
+      });
+    }
+    [
+      { img: elOvLtSatImg, wrap: elOvLtRadarTrigger },
+      { img: elLtModalSatImg, wrap: elLtModalRadarWrap },
+    ].forEach(({ img, wrap }) => {
+      if (!img || !wrap) return;
+      img.addEventListener("error", () => {
+        img.classList.add("hidden");
+        wrap.classList.remove("has-satellite");
+      });
+    });
+    updateLightningSatelliteVisuals();
 
     document.querySelectorAll(".drawer-nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -6636,7 +6965,10 @@
     if (elBtnCancelUnlock) elBtnCancelUnlock.addEventListener("click", closeUnlockModal);
 
     // Toolbar buttons
-    if (elToggleIgnored) elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
+    if (elToggleIgnored) {
+      elToggleIgnored.checked = false;
+      elToggleIgnored.addEventListener("change", patchSensorGridInPlace);
+    }
     if (elBtnRefresh) elBtnRefresh.addEventListener("click", () => refreshAll(true));
     if (elBtnTriggerUpdate) elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
     if (elBtnPurgeOutliers) elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);

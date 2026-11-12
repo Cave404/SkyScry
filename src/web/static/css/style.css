@@ -2710,6 +2710,27 @@ input[type="text"]:focus {
   opacity: 0.72;
 }
 
+.sensor-card.sensor-ignored-compact {
+  opacity: 0.68;
+  border-style: dashed;
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+.sensor-card.sensor-ignored-compact .telemetry-secondary,
+.sensor-card.sensor-ignored-compact .rf-battery-strip,
+.sensor-card.sensor-ignored-compact .batt-lifecycle-row {
+  display: none !important;
+}
+
+.sensor-card.sensor-ignored-compact .telemetry-primary {
+  padding: 6px 10px;
+}
+
+.sensor-card.sensor-ignored-compact .temp-Readout {
+  font-size: 18px;
+}
+
 .sensor-card-header {
   display: flex;
   justify-content: space-between;
@@ -6083,4 +6104,264 @@ input[type="password"]:focus {
 
 .is-locked-btn {
   opacity: 0.92;
+}
+
+/* ============================================================================
+   v0.0.34: Satellite Lightning Proximity Radar & Expandable Modal
+   ============================================================================ */
+.btn-pill-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background-color: rgba(15, 23, 42, 0.85);
+  border: 1px solid #334155;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-pill-toggle:hover {
+  border-color: #38bdf8;
+  color: #f8fafc;
+}
+
+.btn-pill-toggle.active {
+  background-color: rgba(14, 165, 233, 0.2);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
+
+.btn-pill-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lightning-radar-wrap {
+  position: relative;
+}
+
+.lightning-radar-wrap.clickable-radar {
+  cursor: zoom-in;
+  border-radius: 50%;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.lightning-radar-wrap.clickable-radar:hover,
+.lightning-radar-wrap.clickable-radar:focus-visible {
+  transform: scale(1.02);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.45);
+  outline: none;
+}
+
+.lightning-sat-clip {
+  position: absolute;
+  inset: 5%;
+  border-radius: 50%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  background: #060b14;
+}
+
+.lightning-sat-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: brightness(0.65) contrast(1.15) saturate(0.85);
+}
+
+.lightning-radar-svg {
+  position: relative;
+  z-index: 1;
+}
+
+.lightning-radar-wrap.has-satellite .lightning-radar-svg > circle:first-of-type {
+  fill: rgba(6, 11, 20, 0.24) !important;
+}
+
+.lt-radar-svg-halo {
+  paint-order: stroke;
+  stroke: rgba(6, 11, 20, 0.85);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+#lightning-radar-modal {
+  overscroll-behavior: contain;
+}
+
+.lt-modal-card {
+  max-width: 680px;
+  width: 100%;
+  max-height: 92vh;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.lt-modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: var(--bg-card);
+  margin: 0;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+  align-items: center;
+  gap: 12px;
+}
+
+.lt-modal-header h3 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.lt-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lt-modal-close-btn {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background-color: #1e293b;
+  color: #e2e8f0;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lt-modal-close-btn:hover {
+  background-color: #334155;
+  color: #ffffff;
+}
+
+.lt-modal-body {
+  padding: 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.lt-modal-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.lt-modal-radar-wrap,
+.lt-modal-radar-svg {
+  width: 420px;
+  height: 420px;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.lt-modal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  font-size: 12px;
+  color: #cbd5e1;
+  font-family: var(--font-mono);
+}
+
+.lt-legend-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.lt-swatch-closest { background: #38bdf8; }
+.lt-swatch-furthest { background: #c084fc; }
+.lt-swatch-recent { background: #f59e0b; }
+
+.lt-modal-stats-strip {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lt-modal-stat-box {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lt-modal-stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.lt-modal-stat-val {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lt-modal-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background-color: var(--bg-card);
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+  .lt-modal-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .lt-modal-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .lightning-radar-wrap.lt-modal-radar-wrap,
+  .lightning-radar-svg.lt-modal-radar-svg {
+    width: 300px !important;
+    height: 300px !important;
+  }
+  .lt-modal-stats-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .lt-modal-footer .btn {
+    width: 100%;
+    min-height: 44px;
+  }
 }

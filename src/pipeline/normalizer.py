@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.models import NormalizedReading
 
@@ -242,11 +242,17 @@ class PacketNormalizer:
         self,
         deduplicator: Optional[BurstDeduplicator] = None,
         dedup_window_seconds: float = 4.0,
+        is_ignored_sensor_fn: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
         self.deduplicator = deduplicator or BurstDeduplicator(window_seconds=dedup_window_seconds)
         self._last_cadence_mono: dict[tuple[str, str], float] = {}
         self._last_strike_count: dict[tuple[str, str], int] = {}
         self._rfi_distinct_intervals: dict[tuple[str, str], list[float]] = {}
+        self._is_ignored_sensor_fn = is_ignored_sensor_fn
+
+    def set_ignored_sensor_fn(self, fn: Optional[Callable[[str, str], bool]]) -> None:
+        """Attach a callback `(model, sensor_id) -> bool` to short-circuit ignored sensors."""
+        self._is_ignored_sensor_fn = fn
 
     @staticmethod
     def has_weather_telemetry(payload: dict[str, Any]) -> bool:
@@ -585,6 +591,21 @@ class PacketNormalizer:
             raw_active = payload.get("active", payload.get("storm_mode"))
             flag_active = bool(raw_active) if isinstance(raw_active, (bool, int)) else False
             active_storm_mode = bool(delta_strikes > 0 or (flag_active and delta_strikes > 0))
+
+        if self._is_ignored_sensor_fn is not None and self._is_ignored_sensor_fn(model, sensor_id):
+            # Discovery-only envelope: skip meteorological/wind/rain/lightning math for ignored sensors
+            return NormalizedReading(
+                timestamp=self._parse_timestamp(payload.get("time")),
+                sensor_id=sensor_id,
+                model=model,
+                channel=channel,
+                battery_ok=self._normalize_battery(payload.get("battery_ok")),
+                temp_c=self._normalize_temp_c(payload),
+                rssi=round(rssi_val, 2) if rssi_val is not None else None,
+                snr=round(snr_val, 2) if snr_val is not None else None,
+                noise=round(noise_val, 2) if noise_val is not None else None,
+                raw_json=canonical_json,
+            )
 
         return NormalizedReading(
             timestamp=self._parse_timestamp(payload.get("time")),
