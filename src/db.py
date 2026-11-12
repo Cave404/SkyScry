@@ -72,6 +72,17 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, str] = {
 
 PUBLIC_SETTINGS_KEYS: frozenset[str] = frozenset(DEFAULT_SYSTEM_SETTINGS.keys())
 
+CANONICAL_WEATHER_CONDITIONS: dict[str, str] = {
+    "sunny": "Clear / Sunny",
+    "partly_cloudy": "Partly Cloudy",
+    "cloudy": "Mostly Cloudy / Overcast",
+    "fog": "Fog / Mist",
+    "rain": "Rain / Showers",
+    "storm": "Thunderstorm / Severe",
+    "windy": "Breezy / Windy",
+    "snow": "Snow / Wintry Mix",
+}
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS system_settings (
     key TEXT PRIMARY KEY,
@@ -240,6 +251,19 @@ CREATE INDEX IF NOT EXISTS idx_sensor_readings_model_sensor_time
 
 CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp
     ON sensor_readings (timestamp);
+
+CREATE TABLE IF NOT EXISTS daily_weather_overrides (
+    date_str TEXT PRIMARY KEY,
+    verified_status TEXT NOT NULL DEFAULT 'accurate',
+    corrected_condition_type TEXT,
+    corrected_condition_label TEXT,
+    exclude_false_lightning INTEGER NOT NULL DEFAULT 0,
+    notes TEXT DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_weather_overrides_updated
+    ON daily_weather_overrides (updated_at DESC);
 """
 
 
@@ -654,62 +678,233 @@ class WeatherDatabase:
                 updates,
             )
 
+    def _has_storm_weather_corroboration(
+        self,
+        target_dt: datetime,
+        is_historical: bool = False,
+    ) -> tuple[bool, str]:
+        """Return (True, reason) when local sensors, reference data, alerts, or NWS indicate rain/storm."""
+        if self._conn is None:
+            return False, ""
+
+        target_utc = target_dt.astimezone(timezone.utc) if target_dt.tzinfo else target_dt.replace(tzinfo=timezone.utc)
+        target_iso = format_utc_z(target_utc)
+        start_iso = format_utc_z(target_utc - timedelta(minutes=45 if is_historical else 30))
+        end_iso = format_utc_z(target_utc + timedelta(minutes=45)) if is_historical else target_iso
+
+        # 1. Local trusted outdoor rainfall (rate > 0 or >= 0.2mm cumulative delta)
+        try:
+            rain_row = self._conn.execute(
+                """
+                SELECT
+                    MAX(CASE WHEN sr.rain_rate_mm_h IS NOT NULL AND sr.rain_rate_mm_h > 0 THEN 1 ELSE 0 END) AS has_rate,
+                    MIN(sr.rain_cumulative_mm) AS min_rain,
+                    MAX(sr.rain_cumulative_mm) AS max_rain
+                FROM sensor_readings sr
+                JOIN sensors s ON s.model = sr.model AND s.sensor_id = sr.sensor_id
+                WHERE s.is_trusted = 1
+                  AND s.location_type = 'outdoor'
+                  AND sr.timestamp BETWEEN ? AND ?;
+                """,
+                (start_iso, end_iso),
+            ).fetchone()
+            if rain_row:
+                if int(rain_row["has_rate"] or 0) > 0:
+                    return True, "Local rain_rate_mm_h > 0"
+                min_r = rain_row["min_rain"]
+                max_r = rain_row["max_rain"]
+                if min_r is not None and max_r is not None and (float(max_r) - float(min_r)) >= 0.2:
+                    return True, f"Local rainfall delta {float(max_r) - float(min_r):.2f}mm"
+        except Exception as exc:
+            logger.debug("Local rain corroboration check skipped: %s", exc)
+
+        # 2. Local trusted outdoor Dew Point Spread < 4.0°F
+        try:
+            temp_rows = self._conn.execute(
+                """
+                SELECT sr.temp_c, sr.humidity
+                FROM sensor_readings sr
+                JOIN sensors s ON s.model = sr.model AND s.sensor_id = sr.sensor_id
+                WHERE s.is_trusted = 1
+                  AND s.location_type = 'outdoor'
+                  AND sr.temp_c IS NOT NULL
+                  AND sr.humidity IS NOT NULL
+                  AND sr.timestamp BETWEEN ? AND ?
+                ORDER BY ABS(strftime('%s', sr.timestamp) - strftime('%s', ?)) ASC, sr.id DESC
+                LIMIT 3;
+                """,
+                (start_iso, end_iso, target_iso),
+            ).fetchall()
+            for tr in temp_rows:
+                tc = tr["temp_c"]
+                rh = tr["humidity"]
+                dp_c = compute_dew_point_c(float(tc), float(rh))
+                if dp_c is not None:
+                    spread_f = (float(tc) - float(dp_c)) * 9.0 / 5.0
+                    if spread_f < 4.0:
+                        return True, f"Outdoor dew spread {spread_f:.1f}°F < 4.0°F"
+        except Exception as exc:
+            logger.debug("Dew spread corroboration check skipped: %s", exc)
+
+        # 3. Reference / Open-Meteo archived rain around timestamp (>= 0.25mm)
+        try:
+            ref_start = format_utc_z(target_utc - timedelta(minutes=60))
+            ref_end = format_utc_z(target_utc + timedelta(minutes=60)) if is_historical else target_iso
+            ref_row = self._conn.execute(
+                """
+                SELECT MAX(rain_mm) AS max_ref_rain
+                FROM reference_weather_history
+                WHERE timestamp BETWEEN ? AND ?;
+                """,
+                (ref_start, ref_end),
+            ).fetchone()
+            if ref_row and ref_row["max_ref_rain"] is not None and float(ref_row["max_ref_rain"]) >= 0.25:
+                return True, f"Reference weather rain {float(ref_row['max_ref_rain']):.2f}mm"
+        except Exception as exc:
+            logger.debug("Reference rain corroboration check skipped: %s", exc)
+
+        # 4. Archived / Active Weather Alerts overlapping target timestamp
+        try:
+            alert_rows = self._conn.execute(
+                """
+                SELECT event
+                FROM weather_alerts
+                WHERE COALESCE(onset, effective, first_seen) <= ?
+                  AND COALESCE(expires, last_seen, first_seen) >= ?;
+                """,
+                (target_iso, target_iso),
+            ).fetchall()
+            for ar in alert_rows:
+                ev = str(ar["event"] or "")
+                ev_low = ev.lower()
+                if any(k in ev_low for k in ("thunder", "t-storm", "lightning", "tornado", "storm", "rain", "shower", "squall")):
+                    return True, f"Weather alert ({ev})"
+        except Exception as exc:
+            logger.debug("Weather alert corroboration check skipped: %s", exc)
+
+        # 5. Live NWS / Open-Meteo current condition & forecast period check
+        if not is_historical and self._nws_service is not None and hasattr(self._nws_service, "has_storm_or_rain_corroboration"):
+            try:
+                ok_nws, reason_nws = self._nws_service.has_storm_or_rain_corroboration()
+                if ok_nws:
+                    return True, reason_nws
+            except Exception as exc:
+                logger.debug("Live NWS storm corroboration check skipped: %s", exc)
+
+        return False, ""
+
+    def get_daily_weather_overrides(self) -> dict[str, dict[str, Any]]:
+        """Return persisted calendar day verification & correction overrides keyed by YYYY-MM-DD."""
+        with self._lock:
+            if self._conn is None:
+                return {}
+            rows = self._conn.execute(
+                """
+                SELECT date_str, verified_status, corrected_condition_type,
+                       corrected_condition_label, exclude_false_lightning, notes, updated_at
+                FROM daily_weather_overrides;
+                """
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            ds = str(r["date_str"])
+            out[ds] = {
+                "date": ds,
+                "verified_status": str(r["verified_status"] or "accurate"),
+                "corrected_condition_type": r["corrected_condition_type"],
+                "corrected_condition_label": r["corrected_condition_label"],
+                "exclude_false_lightning": bool(int(r["exclude_false_lightning"] or 0)),
+                "notes": str(r["notes"] or ""),
+                "updated_at": str(r["updated_at"] or ""),
+            }
+        return out
+
     def auto_classify_isolated_strikes(self) -> int:
-        """Startup Auto-Purge of Isolated Fair-Weather Static Pops (v0.0.30):
-        Identify and set confirmed = 0 on any row in lightning_strikes where the total number
-        of distinct strike rows within ±30 minutes is <= 1 AND delta_strikes <= 2.
-        This immediately clears stuck false static pops (e.g. isolated 17 mi readings) on startup."""
+        """Re-evaluate lightning_strikes from the past 72h using 15m burst density and weather corroboration."""
+        now_utc = datetime.now(timezone.utc)
+        cutoff_72h = format_utc_z(now_utc - timedelta(hours=72))
         with self._lock:
             if self._conn is None:
                 return 0
+            overrides = self.get_daily_weather_overrides()
             with self._conn:
                 rows = self._conn.execute(
                     """
-                    SELECT id, timestamp, delta_strikes, distance_mi
+                    SELECT id, timestamp, DATE(timestamp, 'localtime') AS local_date,
+                           delta_strikes, distance_mi, COALESCE(confirmed, 1) AS confirmed
                     FROM lightning_strikes
-                    WHERE confirmed = 1 OR confirmed IS NULL
-                    ORDER BY timestamp ASC;
-                    """
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp ASC, id ASC;
+                    """,
+                    (cutoff_72h,),
                 ).fetchall()
                 if not rows:
                     return 0
 
-                reclassified = 0
+                parsed: list[tuple[int, datetime, str, int]] = []
                 for row in rows:
-                    row_id = row["id"]
-                    ts = str(row["timestamp"])
-                    dt = parse_utc_iso(ts)
+                    dt = parse_utc_iso(str(row["timestamp"]))
                     if dt is None:
                         continue
-                    delta_s = int(row["delta_strikes"] or 1)
-                    if delta_s > 2:
-                        continue
+                    parsed.append((int(row["id"]), dt, str(row["local_date"] or ""), int(row["confirmed"])))
 
-                    # Check if any OTHER strike exists within +/- 30 minutes
-                    t_start = format_utc_z(dt - timedelta(minutes=30))
-                    t_end = format_utc_z(dt + timedelta(minutes=30))
-                    other = self._conn.execute(
-                        """
-                        SELECT COUNT(*) AS c FROM lightning_strikes
-                        WHERE id != ? AND timestamp BETWEEN ? AND ?;
-                        """,
-                        (row_id, t_start, t_end),
-                    ).fetchone()
-                    nearby_count = int(other["c"] or 0) if other else 0
+                n = len(parsed)
+                if n == 0:
+                    return 0
 
-                    if nearby_count == 0:
+                weather_cache: dict[str, tuple[bool, str]] = {}
+                demoted = 0
+                promoted = 0
+
+                for i, (row_id, dt, local_date, prev_conf) in enumerate(parsed):
+                    ov = overrides.get(local_date)
+                    target_conf: Optional[int] = None
+                    if ov is not None:
+                        if ov.get("exclude_false_lightning"):
+                            target_conf = 0
+                        elif ov.get("corrected_condition_type") == "storm":
+                            target_conf = 1
+                        elif ov.get("corrected_condition_type"):
+                            target_conf = 0
+
+                    if target_conf is None:
+                        # 1. Burst Density: >= 3 distinct strike packets in any 15m sliding window covering packet i
+                        burst_ok = False
+                        if n >= 3:
+                            a_min = max(0, i - 2)
+                            a_max = min(n - 3, i)
+                            for a in range(a_min, a_max + 1):
+                                if (parsed[a + 2][1] - parsed[a][1]).total_seconds() <= 900.0:
+                                    burst_ok = True
+                                    break
+
+                        # 2. Historical Weather Corroboration (cached by hour bucket)
+                        corr_ok = False
+                        if not burst_ok:
+                            bucket = dt.strftime("%Y-%m-%dT%H")
+                            if bucket not in weather_cache:
+                                weather_cache[bucket] = self._has_storm_weather_corroboration(dt, is_historical=True)
+                            corr_ok = weather_cache[bucket][0]
+
+                        target_conf = 1 if (burst_ok or corr_ok) else 0
+
+                    if target_conf != prev_conf:
                         self._conn.execute(
-                            "UPDATE lightning_strikes SET confirmed = 0 WHERE id = ?;",
-                            (row_id,),
+                            "UPDATE lightning_strikes SET confirmed = ? WHERE id = ?;",
+                            (target_conf, row_id),
                         )
-                        reclassified += 1
+                        if target_conf == 0:
+                            demoted += 1
+                        else:
+                            promoted += 1
 
-                if reclassified > 0:
+                if demoted > 0 or promoted > 0:
                     logger.info(
-                        "[LIGHTNING NOISE GATE] Auto-classified %d isolated static pulse(s) (delta<=2, 0 nearby within ±30m) as unconfirmed (confirmed=0).",
-                        reclassified,
+                        "[LIGHTNING NOISE GATE] 72h re-evaluation complete: %d isolated EMI transient(s) suppressed (confirmed=0), %d confirmed (confirmed=1).",
+                        demoted,
+                        promoted,
                     )
-                return reclassified
+                return demoted
 
     @staticmethod
     def make_sensor_key(model: str, sensor_id: str) -> str:
@@ -1120,6 +1315,7 @@ class WeatherDatabase:
 
             # Log delta lightning strikes if new_count > old_count (or 8-bit 0-255 wrap-around)
             delta_strikes = 0
+            strike_confirmed = 1
             if reading.strike_count is not None and prev_strike_count is not None:
                 new_cnt = int(reading.strike_count)
                 if new_cnt > prev_strike_count:
@@ -1137,73 +1333,80 @@ class WeatherDatabase:
                     dist_mi = max(1.0, min(25.0, dist_mi))
                     rfi_flag = int(reading.rfi_detected or 0)
 
-                    # Smart Strike Corroboration & Noise Gate (v0.0.30):
-                    # 1. Check if another strike occurred within the last 30 minutes
-                    cutoff_30m = format_utc_z(reading.timestamp - timedelta(minutes=30))
+                    # Smart Appliance / Freezer Compressor EMI Isolation Filter (v0.0.31):
+                    # Check manual daily override first (localtime), then 15m Burst Density (>= 3 packets),
+                    # then Multi-Factor Weather Corroboration (local rain, dew spread < 4.0°F, NWS rain/storm).
+                    local_date_row = self._conn.execute(
+                        "SELECT DATE(?, 'localtime') AS local_d;",
+                        (utc_ts,),
+                    ).fetchone()
+                    local_date_str = str(local_date_row["local_d"]) if local_date_row and local_date_row["local_d"] else ""
+
+                    ov_row = None
+                    if local_date_str:
+                        ov_row = self._conn.execute(
+                            """
+                            SELECT corrected_condition_type, exclude_false_lightning
+                            FROM daily_weather_overrides
+                            WHERE date_str = ?;
+                            """,
+                            (local_date_str,),
+                        ).fetchone()
+
+                    cutoff_15m = format_utc_z(reading.timestamp - timedelta(minutes=15))
                     recent_row = self._conn.execute(
                         """
-                        SELECT COUNT(*) AS cnt, COALESCE(SUM(delta_strikes), 0) AS total_delta
+                        SELECT COUNT(*) AS cnt
                         FROM lightning_strikes
-                        WHERE timestamp >= ?;
+                        WHERE timestamp >= ? AND timestamp <= ?;
                         """,
-                        (cutoff_30m,),
+                        (cutoff_15m, utc_ts),
                     ).fetchone()
-                    recent_cnt = int(recent_row["cnt"] or 0) if recent_row else 0
-                    recent_delta = int(recent_row["total_delta"] or 0) if recent_row else 0
+                    prior_cnt = int(recent_row["cnt"] or 0) if recent_row else 0
 
-                    # 2. Ambient Barometric Pressure (inHg) & Forecast PoP (%)
-                    curr_baro = self.get_barometer_summary()
-                    curr_inhg = curr_baro.get("pressure_inhg")
-                    curr_pop = self.get_current_pop_percent()
+                    confirmed_val = 0
+                    promote_burst = False
+                    filter_reason = "Isolated Appliance / EMI Transient"
 
-                    # Incoming Packet Rule:
-                    # When a new strike delta arrives from Acurite-6045M,
-                    # if current barometric pressure >= 30.00 inHg and no other strike packet was received
-                    # in the last 30 minutes (and delta_strikes <= 2), insert it with confirmed = 0 (pending confirmation)
-                    # and only promote it to confirmed = 1 if a second strike packet arrives within 30 minutes!
-                    is_corroborated = False
-                    confirmed_val = 1
-
-                    is_high_pressure_static = (
-                        (curr_inhg is not None and curr_inhg >= 30.00)
-                        and recent_cnt == 0
-                        and delta_strikes <= 2
-                    )
-
-                    if is_high_pressure_static:
-                        confirmed_val = 0
-                        is_corroborated = False
-                        logger.warning(
-                            "[LIGHTNING NOISE GATE] Filtered uncorroborated high-pressure static pulse from %s: "
-                            "delta=%d, dist=%.1f mi under %.2f inHg -> marked pending confirmation (confirmed=0)",
-                            sensor_key,
-                            delta_strikes,
-                            dist_mi,
-                            curr_inhg or 30.00,
+                    if ov_row is not None and (
+                        int(ov_row["exclude_false_lightning"] or 0) == 1
+                        or (
+                            ov_row["corrected_condition_type"]
+                            and str(ov_row["corrected_condition_type"]) != "storm"
                         )
-                    elif recent_cnt > 0:
-                        # Second strike packet arrived within 30 minutes -> promote to confirmed = 1!
-                        is_corroborated = True
-                        confirmed_val = 1
-                    elif delta_strikes >= 3 or (delta_strikes + recent_delta) >= 3:
-                        is_corroborated = True
-                        confirmed_val = 1
-                    elif (curr_inhg is not None and curr_inhg < 29.95) or (curr_pop is not None and curr_pop >= 20):
-                        is_corroborated = True
-                        confirmed_val = 1
-                    elif delta_strikes <= 2 and recent_cnt == 0:
+                    ):
                         confirmed_val = 0
-                        is_corroborated = False
+                        filter_reason = f"Manual Day Override ({ov_row['corrected_condition_type'] or 'clear'})"
+                    elif ov_row is not None and str(ov_row["corrected_condition_type"] or "") == "storm":
+                        confirmed_val = 1
+                        filter_reason = "Manual Day Override (storm)"
+                    elif prior_cnt >= 2:
+                        # 3rd+ distinct strike packet within 15 minutes -> genuine storm burst!
+                        confirmed_val = 1
+                        promote_burst = True
+                        filter_reason = f"Burst Density ({prior_cnt + 1} packets in 15m)"
+                    else:
+                        has_corr, corr_reason = self._has_storm_weather_corroboration(
+                            reading.timestamp,
+                            is_historical=False,
+                        )
+                        if has_corr:
+                            confirmed_val = 1
+                            filter_reason = corr_reason
+
+                    if confirmed_val == 0:
+                        strike_confirmed = 0
                         logger.warning(
-                            "[LIGHTNING NOISE GATE] Filtered isolated pulse from %s: "
-                            "delta=%d, dist=%.1f mi -> marked unconfirmed (confirmed=0)",
+                            "[LIGHTNING NOISE GATE] Filtered EMI/static strike pulse from %s: "
+                            "delta=%d, dist=%.1f mi, 15m_prior=%d -> confirmed=0 (%s)",
                             sensor_key,
                             delta_strikes,
                             dist_mi,
+                            prior_cnt,
+                            filter_reason,
                         )
                     else:
-                        is_corroborated = True
-                        confirmed_val = 1
+                        strike_confirmed = 1
 
                     with self._conn:
                         self._conn.execute(
@@ -1214,26 +1417,28 @@ class WeatherDatabase:
                             """,
                             (utc_ts, sensor_key, delta_strikes, round(dist_mi, 1), rfi_flag, confirmed_val),
                         )
-                        # If a second strike packet arrives within 30 minutes, promote any prior unconfirmed strikes in the last 30m:
-                        if is_corroborated and recent_cnt > 0:
+                        # If >= 3 distinct packets hit within 15m, promote prior unconfirmed packets in that window:
+                        if promote_burst:
                             self._conn.execute(
                                 """
                                 UPDATE lightning_strikes
                                 SET confirmed = 1
-                                WHERE timestamp >= ? AND confirmed = 0;
+                                WHERE timestamp >= ? AND timestamp <= ? AND COALESCE(confirmed, 0) = 0;
                                 """,
-                                (cutoff_30m,),
+                                (cutoff_15m, utc_ts),
                             )
 
-            # Ignore storm_dist == 31 / standby distances when delta_strikes == 0
+            # Ignore storm_dist == 31 / standby distances when delta_strikes == 0 or unconfirmed EMI pop
             valid_storm_dist: Optional[float] = None
             if (
                 reading.storm_dist_mi is not None
                 and delta_strikes > 0
+                and strike_confirmed == 1
                 and 1.0 <= float(reading.storm_dist_mi) <= 25.0
                 and int(round(float(reading.storm_dist_mi))) != 31
             ):
                 valid_storm_dist = round(float(reading.storm_dist_mi), 1)
+            rfi_to_store = reading.rfi_detected if strike_confirmed == 1 else 0
 
             reading_params = (
                 utc_ts,
@@ -1254,7 +1459,7 @@ class WeatherDatabase:
                 reading.lux,
                 reading.strike_count,
                 valid_storm_dist,
-                reading.rfi_detected,
+                rfi_to_store,
                 reading.rssi,
                 reading.snr,
                 reading.noise,
@@ -3648,6 +3853,174 @@ class WeatherDatabase:
                 "baro_rain_bias_inhg": rain_baro_bias,
             },
             "recent": [dict(r) for r in rows[:10]],
+        }
+
+    def verify_or_correct_calendar_day(
+        self,
+        date_str: str,
+        verdict: str = "accurate",
+        condition_type: Optional[str] = None,
+        clear_lightning: bool = False,
+        notes: str = "",
+        predicted_condition: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Persist human verification or weather correction for a past/present calendar date and train model weights."""
+        try:
+            datetime.strptime(str(date_str).strip(), "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("date must be formatted as YYYY-MM-DD") from exc
+
+        date_clean = str(date_str).strip()
+        verdict_raw = str(verdict or "accurate").strip().lower()
+        verdict_norm = (
+            "corrected"
+            if verdict_raw in ("corrected", "correct", "no", "wrong", "override")
+            else "accurate"
+        )
+
+        cond_key = str(condition_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if cond_key in ("clear", "fair"):
+            cond_key = "sunny"
+        elif cond_key in ("mostly_cloudy", "overcast"):
+            cond_key = "cloudy"
+        elif cond_key in ("showers", "drizzle"):
+            cond_key = "rain"
+        elif cond_key in ("thunderstorm", "tstorm", "severe"):
+            cond_key = "storm"
+
+        cond_label = CANONICAL_WEATHER_CONDITIONS.get(cond_key) if cond_key else None
+        if verdict_norm == "corrected" and not cond_label:
+            raise ValueError(
+                f"Valid condition_type required ({', '.join(CANONICAL_WEATHER_CONDITIONS.keys())})"
+            )
+
+        exclude_lightning = bool(clear_lightning) or (bool(cond_key) and cond_key != "storm")
+        now_iso = format_utc_z(datetime.now(timezone.utc))
+        today_local = datetime.now().strftime("%Y-%m-%d")
+        demoted_strikes = 0
+
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database not initialized")
+
+            ds_row = self._conn.execute(
+                """
+                SELECT temp_max_f, temp_mean_c, humidity_mean, pressure_min_hpa, pressure_max_hpa
+                FROM daily_summaries
+                WHERE date_str = ?;
+                """,
+                (date_clean,),
+            ).fetchone()
+
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO daily_weather_overrides (
+                        date_str, verified_status, corrected_condition_type,
+                        corrected_condition_label, exclude_false_lightning, notes, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date_str) DO UPDATE SET
+                        verified_status = excluded.verified_status,
+                        corrected_condition_type = excluded.corrected_condition_type,
+                        corrected_condition_label = excluded.corrected_condition_label,
+                        exclude_false_lightning = excluded.exclude_false_lightning,
+                        notes = excluded.notes,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (
+                        date_clean,
+                        verdict_norm,
+                        cond_key or None,
+                        cond_label,
+                        1 if exclude_lightning else 0,
+                        str(notes or "").strip()[:300],
+                        now_iso,
+                    ),
+                )
+
+                if exclude_lightning:
+                    cur_lt = self._conn.execute(
+                        """
+                        UPDATE lightning_strikes
+                        SET confirmed = 0
+                        WHERE DATE(timestamp, 'localtime') = ?
+                          AND (confirmed = 1 OR confirmed IS NULL);
+                        """,
+                        (date_clean,),
+                    )
+                    demoted_strikes = int(cur_lt.rowcount or 0)
+                    if date_clean == today_local:
+                        self._conn.execute(
+                            """
+                            UPDATE sensor_readings
+                            SET storm_dist_mi = NULL, rfi_detected = 0
+                            WHERE DATE(timestamp, 'localtime') = ?
+                              AND (storm_dist_mi IS NOT NULL OR rfi_detected = 1);
+                            """,
+                            (date_clean,),
+                        )
+                elif cond_key == "storm":
+                    self._conn.execute(
+                        """
+                        UPDATE lightning_strikes
+                        SET confirmed = 1
+                        WHERE DATE(timestamp, 'localtime') = ? AND confirmed = 0;
+                        """,
+                        (date_clean,),
+                    )
+
+        pred_temp_f = (
+            round(float(ds_row["temp_max_f"]), 1)
+            if ds_row and ds_row["temp_max_f"] is not None
+            else None
+        )
+        pressure_hpa: Optional[float] = None
+        if ds_row:
+            p_vals = [float(x) for x in (ds_row["pressure_min_hpa"], ds_row["pressure_max_hpa"]) if x is not None]
+            if p_vals:
+                pressure_hpa = round(sum(p_vals) / len(p_vals), 2)
+
+        dew_spread_f: Optional[float] = None
+        if ds_row and ds_row["temp_mean_c"] is not None and ds_row["humidity_mean"] is not None:
+            dp_c = compute_dew_point_c(float(ds_row["temp_mean_c"]), float(ds_row["humidity_mean"]))
+            if dp_c is not None:
+                dew_spread_f = round((float(ds_row["temp_mean_c"]) - float(dp_c)) * 9.0 / 5.0, 1)
+
+        pred_label = str(predicted_condition or cond_label or "Observed")
+        actual_label = cond_label or pred_label
+        fb_verdict = "yes" if verdict_norm == "accurate" else "no"
+        note_prefix = f"Calendar {date_clean}"
+        if demoted_strikes > 0:
+            note_prefix += f" (cleared {demoted_strikes} false EMI pulse(s))"
+        if notes:
+            note_prefix += f": {str(notes).strip()}"
+
+        feedback_summary = self.record_weather_feedback(
+            verdict=fb_verdict,
+            predicted_condition=pred_label,
+            predicted_temp_f=pred_temp_f,
+            actual_condition=actual_label,
+            pressure_hpa=pressure_hpa,
+            dew_spread_f=dew_spread_f,
+            notes=note_prefix[:300],
+        )
+
+        if verdict_norm == "corrected" and demoted_strikes > 0 and cond_key in ("sunny", "partly_cloudy", "cloudy"):
+            try:
+                self.set_setting("last_calendar_emi_purge_date", date_clean)
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "date": date_clean,
+            "verified_status": verdict_norm,
+            "condition_type": cond_key or None,
+            "condition_label": cond_label,
+            "exclude_false_lightning": exclude_lightning,
+            "demoted_strikes": demoted_strikes,
+            "updated_at": now_iso,
+            "feedback_summary": feedback_summary,
         }
 
     def get_weather_overview(self) -> dict[str, Any]:

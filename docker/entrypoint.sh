@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SkyScry v0.0.30 - Smart Linux / TrueNAS SCALE Container Entrypoint
+# SkyScry v0.0.31 - Smart Linux / TrueNAS SCALE Container Entrypoint
 # ============================================================================
 set -e
 
 echo "============================================================================"
-echo "  SkyScry v0.0.30 - Container Startup & Hardware Pre-Flight"
+echo "  SkyScry v0.0.31 - Container Startup & Hardware Pre-Flight"
 echo "============================================================================"
 
 cd /app

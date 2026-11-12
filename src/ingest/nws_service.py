@@ -1071,3 +1071,55 @@ class NWSWeatherService:
             "status": "Corroborated",
             "summary_badge": badge_text,
         }
+
+    def has_storm_or_rain_corroboration(self) -> tuple[bool, str]:
+        """Return (True, reason) if cached NWS alerts, current observation, or current forecast indicates rain/thunderstorm."""
+        with self._lock:
+            cached = self._cache if isinstance(self._cache, dict) else {}
+
+        storm_keywords = (
+            "thunder",
+            "t-storm",
+            "lightning",
+            "storm",
+            "rain",
+            "shower",
+            "drizzle",
+            "squall",
+        )
+
+        # 1. Active NWS alerts
+        alerts = cached.get("alerts") if isinstance(cached.get("alerts"), list) else []
+        for al in alerts:
+            if not isinstance(al, dict):
+                continue
+            event_str = str(al.get("event") or "")
+            ev_low = event_str.lower()
+            if any(kw in ev_low for kw in storm_keywords):
+                return True, f"NWS alert ({event_str})"
+
+        # 2. Current NWS / Open-Meteo observation condition
+        obs = cached.get("observation") if isinstance(cached.get("observation"), dict) else {}
+        obs_desc = str(obs.get("text_description") or obs.get("condition") or "")
+        obs_low = obs_desc.lower()
+        if obs_low and any(kw in obs_low for kw in storm_keywords):
+            return True, f"NWS observation ({obs_desc})"
+
+        # 3. Current NWS forecast period text or high precipitation probability
+        periods = cached.get("forecast_periods") or cached.get("forecast")
+        if isinstance(periods, list) and periods:
+            p0 = periods[0] if isinstance(periods[0], dict) else {}
+            fc_text = str(p0.get("short_forecast") or p0.get("detailed_forecast") or "")
+            fc_low = fc_text.lower()
+            if fc_low and any(kw in fc_low for kw in ("thunder", "t-storm", "lightning", "storm", "rain", "shower", "squall")):
+                return True, f"NWS forecast ({fc_text})"
+            pop = p0.get("pop_percent")
+            if pop is None:
+                pop = p0.get("pop_pct")
+            try:
+                if pop is not None and float(pop) >= 50.0:
+                    return True, f"NWS PoP {int(round(float(pop)))}%"
+            except (TypeError, ValueError):
+                pass
+
+        return False, ""

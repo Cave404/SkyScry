@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.30)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.31)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.30 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.31 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -664,6 +664,7 @@ def create_app(
         return jsonify({"ok": True, **telemetry})
 
     @app.route("/api/lightning/clear", methods=["POST"])
+    @admin_guard
     def api_lightning_clear() -> Response:
         """Purge false, unconfirmed, or simulated test strikes from the 24h counter and reset the sensor baseline."""
         body = request.get_json(silent=True) or {}
@@ -674,6 +675,31 @@ def create_app(
             hours = None
         result = db.clear_lightning_strikes(hours=hours)
         return jsonify(result)
+
+    @app.route("/api/lightning/test", methods=["POST"])
+    @admin_guard
+    def api_lightning_test() -> Response:
+        """Generate a non-destructive simulated strike payload (admin-protected) for testing gauges and storm rings."""
+        body = request.get_json(silent=True) or {}
+        try:
+            dist_mi = float(body.get("dist_mi", 4.0))
+        except (ValueError, TypeError):
+            dist_mi = 4.0
+        dist_mi = max(1.0, min(25.0, round(dist_mi, 1)))
+        try:
+            strikes = max(1, min(50, int(body.get("strikes", 3))))
+        except (ValueError, TypeError):
+            strikes = 3
+        now_utc_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return jsonify(
+            {
+                "ok": True,
+                "simulated": True,
+                "dist_mi": dist_mi,
+                "strikes": strikes,
+                "timestamp": now_utc_iso,
+            }
+        )
 
     @app.route("/api/alerts", methods=["GET"])
     def api_alerts() -> Response:
@@ -691,6 +717,7 @@ def create_app(
         )
 
     @app.route("/api/alerts/test", methods=["POST"])
+    @admin_guard
     def api_alerts_test() -> Response:
         """Inject or clear a simulated NWS weather alert to test dashboard banners, voice reader, and calendar ribbons."""
         body = request.get_json(silent=True) or {}
@@ -702,14 +729,17 @@ def create_app(
             alert_obj = db.inject_test_alert(sample=body.get("alert"))
             return jsonify({"ok": True, "action": "simulate", "alert": alert_obj})
 
-    @app.route("/api/forecast/feedback", methods=["GET", "POST"])
-    def api_forecast_feedback() -> tuple[Response, int] | Response:
-        """Record or query human ground-truth weather reaffirmation (`verdict`: `yes` | `partial` | `no`)."""
-        if request.method == "GET":
-            summary = db.get_weather_feedback_summary()
-            learned = db.get_learned_weather_model()
-            return jsonify({"ok": True, "summary": summary, "learned_model": learned, **summary})
+    @app.route("/api/forecast/feedback", methods=["GET"])
+    def api_forecast_feedback_get() -> Response:
+        """Query human ground-truth weather reaffirmation history and learned weather model weights."""
+        summary = db.get_weather_feedback_summary()
+        learned = db.get_learned_weather_model()
+        return jsonify({"ok": True, "summary": summary, "learned_model": learned, **summary})
 
+    @app.route("/api/forecast/feedback", methods=["POST"])
+    @admin_guard
+    def api_forecast_feedback_post() -> tuple[Response, int] | Response:
+        """Record human ground-truth weather reaffirmation (`verdict`: `yes` | `partial` | `no`)."""
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             return jsonify({"ok": False, "error": "Request body must be a JSON object."}), 400
@@ -903,6 +933,34 @@ def create_app(
         )
         return jsonify(cal_data)
 
+    @app.route("/api/calendar/verify-day", methods=["POST"])
+    @admin_guard
+    def api_calendar_verify_day() -> tuple[Response, int] | Response:
+        """Persist human verification or weather correction for a past/present calendar date (admin-protected)."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "error": "Request body must be a JSON object."}), 400
+
+        date_str = str(body.get("date") or "").strip()
+        verdict = str(body.get("verdict") or "accurate").strip().lower()
+        condition_type = body.get("condition_type")
+        clear_lightning = bool(body.get("clear_lightning", False))
+        notes = str(body.get("notes") or "").strip()
+        predicted_condition = body.get("predicted_condition")
+
+        try:
+            res = db.verify_or_correct_calendar_day(
+                date_str=date_str,
+                verdict=verdict,
+                condition_type=str(condition_type) if condition_type is not None else None,
+                clear_lightning=clear_lightning,
+                notes=notes,
+                predicted_condition=str(predicted_condition) if predicted_condition is not None else None,
+            )
+            return jsonify(res)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
     @app.route("/api/charts", methods=["GET"])
     def api_charts() -> tuple[Response, int] | Response:
         """Return time-bucketed, smoothed chart series with multi-checkbox location & sensor filtering."""
@@ -1059,6 +1117,7 @@ def create_app(
         return jsonify({"ok": True, "status": "ok", **result})
 
     @app.route("/api/maintenance/vacuum", methods=["POST"])
+    @app.route("/api/vacuum", methods=["POST"])
     @admin_guard
     def api_vacuum_database() -> tuple[Response, int] | Response:
         """Run WAL-truncating SQLite vacuum (`wal_checkpoint(FULL)`, `VACUUM`, `optimize`, `ANALYZE`, `wal_checkpoint(TRUNCATE)`)."""
@@ -1067,6 +1126,7 @@ def create_app(
 
     @app.route("/api/sdr/reset", methods=["POST"])
     @app.route("/api/sdr/reconnect", methods=["POST"])
+    @admin_guard
     def api_sdr_reset() -> Response:
         """Trigger an immediate USB reset / reconnect of the SDR stream child process."""
         if sdr_stream is None:

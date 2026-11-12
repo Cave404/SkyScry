@@ -396,6 +396,7 @@ def require_admin_auth(security_mgr: SecurityManager) -> Callable[[Callable[...,
                             {
                                 "ok": False,
                                 "error": "Public Read-Only mode is active. Set up or unlock Admin controls to modify settings.",
+                                "auth_required": True,
                                 "read_only": True,
                                 "locked": True,
                             }
@@ -407,6 +408,7 @@ def require_admin_auth(security_mgr: SecurityManager) -> Callable[[Callable[...,
                         {
                             "ok": False,
                             "error": "Admin security password has not been created yet. Please complete first-run password setup.",
+                            "auth_required": True,
                             "setup_required": True,
                             "locked": True,
                         }

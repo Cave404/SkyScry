@@ -1,6 +1,6 @@
 # SkyScry
 
-![Version](https://img.shields.io/badge/version-0.0.30-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.31-blue.svg)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
@@ -10,7 +10,7 @@ It captures raw ASK/OOK radio bursts from in-range 433.92 MHz weather stations v
 
 ---
 
-## Key Features (`v0.0.30`)
+## Key Features (`v0.0.31`)
 
 - **Interactive Weather Calendar & High-Contrast Mini-Dashboard (`v0.0.19`):**
   - **High-Contrast Calendar Day Cells:** Dark slate cells (`#131c31`) with bright white day numbers, glowing data source indicators (`● Local`, `● Archive`, `◌ Est. XX%`), high-contrast High/Low temperatures (`#fbbf24` / `#38bdf8`), and centered 42px animated SVG weather icons.

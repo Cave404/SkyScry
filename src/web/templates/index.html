@@ -13,7 +13,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
-  <header class="topbar sticky-app-bar">
+  <header class="topbar sticky-app-bar top-app-bar">
     <div class="topbar-left">
       <button id="btn-nav-drawer-toggle" class="hamburger-btn" type="button" aria-label="Open Navigation Drawer" title="Navigation &amp; System Menu">
         <svg class="hamburger-svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -50,79 +50,79 @@
         <span class="sync-btn-label">Sync</span>
       </button>
     </div>
+  </header>
 
-    <!-- Floating System Status Popover Card -->
-    <div id="status-popover" class="status-popover hidden" role="dialog" aria-label="System Status Popover">
-      <div class="popover-header">
-        <div class="popover-title">SYSTEM STATUS</div>
-        <button id="btn-popover-close" class="popover-close-btn" type="button" aria-label="Close Status Popover">&times;</button>
+  <!-- Floating System Status Popover Card -->
+  <div id="status-popover" class="status-popover hidden" role="dialog" aria-label="System Status Popover">
+    <div class="popover-header">
+      <div class="popover-title">SYSTEM STATUS</div>
+      <button id="btn-popover-close" class="popover-close-btn" type="button" aria-label="Close Status Popover">&times;</button>
+    </div>
+
+    <div class="popover-body">
+      <!-- SDR Stream & Active Sensors -->
+      <div class="popover-row">
+        <span class="popover-label">SDR Stream</span>
+        <div class="popover-val-group">
+          <span id="popover-sdr-status" class="status-badge running">RUNNING</span>
+          <button id="btn-reconnect-sdr" class="btn btn-xs btn-outline-danger hidden" type="button" style="padding: 2px 8px; font-size: 0.72rem; line-height: 1.2;">Reset USB & Reconnect</button>
+          <span id="stat-sensor-count" class="popover-subval">--/--</span>
+        </div>
       </div>
 
-      <div class="popover-body">
-        <!-- SDR Stream & Active Sensors -->
-        <div class="popover-row">
-          <span class="popover-label">SDR Stream</span>
-          <div class="popover-val-group">
-            <span id="popover-sdr-status" class="status-badge running">RUNNING</span>
-            <button id="btn-reconnect-sdr" class="btn btn-xs btn-outline-danger hidden" type="button" style="padding: 2px 8px; font-size: 0.72rem; line-height: 1.2;">Reset USB & Reconnect</button>
-            <span id="stat-sensor-count" class="popover-subval">--/--</span>
-          </div>
+      <!-- Barometer -->
+      <div class="popover-row">
+        <span class="popover-label">Barometer</span>
+        <span id="stat-baro-header" class="popover-val-accent">--.--"</span>
+      </div>
+
+      <!-- Security Mode -->
+      <div class="popover-row popover-auth-row">
+        <div class="popover-auth-info">
+          <span class="popover-label">Security</span>
+          <span id="popover-auth-status" class="popover-auth-val">Locked (Read-Only)</span>
         </div>
+        <button id="btn-popover-auth" class="btn btn-xs btn-outline-primary" type="button">Unlock Admin</button>
+      </div>
 
-        <!-- Barometer -->
-        <div class="popover-row">
-          <span class="popover-label">Barometer</span>
-          <span id="stat-baro-header" class="popover-val-accent">--.--"</span>
+      <div class="popover-divider"></div>
+
+      <!-- Telemetry DB: Packets Logged & DB Size -->
+      <div class="popover-grid">
+        <div class="popover-grid-cell">
+          <span class="popover-cell-label">PACKETS LOGGED</span>
+          <span id="popover-reading-count" class="popover-cell-val">--</span>
         </div>
-
-        <!-- Security Mode -->
-        <div class="popover-row popover-auth-row">
-          <div class="popover-auth-info">
-            <span class="popover-label">Security</span>
-            <span id="popover-auth-status" class="popover-auth-val">Locked (Read-Only)</span>
-          </div>
-          <button id="btn-popover-auth" class="btn btn-xs btn-outline-primary" type="button">Unlock Admin</button>
+        <div class="popover-grid-cell">
+          <span class="popover-cell-label">DB SIZE (WAL)</span>
+          <span id="popover-db-size" class="popover-cell-val">-- MB</span>
         </div>
+      </div>
 
-        <div class="popover-divider"></div>
-
-        <!-- Telemetry DB: Packets Logged & DB Size -->
-        <div class="popover-grid">
-          <div class="popover-grid-cell">
-            <span class="popover-cell-label">PACKETS LOGGED</span>
-            <span id="popover-reading-count" class="popover-cell-val">--</span>
-          </div>
-          <div class="popover-grid-cell">
-            <span class="popover-cell-label">DB SIZE (WAL)</span>
-            <span id="popover-db-size" class="popover-cell-val">-- MB</span>
-          </div>
+      <!-- Uptime & Last Sync -->
+      <div class="popover-grid">
+        <div class="popover-grid-cell">
+          <span class="popover-cell-label">UPTIME</span>
+          <span id="popover-uptime" class="popover-cell-val">--</span>
         </div>
-
-        <!-- Uptime & Last Sync -->
-        <div class="popover-grid">
-          <div class="popover-grid-cell">
-            <span class="popover-cell-label">UPTIME</span>
-            <span id="popover-uptime" class="popover-cell-val">--</span>
-          </div>
-          <div class="popover-grid-cell">
-            <span class="popover-cell-label">LAST SYNC</span>
-            <span id="popover-last-sync" class="popover-cell-val">--</span>
-          </div>
+        <div class="popover-grid-cell">
+          <span class="popover-cell-label">LAST SYNC</span>
+          <span id="popover-last-sync" class="popover-cell-val">--</span>
         </div>
+      </div>
 
-        <div class="popover-divider"></div>
+      <div class="popover-divider"></div>
 
-        <!-- Version & Build -->
-        <div class="popover-footer">
-          <span id="popover-app-version">v{{ version }}</span>
-          <span class="popover-bullet">&bull;</span>
-          <span id="popover-git-commit">git:local</span>
-          <span class="popover-bullet">&bull;</span>
-          <span id="popover-rtl433-ver">rtl_433</span>
-        </div>
+      <!-- Version & Build -->
+      <div class="popover-footer">
+        <span id="popover-app-version">v{{ version }}</span>
+        <span class="popover-bullet">&bull;</span>
+        <span id="popover-git-commit">git:local</span>
+        <span class="popover-bullet">&bull;</span>
+        <span id="popover-rtl433-ver">rtl_433</span>
       </div>
     </div>
-  </header>
+  </div>
 
   <!-- Slide-Out Navigation & System Drawer (Hamburger Menu) -->
   <div id="nav-backdrop" class="nav-backdrop" aria-hidden="true"></div>
@@ -258,7 +258,7 @@
     </div>
   </aside>
 
-  <main class="main-content">
+  <main class="main-content app-container">
     <!-- ================================================================== -->
     <!-- VIEW 1: MAIN OVERVIEW DASHBOARD (ACURITE & WEATHER-DISPLAY GAUGES) -->
     <!-- ================================================================== -->
@@ -347,7 +347,7 @@
               </div>
             </div>
             <div class="sparkline-svg-container hero-chart-container">
-              <svg id="ov-hero-sparkline-svg" class="hero-trend-svg hero-chart-svg" viewBox="0 0 800 230" preserveAspectRatio="none" aria-label="24-hour temperature and dew point area trend chart"></svg>
+              <svg id="ov-hero-sparkline-svg" class="hero-trend-svg hero-chart-svg" viewBox="0 0 800 230" aria-label="24-hour temperature and dew point area trend chart"></svg>
             </div>
           </div>
 
@@ -802,7 +802,7 @@
           <div class="gauge-card-header">
             <span class="metric-label">Lightning Strike(s) &amp; Proximity</span>
             <div class="lightning-header-badges">
-              <span id="ov-lightning-noise-badge" class="badge badge-amber hidden" title="Single isolated pulse filtered as non-corroborated static EMI under high pressure">&#128737;&#65039; Noise Gate Active</span>
+              <span id="ov-lightning-noise-badge" class="badge badge-amber hidden" title="Single isolated appliance/EMI pulse filtered (uncorroborated noise gate)">&#128737;&#65039; Noise Gate Active</span>
               <span id="ov-lightning-rfi-badge" class="badge badge-expunged hidden" title="06045M RFI Interference Detected from nearby motor or electronics">&#9888; RFI INTERFERENCE</span>
               <span id="ov-lightning-status-badge" class="badge">Standby / Waiting for 06045M</span>
             </div>

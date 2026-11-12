@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.30 — 7-View Frontend Controller
+ * SkyScry v0.0.31 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -704,6 +704,36 @@
         elSettingsLockStateBadge.className = "badge badge-expunged";
       }
     }
+
+    // Visual lock indicator badges across protected model-training, lightning, alert & verification controls
+    const gatedSelectors = [
+      ".btn-checkin-pill",
+      ".btn-set-weather-checkin",
+      "#btn-ov-simulate-strike",
+      "#btn-clear-strikes",
+      "#btn-set-simulate-strike",
+      "#btn-set-clear-strikes",
+      "#btn-set-simulate-alert",
+      "#btn-reconnect-sdr",
+      ".cal-verify-btn",
+    ];
+    const showLock = Boolean(!authState.unlocked);
+    document.querySelectorAll(gatedSelectors.join(", ")).forEach((btn) => {
+      if (!btn) return;
+      btn.classList.toggle("is-locked-btn", showLock);
+      let badge = btn.querySelector(".admin-lock-badge");
+      if (showLock) {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "admin-lock-badge";
+          badge.setAttribute("aria-hidden", "true");
+          badge.textContent = "🔒";
+          btn.appendChild(badge);
+        }
+      } else if (badge) {
+        badge.remove();
+      }
+    });
 
     if (!authState.password_configured && !setupModalShown && elSetupBackdrop) {
       setupModalShown = true;
@@ -1504,7 +1534,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.30"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.31"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -2927,40 +2957,42 @@
 
   async function handleSimulateAlertClick(evt) {
     if (evt && typeof evt.preventDefault === "function") evt.preventDefault();
-    const action = isSimulatedAlertActive ? "clear" : "simulate";
-    try {
-      const res = await fetch("/api/alerts/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: action }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    requireUnlockedOrPrompt(async () => {
+      const action = isSimulatedAlertActive ? "clear" : "simulate";
+      try {
+        const res = await authorizedWriteFetch("/api/alerts/test", {
+          method: "POST",
+          body: JSON.stringify({ action: action }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
-      if (action === "simulate") {
-        isSimulatedAlertActive = true;
-        if (elBtnSetSimulateAlert) {
-          elBtnSetSimulateAlert.innerHTML = "🧹 Clear Test Alert";
+        if (action === "simulate") {
+          isSimulatedAlertActive = true;
+          if (elBtnSetSimulateAlert) {
+            elBtnSetSimulateAlert.innerHTML = "🧹 Clear Test Alert";
+          }
+          appendSystemConsoleLog(
+            "Simulated Test Severe Thunderstorm Warning injected into SQLite weather_alerts.",
+            "TEST"
+          );
+          showToast("Test Severe Thunderstorm Warning injected! Check Overview and Radar tabs.", "success");
+        } else {
+          isSimulatedAlertActive = false;
+          if (elBtnSetSimulateAlert) {
+            elBtnSetSimulateAlert.innerHTML = "🚨 Simulate Test Alert";
+          }
+          appendSystemConsoleLog("Test weather alerts cleared from SQLite.", "CLEARED");
+          showToast("Test alerts cleared.", "info");
         }
-        appendSystemConsoleLog(
-          "Simulated Test Severe Thunderstorm Warning injected into SQLite weather_alerts.",
-          "TEST"
-        );
-        showToast("Test Severe Thunderstorm Warning injected! Check Overview and Radar tabs.", "success");
-      } else {
-        isSimulatedAlertActive = false;
-        if (elBtnSetSimulateAlert) {
-          elBtnSetSimulateAlert.innerHTML = "🚨 Simulate Test Alert";
-        }
-        appendSystemConsoleLog("Test weather alerts cleared from SQLite.", "CLEARED");
-        showToast("Test alerts cleared.", "info");
+        updateAuthHeaderUi();
+        await refreshAll(true);
+        fetchAndRenderAlerts().catch(() => {});
+      } catch (err) {
+        console.error("Test alert error:", err);
+        showToast(err.message || "Failed to trigger test alert.", "error");
       }
-      await refreshAll(true);
-      fetchAndRenderAlerts().catch(() => {});
-    } catch (err) {
-      console.error("Test alert error:", err);
-      showToast(err.message || "Failed to trigger test alert.", "error");
-    }
+    });
   }
 
   function createCrosshairIcon() {
@@ -3551,7 +3583,7 @@
     if (elOvLightningNoiseBadge) {
       if (unconfirmedCount > 0 && strikes24h === 0) {
         elOvLightningNoiseBadge.textContent = `🛡️ Noise Gate (${unconfirmedCount} Filtered)`;
-        elOvLightningNoiseBadge.title = `${unconfirmedCount} isolated pulse(s) filtered as high-pressure EMI/static pops to protect 24h distance rings.`;
+        elOvLightningNoiseBadge.title = `${unconfirmedCount} isolated appliance/EMI pulse(s) filtered without weather/burst corroboration to protect 24h distance rings.`;
         elOvLightningNoiseBadge.classList.remove("hidden");
       } else {
         elOvLightningNoiseBadge.classList.add("hidden");
@@ -3639,110 +3671,128 @@
   }
 
   function triggerSimulatedLightningStrike() {
-    const nowIso = new Date().toISOString();
-    simulatedLightningState = {
-      sensor_paired: true,
-      active_storm_mode: true,
-      rfi_detected: false,
-      strikes_1h: 7,
-      strikes_24h: 19,
-      closest_strike_mi: 6,
-      furthest_strike_mi: 21,
-      last_strike_ts: nowIso,
-      last_strike_dist_mi: 6,
-      recent_strikes: [
-        { distance_mi: 6, age_minutes: 0.2, delta_strikes: 2 },
-        { distance_mi: 11, age_minutes: 6.5, delta_strikes: 3 },
-        { distance_mi: 16, age_minutes: 18.0, delta_strikes: 2 },
-        { distance_mi: 21, age_minutes: 42.0, delta_strikes: 1 },
-      ],
-    };
-    renderLightningCard(simulatedLightningState);
-    appendSystemConsoleLog(
-      "Simulated AcuRite 06045M Strike Burst: Closest=6 mi, Active=11 mi & 16 mi, Furthest=21 mi (8s storm cadence preview).",
-      "SIMULATED"
-    );
-    showToast("Simulated AcuRite 06045M Lightning Rings (Closest: 6 mi, Furthest: 21 mi).");
+    requireUnlockedOrPrompt(async () => {
+      try {
+        const resp = await authorizedWriteFetch("/api/lightning/test", {
+          method: "POST",
+          body: JSON.stringify({ dist_mi: 6.0, strikes: 3 }),
+        });
+        if (!resp.ok) return;
+        const nowIso = new Date().toISOString();
+        simulatedLightningState = {
+          sensor_paired: true,
+          active_storm_mode: true,
+          rfi_detected: false,
+          strikes_1h: 7,
+          strikes_24h: 19,
+          closest_strike_mi: 6,
+          furthest_strike_mi: 21,
+          last_strike_ts: nowIso,
+          last_strike_dist_mi: 6,
+          recent_strikes: [
+            { distance_mi: 6, age_minutes: 0.2, delta_strikes: 2 },
+            { distance_mi: 11, age_minutes: 6.5, delta_strikes: 3 },
+            { distance_mi: 16, age_minutes: 18.0, delta_strikes: 2 },
+            { distance_mi: 21, age_minutes: 42.0, delta_strikes: 1 },
+          ],
+        };
+        renderLightningCard(simulatedLightningState);
+        appendSystemConsoleLog(
+          "Simulated AcuRite 06045M Strike Burst: Closest=6 mi, Active=11 mi & 16 mi, Furthest=21 mi (8s storm cadence preview).",
+          "SIMULATED"
+        );
+        showToast("Simulated AcuRite 06045M Lightning Rings (Closest: 6 mi, Furthest: 21 mi).");
+      } catch (err) {
+        console.error("Failed to simulate strike:", err);
+        showToast(err.message || "Failed to simulate lightning strike.", "error");
+      }
+    });
   }
 
   async function handleClearFalseStrikesClick(evt) {
     if (evt && evt.preventDefault) evt.preventDefault();
     const btn = (evt && evt.currentTarget) ? evt.currentTarget : elBtnOvClearStrikes;
-    const origHtml = btn ? btn.innerHTML : "";
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = `<span class="spinner-inline"></span> Clearing...`;
-    }
-    simulatedLightningState = null;
-    renderLightningCard({
-      strikes_15m: 0,
-      strikes_30m: 0,
-      strikes_1h: 0,
-      strikes_24h: 0,
-      last_strike_time: null,
-      last_strike_dist_mi: null,
-      closest_dist_24h_mi: null,
-      furthest_dist_24h_mi: null,
-      recent_rings: [],
-    });
-    try {
-      const resp = await fetch("/api/lightning/clear", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const data = await resp.json();
-      appendSystemConsoleLog(
-        `Cleared ${data.deleted_strikes || 0} strike record(s) from SQLite. Sensor baseline synchronized.`,
-        "CLEARED"
-      );
-      if (typeof showToast === "function") {
-        showToast("Lightning strikes cleared. Sensor baseline reset.", "success");
-      }
-      await fetchOverview();
-    } catch (err) {
-      console.error("Failed to clear false strikes:", err);
-      appendSystemConsoleLog(`Failed to clear false strikes: ${err.message}`, "ERROR");
-      if (typeof showToast === "function") {
-        showToast("Error clearing false strikes.", "error");
-      }
-    } finally {
+    requireUnlockedOrPrompt(async () => {
+      const origHtml = btn ? btn.innerHTML : "";
       if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = origHtml;
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-inline"></span> Clearing...`;
       }
-    }
+      try {
+        const resp = await authorizedWriteFetch("/api/lightning/clear", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        simulatedLightningState = null;
+        renderLightningCard({
+          strikes_15m: 0,
+          strikes_30m: 0,
+          strikes_1h: 0,
+          strikes_24h: 0,
+          last_strike_time: null,
+          last_strike_dist_mi: null,
+          closest_dist_24h_mi: null,
+          furthest_dist_24h_mi: null,
+          recent_rings: [],
+        });
+        appendSystemConsoleLog(
+          `Cleared ${data.deleted_strikes || 0} strike record(s) from SQLite. Sensor baseline synchronized.`,
+          "CLEARED"
+        );
+        if (typeof showToast === "function") {
+          showToast("Lightning strikes cleared. Sensor baseline reset.", "success");
+        }
+        await fetchOverview();
+      } catch (err) {
+        console.error("Failed to clear false strikes:", err);
+        appendSystemConsoleLog(`Failed to clear false strikes: ${err.message}`, "ERROR");
+        if (typeof showToast === "function") {
+          showToast(err.message || "Error clearing false strikes.", "error");
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+          updateAuthHeaderUi();
+        }
+      }
+    });
   }
 
   async function submitWeatherFeedback(ratingOrCondition, isDirectCondition) {
-    try {
-      const payload = isDirectCondition
-        ? { user_condition: ratingOrCondition, rating: "spot_on", notes: "Settings Check-In" }
-        : {
-            rating: ratingOrCondition,
-            user_condition: elOvConditionLabel ? elOvConditionLabel.textContent : "Observed",
-          };
-      const res = await fetch("/api/forecast/feedback", {
-        method: "POST",
-        headers: getAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    requireUnlockedOrPrompt(async () => {
+      try {
+        const payload = isDirectCondition
+          ? { user_condition: ratingOrCondition, rating: "spot_on", notes: "Settings Check-In" }
+          : {
+              rating: ratingOrCondition,
+              user_condition: elOvConditionLabel ? elOvConditionLabel.textContent : "Observed",
+            };
+        const res = await authorizedWriteFetch("/api/forecast/feedback", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
-      if (elOvCheckinStatus && data.summary) {
-        const cnt = data.summary.total_feedback ?? data.summary.total_count ?? 1;
-        elOvCheckinStatus.textContent = `Logged! (${cnt} confirmations, ${Math.round(data.summary.accuracy_pct ?? 100)}% accuracy)`;
+        if (elOvCheckinStatus && data.summary) {
+          const cnt = data.summary.total_feedback ?? data.summary.total_count ?? 1;
+          elOvCheckinStatus.textContent = `Logged! (${cnt} confirmations, ${Math.round(data.summary.accuracy_pct ?? 100)}% accuracy)`;
+        }
+        appendSystemConsoleLog(
+          `Ground-truth check-in recorded (${ratingOrCondition}). Model confidence updated.`,
+          "UPDATED"
+        );
+        showToast("Ground-truth weather check-in recorded! Forecast confidence model updated.");
+        await fetchOverview();
+      } catch (err) {
+        showToast(err.message || "Failed to record weather check-in.", "error");
       }
-      appendSystemConsoleLog(
-        `Ground-truth check-in recorded (${isDirectCondition ? ratingOrCondition : ratingOrCondition}). Model confidence updated.`,
-        "UPDATED"
-      );
-      showToast("Ground-truth weather check-in recorded! Forecast confidence model updated.");
-      await fetchOverview();
-    } catch (err) {
-      showToast(err.message || "Failed to record weather check-in.");
-    }
+    });
   }
 
   async function fetchSystemTimeStatus() {
@@ -5676,6 +5726,69 @@
         `;
       }
 
+      let verifyBarHtml = "";
+      if (!d.is_future) {
+        const vStatus = String(d.verified_status || "unverified").toLowerCase();
+        let vBadgeClass = "unverified";
+        let vBadgeLabel = "Unverified Record";
+        if (vStatus === "accurate") {
+          vBadgeClass = "accurate";
+          vBadgeLabel = "Accurate ✓";
+        } else if (vStatus === "corrected") {
+          vBadgeClass = "corrected";
+          vBadgeLabel = `Corrected: ${escapeHtml(d.condition_label || "Updated")}`;
+        }
+        const defaultFixCond = d.condition_type === "storm" ? "sunny" : (d.condition_type || "sunny");
+        const condOptions = [
+          ["sunny", "☀️ Clear / Sunny"],
+          ["partly_cloudy", "⛅ Partly Cloudy"],
+          ["cloudy", "☁️ Mostly Cloudy / Overcast"],
+          ["fog", "🌫️ Fog / Mist"],
+          ["rain", "🌧️ Rain / Showers"],
+          ["storm", "⛈️ Thunderstorm / Severe"],
+          ["windy", "💨 Breezy / Windy"],
+          ["snow", "❄️ Snow / Wintry Mix"],
+        ]
+          .map(
+            ([val, lbl]) =>
+              `<option value="${val}"${val === defaultFixCond ? " selected" : ""}>${escapeHtml(lbl)}</option>`
+          )
+          .join("");
+        const checkClearByDefault = defaultFixCond !== "storm" ? " checked" : "";
+
+        verifyBarHtml = `
+          <div class="cal-verify-bar" id="cal-verify-bar">
+            <div class="cal-verify-header">
+              <span class="cal-verify-title">Day Record Verification &amp; Model Training</span>
+              <span class="cal-verify-status ${vBadgeClass}">${vBadgeLabel}</span>
+            </div>
+            <div class="cal-verify-actions">
+              <button type="button" id="btn-cal-verify-accurate" class="cal-verify-btn primary">👍 Confirm Day Was Accurate</button>
+              <button type="button" id="btn-cal-toggle-correct" class="cal-verify-btn warn">✏️ Correct Day's Weather / Purge False Storm</button>
+            </div>
+            <div class="cal-correct-panel hidden" id="cal-correct-panel">
+              <div class="cal-correct-row">
+                <label for="cal-correct-condition">Actual Observed Weather Condition</label>
+                <select id="cal-correct-condition" class="cal-correct-select">
+                  ${condOptions}
+                </select>
+              </div>
+              <label class="cal-correct-check">
+                <input type="checkbox" id="cal-correct-clear-lt"${checkClearByDefault} />
+                <span>Clear false lightning/EMI strikes from this date</span>
+              </label>
+              <div class="cal-correct-row">
+                <label for="cal-correct-notes">Verification Note (optional)</label>
+                <input type="text" id="cal-correct-notes" class="cal-correct-notes" maxlength="200" placeholder="e.g. Clear sky, appliance/freezer EMI pop" value="${escapeHtml((d.verification && d.verification.notes) || "")}" />
+              </div>
+              <div class="cal-correct-footer">
+                <button type="button" id="btn-cal-save-correction" class="cal-verify-btn primary">💾 Save Correction &amp; Retrain</button>
+                <button type="button" id="btn-cal-cancel-correction" class="btn btn-xs btn-secondary">Cancel</button>
+              </div>
+            </div>
+          </div>`;
+      }
+
       elCalModalBody.innerHTML = `
         ${alertsBoxHtml}
         <div class="cal-modal-dashboard-grid">
@@ -5686,7 +5799,106 @@
           ${card5Html}
           ${card6Html}
         </div>
-        ${explainerHtml}`;
+        ${explainerHtml}
+        ${verifyBarHtml}`;
+
+      if (!d.is_future) {
+        const btnAcc = document.getElementById("btn-cal-verify-accurate");
+        const btnToggle = document.getElementById("btn-cal-toggle-correct");
+        const panel = document.getElementById("cal-correct-panel");
+        const selCond = document.getElementById("cal-correct-condition");
+        const chkClear = document.getElementById("cal-correct-clear-lt");
+        const inpNotes = document.getElementById("cal-correct-notes");
+        const btnSave = document.getElementById("btn-cal-save-correction");
+        const btnCancel = document.getElementById("btn-cal-cancel-correction");
+
+        if (btnToggle && panel) {
+          btnToggle.addEventListener("click", () => {
+            panel.classList.toggle("hidden");
+          });
+        }
+        if (btnCancel && panel) {
+          btnCancel.addEventListener("click", () => {
+            panel.classList.add("hidden");
+          });
+        }
+        if (selCond && chkClear) {
+          selCond.addEventListener("change", () => {
+            chkClear.checked = selCond.value !== "storm";
+          });
+        }
+        if (btnAcc) {
+          btnAcc.addEventListener("click", () => {
+            requireUnlockedOrPrompt(async () => {
+              btnAcc.disabled = true;
+              try {
+                const res = await authorizedWriteFetch("/api/calendar/verify-day", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    date: d.date,
+                    verdict: "accurate",
+                    condition_type: d.condition_type,
+                    clear_lightning: d.condition_type !== "storm",
+                    predicted_condition: d.condition_label,
+                  }),
+                });
+                const payload = await res.json();
+                if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+                appendSystemConsoleLog(`Calendar day ${d.date} confirmed accurate (${d.condition_label}). Model reinforced.`, "VERIFIED");
+                showToast(`Verified ${d.date} as Accurate! Model confidence updated.`, "success");
+                await fetchAndRenderCalendar(calendarYear, calendarMonth);
+                fetchOverview().catch(() => {});
+                if (!elCalModalBackdrop.classList.contains("hidden")) {
+                  openCalendarDayModal(d.date);
+                }
+              } catch (err) {
+                showToast(err.message || "Failed to verify day.", "error");
+              } finally {
+                btnAcc.disabled = false;
+              }
+            });
+          });
+        }
+        if (btnSave && selCond) {
+          btnSave.addEventListener("click", () => {
+            requireUnlockedOrPrompt(async () => {
+              btnSave.disabled = true;
+              try {
+                const res = await authorizedWriteFetch("/api/calendar/verify-day", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    date: d.date,
+                    verdict: "corrected",
+                    condition_type: selCond.value,
+                    clear_lightning: chkClear ? chkClear.checked : selCond.value !== "storm",
+                    notes: inpNotes ? inpNotes.value.trim() : "",
+                    predicted_condition: d.condition_label,
+                  }),
+                });
+                const payload = await res.json();
+                if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+                appendSystemConsoleLog(
+                  `Calendar day ${d.date} corrected to ${payload.condition_label || selCond.value}` +
+                    (payload.demoted_strikes ? ` (purged ${payload.demoted_strikes} false EMI pulse(s))` : "") +
+                    ".",
+                  "CORRECTED"
+                );
+                showToast(`Updated ${d.date} to ${payload.condition_label || selCond.value}.`, "success");
+                await fetchAndRenderCalendar(calendarYear, calendarMonth);
+                fetchOverview().catch(() => {});
+                if (!elCalModalBackdrop.classList.contains("hidden")) {
+                  openCalendarDayModal(d.date);
+                }
+              } catch (err) {
+                showToast(err.message || "Failed to save day correction.", "error");
+              } finally {
+                btnSave.disabled = false;
+              }
+            });
+          });
+        }
+        updateAuthHeaderUi();
+      }
     }
 
     elCalModalBackdrop.classList.remove("hidden");
@@ -6190,28 +6402,31 @@
     }
     const elBtnReconnectSdr = document.getElementById("btn-reconnect-sdr");
     if (elBtnReconnectSdr) {
-      elBtnReconnectSdr.addEventListener("click", async (evt) => {
+      elBtnReconnectSdr.addEventListener("click", (evt) => {
         evt.stopPropagation();
-        elBtnReconnectSdr.disabled = true;
-        elBtnReconnectSdr.textContent = "Resetting USB...";
-        try {
-          const res = await fetch("/api/sdr/reset", {
-            method: "POST",
-            headers: getAuthHeaders(),
-          });
-          const d = await res.json();
-          if (d.ok) {
-            showToast("USB reset & reconnect sequence completed.");
-          } else {
-            showToast(d.error || d.message || "Reset failed.");
+        requireUnlockedOrPrompt(async () => {
+          elBtnReconnectSdr.disabled = true;
+          elBtnReconnectSdr.textContent = "Resetting USB...";
+          try {
+            const res = await authorizedWriteFetch("/api/sdr/reset", {
+              method: "POST",
+              body: JSON.stringify({}),
+            });
+            const d = await res.json();
+            if (d.ok) {
+              showToast("USB reset & reconnect sequence completed.");
+            } else {
+              showToast(d.error || d.message || "Reset failed.", "error");
+            }
+          } catch (err) {
+            showToast(err.message || "Error resetting USB / reconnecting SDR.", "error");
+          } finally {
+            await fetchStatus();
+            elBtnReconnectSdr.disabled = false;
+            elBtnReconnectSdr.textContent = "Reset USB & Reconnect";
+            updateAuthHeaderUi();
           }
-        } catch (err) {
-          showToast("Error resetting USB / reconnecting SDR: " + err.message);
-        } finally {
-          await fetchStatus();
-          elBtnReconnectSdr.disabled = false;
-          elBtnReconnectSdr.textContent = "Reset USB & Reconnect";
-        }
+        });
       });
     }
     document.addEventListener("click", (evt) => {

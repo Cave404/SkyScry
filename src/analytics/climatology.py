@@ -798,12 +798,11 @@ class ClimatologyEngine:
         rh_avg: Optional[float],
         peak_lux: Optional[float],
         temp_high_f: Optional[float],
+        has_nws_storm_alert: bool = False,
     ) -> tuple[str, str]:
         """Classify a recorded local/archive day into 1 of the 8 canonical condition_types and a human-readable label."""
-        if strikes > 0 and rain_in >= 0.01:
+        if has_nws_storm_alert or (strikes >= 5 and rain_in >= 0.01):
             return "storm", "Thunderstorms & Lightning"
-        if strikes >= 3:
-            return "storm", "Nearby Lightning Activity"
         if rain_in >= 0.02 and temp_high_f is not None and temp_high_f <= 33.0:
             return "snow", "Wintry Mix / Snow"
         if rain_in >= 0.50:
@@ -1149,6 +1148,7 @@ class ClimatologyEngine:
         rf_extra_by_date: dict[str, dict[str, Any]] = {}
         strikes_by_date: dict[str, int] = {}
         alerts_by_date: dict[str, list[dict[str, Any]]] = {}
+        overrides_by_date: dict[str, dict[str, Any]] = {}
 
         if getattr(self.db, "_conn", None) is not None:
             with self.db._lock:
@@ -1187,18 +1187,21 @@ class ClimatologyEngine:
                 rows_lt = self.db._conn.execute(
                     """
                     SELECT
-                        SUBSTR(timestamp, 1, 10) AS date_str,
+                        DATE(timestamp, 'localtime') AS date_str,
                         SUM(COALESCE(delta_strikes, 1)) AS total_strikes
                     FROM lightning_strikes
-                    WHERE SUBSTR(timestamp, 1, 10) BETWEEN ? AND ?
+                    WHERE DATE(timestamp, 'localtime') BETWEEN ? AND ?
                       AND COALESCE(rfi, 0) = 0
                       AND COALESCE(confirmed, 1) = 1
-                    GROUP BY SUBSTR(timestamp, 1, 10);
+                    GROUP BY DATE(timestamp, 'localtime');
                     """,
                     (grid_start_str, grid_end_str),
                 ).fetchall()
                 for r in rows_lt:
                     strikes_by_date[str(r["date_str"])] = int(r["total_strikes"] or 0)
+
+                if hasattr(self.db, "get_daily_weather_overrides"):
+                    overrides_by_date = self.db.get_daily_weather_overrides()
 
                 try:
                     alert_rows = self.db._conn.execute(
@@ -1388,10 +1391,13 @@ class ClimatologyEngine:
                     else (arch.get("pressure_max_inhg") or (ov_outdoor.get("today_baro_high_inhg") if is_today else None) or 30.06)
                 )
 
+                day_override = overrides_by_date.get(d_str)
                 strikes = strikes_by_date.get(d_str, 0)
                 if is_today:
                     lt_24 = int((overview.get("lightning") or {}).get("strikes_24h") or 0)
                     strikes = max(strikes, lt_24)
+                if day_override and day_override.get("exclude_false_lightning"):
+                    strikes = 0
 
                 uv_max = rf.get("max_uv")
                 if is_today and ov_outdoor.get("today_uv_peak") is not None:
@@ -1406,6 +1412,15 @@ class ClimatologyEngine:
                 hdd = round(max(0.0, 65.0 - avg_f), 1)
                 cdd = round(max(0.0, avg_f - 65.0), 1)
 
+                day_alerts = alerts_by_date.get(d_str, [])
+                has_nws_storm_alert = any(
+                    any(
+                        k in str(a.get("event") or "").lower()
+                        for k in ("thunder", "severe thunderstorm", "tornado", "lightning", "squall")
+                    )
+                    for a in day_alerts
+                )
+
                 if arch.get("wcode") is not None and not has_local_rf:
                     cond_type, cond_label = self._wmo_code_to_condition(arch.get("wcode"), rain_in, peak_wind_mph)
                 else:
@@ -1416,7 +1431,26 @@ class ClimatologyEngine:
                         rh_avg=rh_avg,
                         peak_lux=peak_lux,
                         temp_high_f=high_f,
+                        has_nws_storm_alert=has_nws_storm_alert,
                     )
+
+                # Never allow uncorroborated phantom storm/lightning when strict corroboration isn't met
+                is_verified_archive_storm = (not has_local_rf) and arch.get("wcode") in (95, 96, 99) and rain_in >= 0.05
+                if cond_type == "storm" and not has_nws_storm_alert and not is_verified_archive_storm and not (strikes >= 5 and rain_in >= 0.01):
+                    cond_type, cond_label = self._classify_recorded_day_condition(
+                        rain_in=rain_in,
+                        strikes=0,
+                        peak_wind_mph=peak_wind_mph,
+                        rh_avg=rh_avg,
+                        peak_lux=peak_lux,
+                        temp_high_f=high_f,
+                        has_nws_storm_alert=False,
+                    )
+
+                # Apply manual human verification / correction override if persisted
+                if day_override and day_override.get("corrected_condition_type"):
+                    cond_type = str(day_override["corrected_condition_type"])
+                    cond_label = str(day_override.get("corrected_condition_label") or cond_label)
 
                 days_list.append(
                     {
@@ -1464,7 +1498,10 @@ class ClimatologyEngine:
                         "cdd": cdd,
                         "condition_type": cond_type,
                         "condition_label": cond_label,
-                        "alerts": alerts_by_date.get(d_str, []),
+                        "alerts": day_alerts,
+                        "verified_status": day_override.get("verified_status") if day_override else "unverified",
+                        "verified_at": day_override.get("updated_at") if day_override else None,
+                        "verification": day_override,
                     }
                 )
             else:
