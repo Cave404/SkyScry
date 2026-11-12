@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.29)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.32)."""
 
 from __future__ import annotations
 
@@ -315,6 +315,89 @@ def _parse_hidden_metrics(raw_val: Any) -> list[str]:
         except Exception:
             pass
     return []
+
+
+def filter_solar_radiation_outliers(
+    samples: list[dict[str, Any]],
+    threshold_f: float = 4.5,
+    min_peers: int = 3,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Reject sun-baked outdoor readings exceeding peer median by > threshold_f when >= min_peers exist.
+
+    Each item in `samples` should include ``sensor_key`` and ``temp_c`` (and optionally ``rh``).
+    Returns ``(kept_samples, rejected_samples, stats)``.
+    """
+    if not samples:
+        return [], [], {"peer_count": 0, "peer_median_temp_c": None, "raw_spread_f": 0.0, "filtered_count": 0}
+
+    temp_vals_c = [float(s["temp_c"]) for s in samples if s.get("temp_c") is not None]
+    if not temp_vals_c:
+        return list(samples), [], {"peer_count": 0, "peer_median_temp_c": None, "raw_spread_f": 0.0, "filtered_count": 0}
+
+    raw_spread_f = round((max(temp_vals_c) - min(temp_vals_c)) * 1.8, 1) if len(temp_vals_c) >= 2 else 0.0
+    distinct_keys = {str(s.get("sensor_key") or i) for i, s in enumerate(samples) if s.get("temp_c") is not None}
+
+    if len(distinct_keys) < min_peers:
+        med_c = float(statistics.median(temp_vals_c))
+        return list(samples), [], {
+            "peer_count": len(distinct_keys),
+            "peer_median_temp_c": med_c,
+            "peer_median_temp_f": round((med_c * 9.0 / 5.0) + 32.0, 2),
+            "raw_spread_f": raw_spread_f,
+            "filtered_count": 0,
+        }
+
+    # Aggregate per distinct sensor_key first so a high-frequency transmitter cannot skew the median
+    per_sensor_tc: dict[str, list[float]] = {}
+    per_sensor_rh: dict[str, list[float]] = {}
+    for i, s in enumerate(samples):
+        if s.get("temp_c") is None:
+            continue
+        sk = str(s.get("sensor_key") or i)
+        per_sensor_tc.setdefault(sk, []).append(float(s["temp_c"]))
+        if s.get("rh") is not None:
+            per_sensor_rh.setdefault(sk, []).append(float(s["rh"]))
+
+    sensor_meds_c = [float(statistics.median(vals)) for vals in per_sensor_tc.values()]
+    peer_med_c = float(statistics.median(sensor_meds_c))
+    sensor_meds_rh = [float(statistics.median(vals)) for vals in per_sensor_rh.values() if vals]
+    peer_med_rh = float(statistics.median(sensor_meds_rh)) if len(sensor_meds_rh) >= min_peers else None
+    threshold_c = float(threshold_f) / 1.8
+
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for s in samples:
+        tc_raw = s.get("temp_c")
+        if tc_raw is None:
+            kept.append(s)
+            continue
+        tc = float(tc_raw)
+        delta_c = tc - peer_med_c
+        if delta_c > threshold_c:
+            item_rej = dict(s)
+            item_rej["delta_f"] = round(delta_c * 1.8, 1)
+            rh_val = s.get("rh")
+            if rh_val is not None and peer_med_rh is not None:
+                rh_drop = round(peer_med_rh - float(rh_val), 1)
+                item_rej["rh_drop_pct"] = rh_drop
+                item_rej["solar_corroborated_rh"] = rh_drop > 8.0
+            rejected.append(item_rej)
+        else:
+            kept.append(s)
+
+    # Safety: never leave an empty kept set
+    if not kept:
+        kept = list(samples)
+        rejected = []
+
+    return kept, rejected, {
+        "peer_count": len(distinct_keys),
+        "peer_median_temp_c": peer_med_c,
+        "peer_median_temp_f": round((peer_med_c * 9.0 / 5.0) + 32.0, 2),
+        "peer_median_rh": round(peer_med_rh, 1) if peer_med_rh is not None else None,
+        "raw_spread_f": raw_spread_f,
+        "filtered_count": len(rejected),
+    }
 
 
 def _enrich_reading_dict(row_dict: dict[str, Any]) -> dict[str, Any]:
@@ -960,14 +1043,19 @@ class WeatherDatabase:
                 (reason, sensor_key),
             )
 
-    def expunge_skewed_history(self, target_sensor_key: Optional[str] = None) -> dict[str, Any]:
-        """Purge vehicle TPMS, soil/appliance probes, invalid barometric pressures, and bit-flip outliers from SQLite."""
+    def expunge_skewed_history(
+        self,
+        target_sensor_key: Optional[str] = None,
+        purge_solar_spikes: bool = True,
+    ) -> dict[str, Any]:
+        """Purge vehicle TPMS, soil/appliance probes, bit-flip outliers, and 15m solar spikes from SQLite."""
+        deleted_readings = 0
+        deleted_sensors = 0
+        solar_spikes_purged = 0
+
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database connection is closed.")
-
-            deleted_readings = 0
-            deleted_sensors = 0
 
             with self._conn:
                 # 1. Completely purge vehicle TPMS, soil moisture, and appliance models from sensors & sensor_readings
@@ -1043,46 +1131,49 @@ class WeatherDatabase:
                 )
                 deleted_readings += int(cur_bounds.rowcount or 0)
 
-                # 4. Consensus Hourly Median Outlier Sweep:
-                #    Group outdoor readings by hour and purge any reading deviating > 24F (13.33C)
-                #    from that hour's multi-sensor median.
+                # 4. Consensus Hourly Median Outlier Sweep (> 24F) & 15-minute Solar Radiation Spike Purge (> +5.0F)
                 rows_cand = self._conn.execute(
-                    f"""
-                    SELECT sr.id, sr.timestamp, sr.temp_c,
-                           COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
-                           COALESCE(s.location_type, 'ignore') AS loc
+                    """
+                    SELECT sr.id, sr.timestamp, sr.temp_c, sr.humidity,
+                           COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey
                     FROM sensor_readings sr
                     LEFT JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
                     WHERE sr.temp_c IS NOT NULL
-                      AND COALESCE(s.location_type, 'ignore') = 'outdoor'
-                      {where_target_sr};
-                    """,
-                    params_target,
+                      AND COALESCE(s.location_type, 'ignore') = 'outdoor';
+                    """
                 ).fetchall()
 
                 by_hour: dict[str, list[sqlite3.Row]] = {}
+                by_15m: dict[int, list[sqlite3.Row]] = {}
                 for r in rows_cand:
-                    hr_key = str(r["timestamp"])[:13]
-                    by_hour.setdefault(hr_key, []).append(r)
+                    ts_s = str(r["timestamp"])
+                    by_hour.setdefault(ts_s[:13], []).append(r)
+                    dt_r = parse_utc_iso(ts_s)
+                    if dt_r is not None:
+                        b15 = (int(dt_r.timestamp()) // 900) * 900
+                        by_15m.setdefault(b15, []).append(r)
 
-                outlier_ids: list[tuple[int]] = []
+                outlier_id_set: set[int] = set()
                 outlier_per_sensor: dict[str, int] = {}
                 for _hr, group in by_hour.items():
                     if len(group) < 3:
                         continue
                     med_c = float(statistics.median([float(x["temp_c"]) for x in group]))
                     for x in group:
+                        skey = str(x["skey"])
+                        if target_sensor_key and skey != target_sensor_key:
+                            continue
                         if abs(float(x["temp_c"]) - med_c) > 13.33:  # > 24.0 F deviation from hourly median
-                            outlier_ids.append((int(x["id"]),))
-                            skey = str(x["skey"])
+                            rid = int(x["id"])
+                            outlier_id_set.add(rid)
                             outlier_per_sensor[skey] = outlier_per_sensor.get(skey, 0) + 1
 
-                if outlier_ids:
+                if outlier_id_set:
                     self._conn.executemany(
                         "DELETE FROM sensor_readings WHERE id = ?;",
-                        outlier_ids,
+                        [(rid,) for rid in outlier_id_set],
                     )
-                    deleted_readings += len(outlier_ids)
+                    deleted_readings += len(outlier_id_set)
                     for skey, cnt in outlier_per_sensor.items():
                         self._conn.execute(
                             """
@@ -1093,6 +1184,51 @@ class WeatherDatabase:
                             """,
                             (cnt, skey),
                         )
+
+                if purge_solar_spikes:
+                    solar_id_set: set[int] = set()
+                    solar_per_sensor: dict[str, int] = {}
+                    for _b15, group in by_15m.items():
+                        # Aggregate per sensor_key inside each 15m bucket before computing peer median
+                        per_sensor_vals: dict[str, list[float]] = {}
+                        for x in group:
+                            rid = int(x["id"])
+                            if rid in outlier_id_set:
+                                continue
+                            per_sensor_vals.setdefault(str(x["skey"]), []).append(float(x["temp_c"]))
+                        if len(per_sensor_vals) < 3:
+                            continue
+                        sensor_meds = [float(statistics.median(v)) for v in per_sensor_vals.values()]
+                        peer_med_c = float(statistics.median(sensor_meds))
+                        # Reject readings > +5.0F (+2.78C) above 15-minute outdoor peer median
+                        for x in group:
+                            rid = int(x["id"])
+                            if rid in outlier_id_set:
+                                continue
+                            skey = str(x["skey"])
+                            if target_sensor_key and skey != target_sensor_key:
+                                continue
+                            if (float(x["temp_c"]) - peer_med_c) > 2.78:
+                                solar_id_set.add(rid)
+                                solar_per_sensor[skey] = solar_per_sensor.get(skey, 0) + 1
+
+                    if solar_id_set:
+                        self._conn.executemany(
+                            "DELETE FROM sensor_readings WHERE id = ?;",
+                            [(rid,) for rid in solar_id_set],
+                        )
+                        solar_spikes_purged = len(solar_id_set)
+                        deleted_readings += solar_spikes_purged
+                        for skey, cnt in solar_per_sensor.items():
+                            self._conn.execute(
+                                """
+                                UPDATE sensors
+                                SET expunged_count = COALESCE(expunged_count, 0) + ?,
+                                    last_expunged_reason = 'Solar Radiation Spike (>5F above 15m outdoor peer median)'
+                                WHERE sensor_key = ?;
+                                """,
+                                (cnt, skey),
+                            )
 
                 # 5. Recompute accurate packet_count on all sensors
                 self._conn.execute(
@@ -1107,15 +1243,23 @@ class WeatherDatabase:
 
             if deleted_readings > 0 or deleted_sensors > 0:
                 logger.info(
-                    "[AUTO-EXPUNGE] Purged %d skewed/TPMS reading(s) and %d non-weather sensor(s) from SQLite.",
+                    "[AUTO-EXPUNGE] Purged %d reading(s) (%d solar spikes) and %d non-weather sensor(s) from SQLite.",
                     deleted_readings,
+                    solar_spikes_purged,
                     deleted_sensors,
                 )
 
-            return {
-                "deleted_readings": deleted_readings,
-                "deleted_sensors": deleted_sensors,
-            }
+        if deleted_readings > 0 or purge_solar_spikes:
+            try:
+                self.sync_daily_summaries(days_back=90)
+            except Exception as exc:
+                logger.debug("Post-expunge daily summary resync skipped: %s", exc)
+
+        return {
+            "deleted_readings": deleted_readings,
+            "deleted_sensors": deleted_sensors,
+            "solar_spikes_purged": solar_spikes_purged,
+        }
 
     def insert_reading(self, reading: NormalizedReading) -> Optional[int]:
         """Validate, filter TPMS/appliances/outliers, and persist a NormalizedReading into SQLite.
@@ -2277,6 +2421,116 @@ class WeatherDatabase:
             results.append(item)
         return results
 
+    def _compute_15m_ensemble_series_locked(
+        self,
+        cutoff_iso: Optional[str] = None,
+        end_iso: Optional[str] = None,
+        bucket_minutes: int = 15,
+        outdoor_keys: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Compute solar-filtered 15-minute outdoor ensemble median temperature/RH/dew-point buckets.
+
+        Caller MUST hold `self._lock`.
+        """
+        if self._conn is None:
+            return []
+
+        bucket_sec = max(60, int(bucket_minutes) * 60)
+        clauses: list[str] = [
+            "s.is_trusted = 1",
+            "s.location_type = 'outdoor'",
+            "sr.temp_c BETWEEN -31.67 AND 54.44",
+        ]
+        params: list[Any] = []
+        if cutoff_iso:
+            clauses.append("sr.timestamp >= ?")
+            params.append(cutoff_iso)
+        if end_iso:
+            clauses.append("sr.timestamp <= ?")
+            params.append(end_iso)
+        if outdoor_keys:
+            ph = ",".join("?" for _ in outdoor_keys)
+            clauses.append(f"COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) IN ({ph})")
+            params.extend(outdoor_keys)
+
+        rows = self._conn.execute(
+            f"""
+            SELECT sr.timestamp,
+                   COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
+                   sr.temp_c,
+                   sr.humidity,
+                   COALESCE(s.hidden_metrics, '[]') AS hidden_metrics
+            FROM sensor_readings sr
+            JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
+            WHERE {' AND '.join(clauses)}
+            ORDER BY sr.timestamp ASC;
+            """,
+            params,
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        # Group by (bucket_epoch, sensor_key)
+        buckets: dict[int, dict[str, dict[str, list[float]]]] = {}
+        hidden_cache: dict[str, set[str]] = {}
+        for r in rows:
+            dt = parse_utc_iso(r["timestamp"])
+            if dt is None:
+                continue
+            skey = str(r["skey"])
+            if skey not in hidden_cache:
+                hidden_cache[skey] = set(_parse_hidden_metrics(r["hidden_metrics"]))
+            hidden = hidden_cache[skey]
+            if "temperature" in hidden:
+                continue
+
+            b_ep = (int(dt.timestamp()) // bucket_sec) * bucket_sec
+            b_map = buckets.setdefault(b_ep, {})
+            s_acc = b_map.setdefault(skey, {"tc": [], "rh": []})
+            s_acc["tc"].append(float(r["temp_c"]))
+            if r["humidity"] is not None and "humidity" not in hidden:
+                s_acc["rh"].append(float(r["humidity"]))
+
+        series: list[dict[str, Any]] = []
+        for b_ep in sorted(buckets.keys()):
+            b_map = buckets[b_ep]
+            samples: list[dict[str, Any]] = []
+            for skey, s_acc in b_map.items():
+                if not s_acc["tc"]:
+                    continue
+                med_tc = float(statistics.median(s_acc["tc"]))
+                med_rh = float(statistics.median(s_acc["rh"])) if s_acc["rh"] else None
+                samples.append({"sensor_key": skey, "temp_c": med_tc, "rh": med_rh})
+
+            if not samples:
+                continue
+
+            kept, rejected, _stats = filter_solar_radiation_outliers(samples, threshold_f=4.5, min_peers=3)
+            kept_tcs = [float(x["temp_c"]) for x in kept if x.get("temp_c") is not None]
+            if not kept_tcs:
+                continue
+
+            ens_tc = float(statistics.median(kept_tcs))
+            ens_tf = round((ens_tc * 9.0 / 5.0) + 32.0, 2)
+            kept_rhs = [float(x["rh"]) for x in kept if x.get("rh") is not None]
+            ens_rh = float(statistics.median(kept_rhs)) if kept_rhs else None
+            dp_c = compute_dew_point_c(ens_tc, ens_rh)
+            dp_f = round((dp_c * 9.0 / 5.0) + 32.0, 2) if dp_c is not None else None
+
+            dt_utc = datetime.fromtimestamp(b_ep, tz=timezone.utc)
+            series.append({
+                "bucket_epoch": b_ep,
+                "timestamp": format_utc_z(dt_utc),
+                "local_date": dt_utc.astimezone().strftime("%Y-%m-%d"),
+                "temp_c": ens_tc,
+                "temp_f": ens_tf,
+                "humidity": round(ens_rh, 1) if ens_rh is not None else None,
+                "dew_f": dp_f,
+                "outliers_filtered": len(rejected),
+            })
+        return series
+
     def get_bucketed_chart_series(
         self,
         hours: float = 24.0,
@@ -2539,22 +2793,43 @@ class WeatherDatabase:
         ref_wind_mph: list[Optional[float]] = []
 
         for idx, ep in enumerate(sorted_epochs):
-            t_vals = [
-                s["temp_f"][idx]
+            out_samples = [
+                {
+                    "sensor_key": s["sensor_key"],
+                    "temp_c": (float(s["temp_f"][idx]) - 32.0) * 5.0 / 9.0,
+                    "rh": float(s["humidity"][idx]) if s["humidity"][idx] is not None else None,
+                }
                 for s in sensor_series
                 if s["is_trusted"]
                 and s["location_type"] == "outdoor"
                 and s["temp_f"][idx] is not None
             ]
-            h_vals = [
-                s["humidity"][idx]
-                for s in sensor_series
-                if s["is_trusted"]
-                and s["location_type"] == "outdoor"
-                and s["humidity"][idx] is not None
-            ]
-            ensemble_temp_f.append(round(sum(t_vals) / len(t_vals), 2) if t_vals else None)
-            ensemble_humidity.append(round(sum(h_vals) / len(h_vals), 1) if h_vals else None)
+            if out_samples:
+                kept, _rej, _stats = filter_solar_radiation_outliers(out_samples, threshold_f=4.5, min_peers=3)
+                kept_t_f = [((float(x["temp_c"]) * 9.0 / 5.0) + 32.0) for x in kept if x.get("temp_c") is not None]
+                kept_h = [float(x["rh"]) for x in kept if x.get("rh") is not None]
+                ensemble_temp_f.append(round(float(statistics.median(kept_t_f)), 2) if kept_t_f else None)
+                if kept_h:
+                    ensemble_humidity.append(round(float(statistics.median(kept_h)), 1))
+                else:
+                    h_vals = [
+                        float(s["humidity"][idx])
+                        for s in sensor_series
+                        if s["is_trusted"]
+                        and s["location_type"] == "outdoor"
+                        and s["humidity"][idx] is not None
+                    ]
+                    ensemble_humidity.append(round(float(statistics.median(h_vals)), 1) if h_vals else None)
+            else:
+                ensemble_temp_f.append(None)
+                h_vals = [
+                    float(s["humidity"][idx])
+                    for s in sensor_series
+                    if s["is_trusted"]
+                    and s["location_type"] == "outdoor"
+                    and s["humidity"][idx] is not None
+                ]
+                ensemble_humidity.append(round(float(statistics.median(h_vals)), 1) if h_vals else None)
 
             b_vals = baro_buckets.get(ep)
             pressure_inhg_pts.append(round(sum(b_vals) / len(b_vals), 2) if b_vals else None)
@@ -2761,10 +3036,7 @@ class WeatherDatabase:
             rows = self._conn.execute(
                 """
                 SELECT
-                    SUBSTR(sr.timestamp, 1, 10) AS date_str,
-                    MIN(sr.temp_c) AS min_tc,
-                    MAX(sr.temp_c) AS max_tc,
-                    AVG(sr.temp_c) AS avg_tc,
+                    DATE(sr.timestamp, 'localtime') AS date_str,
                     MIN(sr.humidity) AS min_rh,
                     MAX(sr.humidity) AS max_rh,
                     AVG(sr.humidity) AS avg_rh,
@@ -2778,17 +3050,24 @@ class WeatherDatabase:
                   AND s.is_trusted = 1
                   AND s.location_type = 'outdoor'
                   AND (sr.temp_c IS NULL OR (sr.temp_c BETWEEN -31.67 AND 54.44))
-                GROUP BY SUBSTR(sr.timestamp, 1, 10)
+                GROUP BY DATE(sr.timestamp, 'localtime')
                 ORDER BY date_str ASC;
                 """,
                 (cutoff_iso,),
             ).fetchall()
 
+            # Compute daily temperature High/Low/Mean strictly from solar-filtered 15-minute Outdoor Ensemble Medians
+            ensemble_buckets = self._compute_15m_ensemble_series_locked(cutoff_iso=cutoff_iso, bucket_minutes=15)
+            ensemble_by_day: dict[str, list[float]] = {}
+            for eb in ensemble_buckets:
+                if eb.get("temp_c") is not None:
+                    ensemble_by_day.setdefault(str(eb["local_date"]), []).append(float(eb["temp_c"]))
+
             # Compute daily rain delta per sensor and take max outdoor rain gauge per day
             rain_rows = self._conn.execute(
                 """
                 SELECT
-                    SUBSTR(sr.timestamp, 1, 10) AS date_str,
+                    DATE(sr.timestamp, 'localtime') AS date_str,
                     COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
                     MAX(sr.rain_cumulative_mm) - MIN(sr.rain_cumulative_mm) AS rain_mm
                 FROM sensor_readings sr
@@ -2797,7 +3076,7 @@ class WeatherDatabase:
                   AND s.is_trusted = 1
                   AND s.location_type = 'outdoor'
                   AND sr.rain_cumulative_mm IS NOT NULL
-                GROUP BY SUBSTR(sr.timestamp, 1, 10), skey;
+                GROUP BY DATE(sr.timestamp, 'localtime'), skey;
                 """,
                 (cutoff_iso,),
             ).fetchall()
@@ -2905,12 +3184,13 @@ class WeatherDatabase:
                     now_iso,
                 )
 
-            # 2. Local trusted outdoor station rollups update / override baseline
+            # 2. Local trusted outdoor station rollups update / override baseline using 15m ensemble extremes
             for r in rows:
                 d_str = str(r["date_str"])
-                min_tc = float(r["min_tc"]) if r["min_tc"] is not None else None
-                max_tc = float(r["max_tc"]) if r["max_tc"] is not None else None
-                avg_tc = float(r["avg_tc"]) if r["avg_tc"] is not None else None
+                day_ens_tcs = ensemble_by_day.get(d_str) or []
+                min_tc = min(day_ens_tcs) if day_ens_tcs else None
+                max_tc = max(day_ens_tcs) if day_ens_tcs else None
+                avg_tc = (sum(day_ens_tcs) / len(day_ens_tcs)) if day_ens_tcs else None
 
                 min_tf = round((min_tc * 9.0 / 5.0) + 32.0, 1) if min_tc is not None else None
                 max_tf = round((max_tc * 9.0 / 5.0) + 32.0, 1) if max_tc is not None else None
@@ -3079,9 +3359,16 @@ class WeatherDatabase:
         ).fetchall()
         local_rain_mm = max([max(0.0, float(r["delta_mm"] or 0.0)) for r in rain_rows], default=0.0)
 
-        loc_min_tc = float(row["min_tc"]) if (row and row["min_tc"] is not None) else None
-        loc_max_tc = float(row["max_tc"]) if (row and row["max_tc"] is not None) else None
-        loc_avg_tc = float(row["avg_tc"]) if (row and row["avg_tc"] is not None) else None
+        loc_ens_series = self._compute_15m_ensemble_series_locked(cutoff_iso=cutoff_iso, bucket_minutes=15)
+        loc_ens_tcs = [float(b["temp_c"]) for b in loc_ens_series if b.get("temp_c") is not None]
+        if loc_ens_tcs:
+            loc_min_tc = min(loc_ens_tcs)
+            loc_max_tc = max(loc_ens_tcs)
+            loc_avg_tc = sum(loc_ens_tcs) / len(loc_ens_tcs)
+        else:
+            loc_min_tc = float(row["min_tc"]) if (row and row["min_tc"] is not None) else None
+            loc_max_tc = float(row["max_tc"]) if (row and row["max_tc"] is not None) else None
+            loc_avg_tc = float(row["avg_tc"]) if (row and row["avg_tc"] is not None) else None
         loc_min_rh = float(row["min_rh"]) if (row and row["min_rh"] is not None) else None
         loc_max_rh = float(row["max_rh"]) if (row and row["max_rh"] is not None) else None
         loc_wind = float(row["max_wind_mps"]) if (row and row["max_wind_mps"] is not None) else None
@@ -3788,7 +4075,8 @@ class WeatherDatabase:
             if self._conn is None:
                 return {
                     "total_feedback": 0,
-                    "accuracy_pct": 88,
+                    "score_sum": 0.0,
+                    "accuracy_pct": 50,
                     "prompt_due": True,
                     "recent": [],
                 }
@@ -3812,9 +4100,10 @@ class WeatherDatabase:
             else:
                 score_sum += 0.15
 
-        # Bayesian smoothed accuracy score (prior of 4 affirmations at 88%)
-        accuracy_pct = int(round(((score_sum + 3.52) / (total + 4.0)) * 100.0))
-        accuracy_pct = max(35, min(99, accuracy_pct))
+        # Honest Laplace-smoothed accuracy prior: (score_sum + 2.0) / (total + 4.0)
+        # 0 check-ins -> 50%, 3/3 positive check-ins -> (3+2)/(3+4) = 71%
+        accuracy_pct = int(round(((score_sum + 2.0) / (total + 4.0)) * 100.0))
+        accuracy_pct = max(25, min(98, accuracy_pct))
 
         last_ts = str(rows[0]["timestamp"]) if rows else None
         last_pred = str(rows[0]["predicted_condition"] or "") if rows else ""
@@ -3844,6 +4133,7 @@ class WeatherDatabase:
 
         return {
             "total_feedback": total,
+            "score_sum": round(score_sum, 2),
             "accuracy_pct": accuracy_pct,
             "prompt_due": prompt_due,
             "hours_since_last": hours_since_last,
@@ -4023,7 +4313,7 @@ class WeatherDatabase:
             "feedback_summary": feedback_summary,
         }
 
-    def get_weather_overview(self) -> dict[str, Any]:
+    def get_weather_overview(self, nws_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Synthesize current outdoor/indoor conditions, barometer (`inHg`), compass wind, and nowcast."""
         now_utc = datetime.now(timezone.utc)
         coords = self.get_location_coordinates()
@@ -4114,8 +4404,8 @@ class WeatherDatabase:
                     s_copy["is_fresh_30m"] = is_fresh
                     indoor_sensors.append(s_copy)
 
-        out_temps_c: list[float] = []
-        out_rh: list[float] = []
+        raw_out_samples: list[dict[str, Any]] = []
+        out_rh_all: list[float] = []
         out_press: list[float] = []
         out_wind_mps: list[float] = []
         out_gust_mps: list[float] = []
@@ -4127,13 +4417,24 @@ class WeatherDatabase:
             r = s.get("effective_reading") or s.get("latest_reading")
             if not r:
                 continue
+            s_key = str(s.get("sensor_key") or self.make_sensor_key(s["model"], s["sensor_id"]))
             hidden = set(s.get("hidden_metrics") or [])
+            tc_val: Optional[float] = None
+            rh_val: Optional[float] = None
             if "temperature" not in hidden and r.get("temp_c") is not None:
                 tc = float(r["temp_c"])
                 if -31.67 <= tc <= 54.44:
-                    out_temps_c.append(tc)
+                    tc_val = tc
             if "humidity" not in hidden and r.get("humidity") is not None:
-                out_rh.append(float(r["humidity"]))
+                rh_val = float(r["humidity"])
+                out_rh_all.append(rh_val)
+            if tc_val is not None:
+                raw_out_samples.append({
+                    "sensor_key": s_key,
+                    "display_name": str(s.get("display_name") or s_key),
+                    "temp_c": tc_val,
+                    "rh": rh_val,
+                })
             if "pressure" not in hidden and r.get("pressure_hpa") is not None:
                 p_val = float(r["pressure_hpa"])
                 if MIN_PLAUSIBLE_PRESSURE_HPA <= p_val <= MAX_PLAUSIBLE_PRESSURE_HPA:
@@ -4151,7 +4452,20 @@ class WeatherDatabase:
                 if r.get("lux") is not None:
                     out_lux.append(float(r["lux"]))
 
-        mean_temp_c = round(sum(out_temps_c) / len(out_temps_c), 2) if out_temps_c else None
+        kept_out_samples, rejected_solar, solar_live_stats = filter_solar_radiation_outliers(
+            raw_out_samples, threshold_f=4.5, min_peers=3
+        )
+        out_temps_c = [float(x["temp_c"]) for x in kept_out_samples if x.get("temp_c") is not None]
+        kept_out_rh = [float(x["rh"]) for x in kept_out_samples if x.get("rh") is not None]
+        out_rh = kept_out_rh if kept_out_rh else out_rh_all
+        raw_sensor_spread_f = float(solar_live_stats.get("raw_spread_f") or 0.0)
+        solar_outliers_filtered = len(rejected_solar)
+        solar_outlier_sensors = [
+            str(x.get("display_name") or x.get("sensor_key") or "Outdoor")
+            for x in rejected_solar
+        ]
+
+        mean_temp_c = round(float(statistics.median(out_temps_c)), 2) if out_temps_c else None
         mean_temp_f = round((mean_temp_c * 9.0 / 5.0) + 32.0, 1) if mean_temp_c is not None else None
         min_temp_f = (
             round((min(out_temps_c) * 9.0 / 5.0) + 32.0, 1) if out_temps_c else None
@@ -4159,7 +4473,7 @@ class WeatherDatabase:
         max_temp_f = (
             round((max(out_temps_c) * 9.0 / 5.0) + 32.0, 1) if out_temps_c else None
         )
-        mean_rh = round(sum(out_rh) / len(out_rh), 1) if out_rh else None
+        mean_rh = round(float(statistics.median(out_rh)), 1) if out_rh else None
         rf_mean_press = round(sum(out_press) / len(out_press), 1) if out_press else None
 
         dp_c = compute_dew_point_c(mean_temp_c, mean_rh)
@@ -4316,34 +4630,20 @@ class WeatherDatabase:
                     elif rain_30m_mm > 0.0:
                         rain_rate_mm_h = rain_30m_mm * 2.0
 
-                # Outdoor Today High/Low & timestamps + 24h Sparkline
+                # Outdoor Today High/Low & timestamps from Solar-Filtered 15-Minute Ensemble Medians
                 if outdoor_keys:
-                    ph_ok = ",".join("?" for _ in outdoor_keys)
-                    row_min = self._conn.execute(
-                        f"""
-                        SELECT temp_c, timestamp FROM sensor_readings
-                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
-                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
-                        ORDER BY temp_c ASC, timestamp ASC LIMIT 1;
-                        """,
-                        [cutoff_today, *outdoor_keys],
-                    ).fetchone()
-                    if row_min and row_min["temp_c"] is not None:
-                        today_out_low_f = round((float(row_min["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
-                        today_out_low_ts = str(row_min["timestamp"])
-
-                    row_max = self._conn.execute(
-                        f"""
-                        SELECT temp_c, timestamp FROM sensor_readings
-                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
-                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
-                        ORDER BY temp_c DESC, timestamp DESC LIMIT 1;
-                        """,
-                        [cutoff_today, *outdoor_keys],
-                    ).fetchone()
-                    if row_max and row_max["temp_c"] is not None:
-                        today_out_high_f = round((float(row_max["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
-                        today_out_high_ts = str(row_max["timestamp"])
+                    today_ens = self._compute_15m_ensemble_series_locked(
+                        cutoff_iso=cutoff_today,
+                        bucket_minutes=15,
+                        outdoor_keys=outdoor_keys,
+                    )
+                    if today_ens:
+                        min_b = min(today_ens, key=lambda b: float(b["temp_c"]))
+                        max_b = max(today_ens, key=lambda b: float(b["temp_c"]))
+                        today_out_low_f = round((float(min_b["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_out_low_ts = str(min_b["timestamp"])
+                        today_out_high_f = round((float(max_b["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        today_out_high_ts = str(max_b["timestamp"])
 
                 # If local outdoor sensor extremes for today are not yet populated, fallback to reference weather for today
                 if today_out_low_f is None or today_out_high_f is None:
@@ -4364,34 +4664,26 @@ class WeatherDatabase:
                             today_out_high_f = round((float(ref_ext["max_tc"]) * 9.0 / 5.0) + 32.0, 1)
                             today_out_high_ts = str(ref_ext["max_ts"])
 
-                # 24h Hourly Sparkline for Outdoor Hero Card (Temperature & Dew Point)
+                # 24h Solar-Filtered 15m Ensemble Sparkline for Outdoor Hero Card (Temperature & Dew Point)
                 cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
                 if outdoor_keys:
-                    ph_ok = ",".join("?" for _ in outdoor_keys)
-                    spark_rows = self._conn.execute(
-                        f"""
-                        SELECT SUBSTR(timestamp, 1, 13) AS hr, AVG(temp_c) AS avg_tc, AVG(humidity) AS avg_rh
-                        FROM sensor_readings
-                        WHERE timestamp >= ? AND temp_c BETWEEN -31.67 AND 54.44
-                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_ok})
-                        GROUP BY SUBSTR(timestamp, 1, 13)
-                        ORDER BY hr ASC;
-                        """,
-                        [cutoff_spark, *outdoor_keys],
-                    ).fetchall()
+                    spark_ens = self._compute_15m_ensemble_series_locked(
+                        cutoff_iso=cutoff_spark,
+                        bucket_minutes=15,
+                        outdoor_keys=outdoor_keys,
+                    )
                     sparkline_24h_f = [
-                        round((float(sr["avg_tc"]) * 9.0 / 5.0) + 32.0, 1)
-                        for sr in spark_rows
-                        if sr["avg_tc"] is not None
+                        round(float(b["temp_f"]), 1)
+                        for b in spark_ens
+                        if b.get("temp_f") is not None
                     ]
-                    sparkline_dew_24h_f = []
-                    for sr in spark_rows:
-                        if sr["avg_tc"] is not None and sr["avg_rh"] is not None:
-                            dpc = compute_dew_point_c(float(sr["avg_tc"]), float(sr["avg_rh"]))
-                            if dpc is not None:
-                                sparkline_dew_24h_f.append(round((dpc * 9.0 / 5.0) + 32.0, 1))
-                            else:
-                                sparkline_dew_24h_f.append(round((float(sr["avg_tc"]) * 9.0 / 5.0) + 24.0, 1))
+                    sparkline_dew_24h_f = [
+                        round(float(b["dew_f"]), 1)
+                        if b.get("dew_f") is not None
+                        else round(float(b["temp_f"]) - 8.0, 1)
+                        for b in spark_ens
+                        if b.get("temp_f") is not None
+                    ]
 
                 if not sparkline_24h_f:
                     ref_sparks = self._conn.execute(
@@ -4850,11 +5142,15 @@ class WeatherDatabase:
             "temp_delta_3h_f": temp_delta_3h_f,
             "rh_delta_1h": rh_delta_1h,
             "rh_delta_3h": rh_delta_3h,
+            "raw_sensor_spread_f": raw_sensor_spread_f,
+            "solar_outliers_filtered": solar_outliers_filtered,
+            "solar_outlier_sensors": solar_outlier_sensors,
         }
 
         feedback_summary = self.get_weather_feedback_summary(current_condition=condition_label)
         learned_model = self.get_learned_weather_model()
         lightning_telemetry = self.get_lightning_telemetry()
+        learning_stats = self.get_telemetry_learning_stats()
 
         nowcast_trajectory = ClimatologyEngine.compute_short_term_nowcast(
             outdoor=outdoor_dict,
@@ -4865,6 +5161,8 @@ class WeatherDatabase:
             },
             learned_model=learned_model,
             feedback_summary=feedback_summary,
+            nws_data=nws_data,
+            learning_stats=learning_stats,
         )
 
         return {

@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.31 — 7-View Frontend Controller
+ * SkyScry v0.0.32 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -135,6 +135,7 @@
   const elBtnTriggerUpdate = document.getElementById("btn-trigger-update");
   const elBtnSyncRef = document.getElementById("btn-sync-reference");
   const elBtnPurgeOutliers = document.getElementById("btn-purge-outliers");
+  const elBtnPurgeSolarSpikes = document.getElementById("btn-purge-solar-spikes");
 
   // View 1: Overview DOM
   const elOvStationEyebrow = document.getElementById("ov-station-eyebrow");
@@ -406,6 +407,7 @@
 
   // Settings Sections 5 & 6 (Learning, Clock & System Console) DOM
   const elSetModelConfidenceBadge = document.getElementById("set-model-confidence-badge");
+  const elSetModelConfidenceReason = document.getElementById("set-model-confidence-reason");
   const elSetLearnArchiveStatus = document.getElementById("set-learn-archive-status");
   const elSetLearnArchiveSub = document.getElementById("set-learn-archive-sub");
   const elSetLearnFeedbackStats = document.getElementById("set-learn-feedback-stats");
@@ -1534,7 +1536,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.31"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.32"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -1783,9 +1785,11 @@
       }
       elOvNowcastText.textContent = nowcastStr;
     }
-    const confPct = nowcast.confidence_pct ?? cond.confidence_pct ?? 85;
+    const confPct = nowcast.confidence_pct ?? cond.confidence_pct ?? 50;
+    const confReason = String(nowcast.confidence_reason || "");
     if (elOvNowcastConfidence) {
       elOvNowcastConfidence.textContent = `Confidence: ${Math.round(confPct)}%`;
+      if (confReason) elOvNowcastConfidence.title = confReason;
     }
 
     const condProb =
@@ -4036,10 +4040,14 @@
           elSetLearnFeedbackStats.textContent = `${totalFb} confirmations logged`;
         }
         if (elSetLearnFeedbackAcc) {
-          elSetLearnFeedbackAcc.textContent = `Accuracy: ${Math.round(sum.accuracy_pct ?? 100)}%`;
+          elSetLearnFeedbackAcc.textContent = `Accuracy: ${Math.round(sum.accuracy_pct ?? 50)}% (Laplace-smoothed)`;
         }
         if (elSetModelConfidenceBadge) {
-          elSetModelConfidenceBadge.textContent = `Confidence: ${Math.round(sum.accuracy_pct ?? 88)}%`;
+          const unifiedConf = fbData.confidence_pct ?? sum.accuracy_pct ?? 50;
+          elSetModelConfidenceBadge.textContent = `Confidence: ${Math.round(unifiedConf)}%`;
+        }
+        if (elSetModelConfidenceReason && fbData.confidence_reason) {
+          elSetModelConfidenceReason.textContent = fbData.confidence_reason;
         }
       })
       .catch(() => {});
@@ -5021,24 +5029,27 @@
     }
   }
 
-  function handlePurgeOutliersClick() {
+  function handlePurgeOutliersClick(evt) {
+    const triggerBtn = (evt && evt.currentTarget) || elBtnPurgeOutliers;
     requireUnlockedOrPrompt(async () => {
-      if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = true;
+      if (triggerBtn) triggerBtn.disabled = true;
       try {
         const res = await authorizedWriteFetch("/api/maintenance/purge-outliers", {
           method: "POST",
-          body: JSON.stringify({}),
+          body: JSON.stringify({ purge_solar_spikes: true }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const solarCount = Number(data.solar_spikes_purged || 0);
+        const solarPart = solarCount > 0 ? ` (${solarCount} solar spike(s))` : "";
         showToast(
-          `Outlier Purge Complete: Expunged ${data.deleted_readings} skewed reading(s) and ${data.deleted_sensors} phantom sensor(s).`
+          `Outlier Purge Complete: Expunged ${data.deleted_readings} reading(s)${solarPart} and ${data.deleted_sensors} phantom sensor(s).`
         );
         await refreshAll(true);
       } catch (err) {
         showToast(err.message || "Failed to purge outliers.");
       } finally {
-        if (elBtnPurgeOutliers) elBtnPurgeOutliers.disabled = false;
+        if (triggerBtn) triggerBtn.disabled = false;
       }
     });
   }
@@ -6063,6 +6074,12 @@
       });
 
       updateModelsSummaryBar();
+      if (elSetModelConfidenceBadge && data.confidence_pct !== undefined && data.confidence_pct !== null) {
+        elSetModelConfidenceBadge.textContent = `Confidence: ${Math.round(Number(data.confidence_pct))}%`;
+      }
+      if (elSetModelConfidenceReason && data.confidence_reason) {
+        elSetModelConfidenceReason.textContent = data.confidence_reason;
+      }
     } catch (err) {
       console.error("Forecast models load error:", err);
       elModelsSelectorContainer.innerHTML = `<div class="text-muted text-center" style="padding: 16px;">Failed to load models: ${escapeHtml(err.message)}</div>`;
@@ -6555,6 +6572,7 @@
     if (elBtnRefresh) elBtnRefresh.addEventListener("click", () => refreshAll(true));
     if (elBtnTriggerUpdate) elBtnTriggerUpdate.addEventListener("click", handleTriggerUpdateClick);
     if (elBtnPurgeOutliers) elBtnPurgeOutliers.addEventListener("click", handlePurgeOutliersClick);
+    if (elBtnPurgeSolarSpikes) elBtnPurgeSolarSpikes.addEventListener("click", handlePurgeOutliersClick);
     if (elBtnSyncRef) elBtnSyncRef.addEventListener("click", handleSyncReferenceClick);
 
     // View 2 Chart controls

@@ -147,6 +147,172 @@ class NWSWeatherService:
                     return 40
         return None
 
+    def get_cached_payload(self) -> Optional[dict[str, Any]]:
+        """Return a shallow copy of the cached NWS payload without blocking on network requests."""
+        with self._lock:
+            return dict(self._cache) if isinstance(self._cache, dict) else None
+
+    def get_office_and_grid(
+        self,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Return resolved NWS Weather Forecast Office (`office`) and grid coordinates (`grid_x`, `grid_y`)."""
+        with self._lock:
+            cached = dict(self._cache) if isinstance(self._cache, dict) else {}
+
+        office = cached.get("office") or self.db.get_setting("nws_office") or ""
+        grid_x = cached.get("grid_x") or self.db.get_setting("nws_grid_x") or ""
+        grid_y = cached.get("grid_y") or self.db.get_setting("nws_grid_y") or ""
+
+        if not office:
+            target_lat, target_lon = (
+                (float(lat), float(lon))
+                if (lat is not None and lon is not None)
+                else self.get_coordinates()
+            )
+            if abs(target_lat) > 0.001 or abs(target_lon) > 0.001:
+                try:
+                    points_data = self._http_get_json(f"{NWS_BASE_URL}/points/{target_lat:.4f},{target_lon:.4f}")
+                    p_props = points_data.get("properties") if isinstance(points_data.get("properties"), dict) else {}
+                    office = str(p_props.get("gridId") or p_props.get("cwa") or "").strip()
+                    if p_props.get("gridX") is not None:
+                        grid_x = str(p_props["gridX"])
+                    if p_props.get("gridY") is not None:
+                        grid_y = str(p_props["gridY"])
+                    if office:
+                        self.db.set_setting("nws_office", office)
+                    if grid_x:
+                        self.db.set_setting("nws_grid_x", str(grid_x))
+                    if grid_y:
+                        self.db.set_setting("nws_grid_y", str(grid_y))
+                except Exception as exc:
+                    logger.debug("NWS get_office_and_grid lookup warning: %s", exc)
+
+        office_clean = str(office or "NWS").strip() or "NWS"
+        return {
+            "office": office_clean,
+            "grid_x": str(grid_x) if grid_x else None,
+            "grid_y": str(grid_y) if grid_y else None,
+            "radar_station": f"K{office_clean}" if len(office_clean) == 3 and office_clean != "NWS" else None,
+        }
+
+    def get_forecast(
+        self,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Return normalized official NWS 7-day forecast (with Open-Meteo fallback) and today's High/Low/PoP summary."""
+        if lat is not None and lon is not None:
+            t_lat, t_lon = float(lat), float(lon)
+            cur_lat, cur_lon = self.get_coordinates()
+            if abs(t_lat - cur_lat) > 0.001 or abs(t_lon - cur_lon) > 0.001:
+                raw_periods: list[dict[str, Any]] = []
+                office_label = "NWS"
+                try:
+                    points_data = self._http_get_json(f"{NWS_BASE_URL}/points/{t_lat:.4f},{t_lon:.4f}")
+                    p_props = points_data.get("properties") if isinstance(points_data.get("properties"), dict) else {}
+                    office_label = str(p_props.get("gridId") or "NWS").strip() or "NWS"
+                    fc_url = str(p_props.get("forecast") or "").strip()
+                    if fc_url:
+                        fc_data = self._http_get_json(fc_url)
+                        fc_props = fc_data.get("properties") if isinstance(fc_data.get("properties"), dict) else {}
+                        raw_periods = fc_props.get("periods") if isinstance(fc_props.get("periods"), list) else []
+                except Exception as exc:
+                    logger.debug("Direct NWS get_forecast fallback warning: %s", exc)
+                if not raw_periods:
+                    raw_periods = self._fetch_open_meteo_forecast(t_lat, t_lon)
+                payload: dict[str, Any] = {
+                    "ok": len(raw_periods) > 0,
+                    "office": office_label,
+                    "forecast_periods": raw_periods,
+                }
+            else:
+                payload = self.fetch_nws_corroboration(force_refresh=False)
+        else:
+            payload = self.fetch_nws_corroboration(force_refresh=False)
+
+        raw_list = payload.get("forecast_periods") or payload.get("forecast") or payload.get("periods") or []
+        periods: list[dict[str, Any]] = []
+        for p in raw_list:
+            if not isinstance(p, dict):
+                continue
+            temp_val = p.get("temperature") if p.get("temperature") is not None else p.get("temp")
+            try:
+                temp_num = float(temp_val) if temp_val is not None else None
+            except (TypeError, ValueError):
+                temp_num = None
+            pop_val = p.get("pop_percent")
+            if pop_val is None:
+                pop_val = p.get("pop_pct")
+            if pop_val is None and isinstance(p.get("probabilityOfPrecipitation"), dict):
+                pop_val = p["probabilityOfPrecipitation"].get("value")
+            try:
+                pop_int = int(round(float(pop_val))) if pop_val is not None else 0
+            except (TypeError, ValueError):
+                pop_int = 0
+
+            is_day = bool(p.get("isDaytime", p.get("is_daytime", True)))
+            temp_unit = str(p.get("temperatureUnit") or p.get("temp_unit") or "F")
+            short_fc = str(p.get("shortForecast") or p.get("short_forecast") or "")
+            detail_fc = str(p.get("detailedForecast") or p.get("detailed_forecast") or "")
+
+            periods.append(
+                {
+                    "number": p.get("number"),
+                    "name": str(p.get("name") or ""),
+                    "start_time": str(p.get("start_time") or p.get("startTime") or ""),
+                    "end_time": str(p.get("end_time") or p.get("endTime") or ""),
+                    "isDaytime": is_day,
+                    "is_daytime": is_day,
+                    "temperature": temp_num,
+                    "temp": temp_num,
+                    "temperatureUnit": temp_unit,
+                    "temp_unit": temp_unit,
+                    "wind_speed": str(p.get("wind_speed") or p.get("windSpeed") or ""),
+                    "wind_direction": str(p.get("wind_direction") or p.get("windDirection") or ""),
+                    "shortForecast": short_fc,
+                    "short_forecast": short_fc,
+                    "detailedForecast": detail_fc,
+                    "detailed_forecast": detail_fc,
+                    "pop_percent": pop_int,
+                    "pop_pct": pop_int,
+                    "probabilityOfPrecipitation": {"value": pop_int},
+                    "icon": str(p.get("icon") or ""),
+                }
+            )
+
+        high_f: Optional[float] = None
+        low_f: Optional[float] = None
+        pop_pct: int = 0
+        condition: str = ""
+        if periods:
+            p0 = periods[0]
+            pop_pct = int(p0.get("pop_pct") or 0)
+            condition = str(p0.get("short_forecast") or "")
+            day_temps = [p["temperature"] for p in periods[:3] if p.get("is_daytime") and p.get("temperature") is not None]
+            night_temps = [p["temperature"] for p in periods[:3] if (not p.get("is_daytime")) and p.get("temperature") is not None]
+            if day_temps:
+                high_f = round(float(day_temps[0]), 1)
+            if night_temps:
+                low_f = round(float(night_temps[0]), 1)
+            if high_f is None and periods[0].get("temperature") is not None:
+                high_f = round(float(periods[0]["temperature"]), 1)
+            if low_f is None:
+                cand = [float(p["temperature"]) for p in periods[:2] if p.get("temperature") is not None]
+                if cand:
+                    low_f = round(min(cand), 1)
+
+        return {
+            "ok": bool(payload.get("ok", True)) and len(periods) > 0,
+            "office": payload.get("office") or self.db.get_setting("nws_office") or "NWS",
+            "high_f": high_f,
+            "low_f": low_f,
+            "pop_pct": pop_pct,
+            "condition": condition,
+            "periods": periods,
+        }
+
     def geocode_city_state(self, query: str, count: int = 10, timeout: float = 8.0) -> list[dict[str, Any]]:
         """Resolve any City, State/Province/Country or postal query into latitude, longitude, elevation_m, and display_name via Open-Meteo Geocoding API (with Nominatim fallback)."""
         cleaned = str(query or "").strip()

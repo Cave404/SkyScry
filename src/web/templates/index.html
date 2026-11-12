@@ -230,12 +230,12 @@
             </svg>
             <span class="action-text">Sync Barometer &amp; History</span>
           </button>
-          <button id="btn-purge-outliers" class="drawer-action-btn" type="button" title="Expunge corrupted RF bit-flip spikes and appliance probes">
+          <button id="btn-purge-outliers" class="drawer-action-btn" type="button" title="Expunge corrupted RF spikes, solar spikes (&gt;+5°F above peer median), and appliance probes">
             <svg class="action-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
             </svg>
-            <span class="action-text">Purge Skewed Outliers</span>
+            <span class="action-text">Purge Outliers &amp; Solar Spikes</span>
           </button>
           <button id="btn-drawer-auth" class="drawer-action-btn" type="button" title="Lock or Unlock Admin session">
             <span id="drawer-auth-icon" class="action-icon">
@@ -1535,6 +1535,7 @@
             </div>
             <div class="settings-btn-row">
               <button id="btn-save-hygiene" type="button" class="btn btn-primary">Save Ingestion Rules</button>
+              <button id="btn-purge-solar-spikes" type="button" class="btn btn-secondary" title="Delete historical 15-minute outdoor readings exceeding peer median by &gt; +5°F and resync daily highs">&#x2600;&#xFE0F; Purge Solar Spikes (&gt; +5&deg;F above Peer Median)</button>
             </div>
           </form>
         </div>
@@ -1588,6 +1589,9 @@
           <div class="card-header">
             <h3>5. Forecast Learning &amp; Multi-Model Manager</h3>
             <span id="set-model-confidence-badge" class="badge badge-outdoor">Confidence: --%</span>
+          </div>
+          <div id="set-model-confidence-reason" class="text-muted" style="font-size: 0.78rem; margin: -2px 0 10px;">
+            Station maturity &amp; multi-model confidence breakdown loading...
           </div>
           <p class="text-muted" style="margin-bottom: 12px;">
             Fine-tune how your station blends local sensor readings, historical weather averages, and external forecast models.

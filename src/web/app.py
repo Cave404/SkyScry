@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.31)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.32)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.31 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.32 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -654,7 +654,12 @@ def create_app(
     @app.route("/api/overview", methods=["GET"])
     def api_overview() -> Response:
         """Return synthesized outdoor/indoor ensemble weather, daily extremes, rain records, lightning, and nowcast."""
-        overview = db.get_weather_overview()
+        cached_nws = (
+            nws_svc.get_cached_payload()
+            if nws_svc is not None and hasattr(nws_svc, "get_cached_payload")
+            else None
+        )
+        overview = db.get_weather_overview(nws_data=cached_nws)
         return jsonify(overview)
 
     @app.route("/api/lightning", methods=["GET"])
@@ -731,10 +736,26 @@ def create_app(
 
     @app.route("/api/forecast/feedback", methods=["GET"])
     def api_forecast_feedback_get() -> Response:
-        """Query human ground-truth weather reaffirmation history and learned weather model weights."""
-        summary = db.get_weather_feedback_summary()
+        """Query human ground-truth weather reaffirmation history and maturity-scaled confidence."""
+        cached_nws = (
+            nws_svc.get_cached_payload()
+            if nws_svc is not None and hasattr(nws_svc, "get_cached_payload")
+            else None
+        )
+        overview = db.get_weather_overview(nws_data=cached_nws)
+        nowcast = overview.get("nowcast") or {}
+        summary = overview.get("feedback_summary") or db.get_weather_feedback_summary()
         learned = db.get_learned_weather_model()
-        return jsonify({"ok": True, "summary": summary, "learned_model": learned, **summary})
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "learned_model": learned,
+            "confidence_pct": nowcast.get("confidence_pct", summary.get("accuracy_pct", 50)),
+            "confidence_reason": nowcast.get("confidence_reason", ""),
+            "maturity_tier": nowcast.get("maturity_tier", "Calibrating"),
+            "confidence_factors": nowcast.get("confidence_factors") or {},
+            **summary,
+        })
 
     @app.route("/api/forecast/feedback", methods=["POST"])
     @admin_guard
@@ -765,11 +786,22 @@ def create_app(
                 actual_condition=str(actual_condition) if actual_condition else None,
                 notes=str(notes) if notes else None,
             )
+            cached_nws = (
+                nws_svc.get_cached_payload()
+                if nws_svc is not None and hasattr(nws_svc, "get_cached_payload")
+                else None
+            )
+            overview = db.get_weather_overview(nws_data=cached_nws)
+            nowcast = overview.get("nowcast") or {}
             return jsonify(
                 {
                     "ok": True,
                     "message": "Ground-truth weather feedback recorded and local forecast model updated.",
                     "summary": summary,
+                    "confidence_pct": nowcast.get("confidence_pct", summary.get("accuracy_pct", 50)),
+                    "confidence_reason": nowcast.get("confidence_reason", ""),
+                    "maturity_tier": nowcast.get("maturity_tier", "Calibrating"),
+                    "confidence_factors": nowcast.get("confidence_factors") or {},
                     **summary,
                 }
             )
@@ -1108,11 +1140,13 @@ def create_app(
     @app.route("/api/maintenance/purge-outliers", methods=["POST"])
     @admin_guard
     def api_purge_outliers() -> tuple[Response, int] | Response:
-        """Purge skewed/corrupted historical readings, TPMS packets, and appliance probes from SQLite."""
+        """Purge skewed/corrupted historical readings, TPMS packets, appliance probes, and solar spikes."""
         body = request.get_json(silent=True) or {}
         sensor_key = body.get("sensor_key") if isinstance(body, dict) else None
+        purge_solar = bool(body.get("purge_solar_spikes", True)) if isinstance(body, dict) else True
         result = db.expunge_skewed_history(
-            target_sensor_key=str(sensor_key).strip() if sensor_key else None
+            target_sensor_key=str(sensor_key).strip() if sensor_key else None,
+            purge_solar_spikes=purge_solar,
         )
         return jsonify({"ok": True, "status": "ok", **result})
 

@@ -306,17 +306,17 @@ class ClimatologyEngine:
         nws_data: Optional[dict[str, Any]] = None,
         learned_model: Optional[dict[int, dict[str, Any]]] = None,
         feedback_summary: Optional[dict[str, Any]] = None,
+        learning_stats: Optional[dict[str, Any]] = None,
+        forecast_models_data: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Generate a multi-factor confidence-scored 12h/24h Weather Trajectory.
+        """Generate a multi-factor maturity-scaled confidence-scored 12h/24h Weather Trajectory.
 
         Separates:
-          - **Forecast Confidence (`0-99%`)**: How confident the station is in its predicted regime,
-            computed dynamically from 4 live factors:
-              1. Sensor Ensemble Agreement (temperature spread across active outdoor sensors)
-              2. Barometric Stability vs Volatility (3h pressure change rate)
-              3. Local vs NWS/Learned Model Agreement
-              4. Historical Reaffirmation Accuracy Score (`weather_feedback`)
-          - **Rain Chance (`PoP: 0-98%`)**: Probability of precipitation over the next 6-12 hours.
+          - **Forecast Confidence (`25-98%`)**: Maturity-scaled confidence integrating station age
+            (`days_score = min(1.0, learning_days / 45)`), check-in maturity
+            (`checkin_maturity = min(1.0, total_checkins / 25)`), Laplace check-in accuracy,
+            live sensor spread, model agreement/availability, and barometric stability.
+          - **Rain Chance (`PoP: 2-98%`)**: Probability of precipitation over the next 6-12 hours.
         """
         temp_f = outdoor.get("temp_f")
         temp_min_f = outdoor.get("temp_min_f")
@@ -355,16 +355,28 @@ class ClimatologyEngine:
         nws_short: str = ""
         nws_temp_f: Optional[float] = None
         if isinstance(nws_data, dict):
-            obs = nws_data.get("latest_observation") or {}
+            obs = nws_data.get("latest_observation") or nws_data.get("observation") or {}
             if isinstance(obs, dict) and obs.get("temp_f") is not None:
                 nws_temp_f = float(obs["temp_f"])
-            periods = nws_data.get("forecast_periods")
+            if nws_data.get("pop_pct") is not None:
+                try:
+                    nws_pop = int(nws_data["pop_pct"])
+                except (TypeError, ValueError):
+                    pass
+            if nws_data.get("condition"):
+                nws_short = str(nws_data["condition"])
+            periods = nws_data.get("forecast_periods") or nws_data.get("periods")
             if isinstance(periods, list) and periods:
                 first_p = periods[0]
                 if isinstance(first_p, dict):
-                    if first_p.get("pop_percent") is not None:
-                        nws_pop = int(first_p["pop_percent"])
-                    nws_short = str(first_p.get("short_forecast") or "")
+                    if nws_pop is None:
+                        p_pop = first_p.get("pop_percent")
+                        if p_pop is None and isinstance(first_p.get("probabilityOfPrecipitation"), dict):
+                            p_pop = first_p["probabilityOfPrecipitation"].get("value")
+                        if p_pop is not None:
+                            nws_pop = int(p_pop)
+                    if not nws_short:
+                        nws_short = str(first_p.get("short_forecast") or first_p.get("shortForecast") or "")
 
         southerly = wind_cardinal in ("S", "SSE", "SE", "ESE", "SSW", "SW")
         northerly_westerly = wind_cardinal in ("N", "NNW", "NW", "WNW", "NNE", "NE", "W")
@@ -418,52 +430,123 @@ class ClimatologyEngine:
 
         precip_prob = int(max(2, min(98, round(precip_score))))
 
-        # 2. Compute Dynamic 4-Factor Forecast Confidence (0-99%)
-        # Factor A: Sensor Ensemble Agreement (0-100)
+        # 2. Compute Dynamic Maturity-Scaled Forecast Confidence (25-98%)
+        penalties: list[str] = []
+
+        # Factor A: Sensor Ensemble Agreement (0-100) + Spread Penalty (> 6F -> -5% to -15%)
+        spread_f = 0.0
+        spread_penalty = 0.0
         if sensor_count >= 2 and temp_min_f is not None and temp_max_f is not None:
             spread_f = abs(float(temp_max_f) - float(temp_min_f))
-            ensemble_score = max(52.0, min(99.0, 98.0 - max(0.0, spread_f - 1.2) * 7.5))
+            ensemble_score = max(50.0, min(98.0, 96.0 - max(0.0, spread_f - 1.5) * 6.5))
+            if spread_f > 6.0:
+                spread_penalty = min(15.0, 5.0 + (spread_f - 6.0) * 1.5)
+                penalties.append(f"Sensor Spread {spread_f:.1f}°F (-{int(round(spread_penalty))}%)")
         elif sensor_count == 1:
-            ensemble_score = 84.0
+            ensemble_score = 78.0
         else:
-            ensemble_score = 64.0
+            ensemble_score = 55.0
 
-        # Factor B: Barometric Stability / Signal Clarity (0-100)
+        # Factor B: Barometric Stability + Volatility Penalty (|delta_3h| >= 0.06 -> -5% to -15%)
         abs_d3 = abs(float(delta_3h_inhg))
-        if abs_d3 <= 0.02:
-            # Very steady high/flat pressure -> high regime stability
-            baro_clarity_score = 94.0
-        elif abs_d3 >= 0.06:
-            # Strong unmistakable frontal signal -> high directional certainty
-            baro_clarity_score = 91.0
+        baro_penalty = 0.0
+        if abs_d3 >= 0.06:
+            baro_penalty = min(15.0, 5.0 + (abs_d3 - 0.06) * 125.0)
+            baro_clarity_score = max(55.0, 88.0 - (baro_penalty * 1.5))
+            penalties.append(f"Baro Volatility {abs_d3:.2f} inHg/3h (-{int(round(baro_penalty))}%)")
+        elif abs_d3 <= 0.02:
+            baro_clarity_score = 92.0
         else:
-            # Transitional pressure movement -> slightly lower certainty
-            baro_clarity_score = 78.0
+            baro_clarity_score = 80.0
 
-        # Factor C: Local vs NWS / Learned Historical Model Agreement (0-100)
-        model_agree_score = 86.0
+        # Factor C: Local vs NWS / Multi-Model Agreement + Disagreement/Offline Penalty (> 5F / offline -> -5% to -12%)
+        model_agree_score = 84.0
+        model_penalty = 0.0
+        if forecast_models_data and isinstance(forecast_models_data.get("models"), list):
+            enabled_ext = [
+                m for m in forecast_models_data["models"]
+                if m.get("enabled", True) and m.get("id") != "local"
+            ]
+            offline_ext = [
+                m for m in enabled_ext
+                if "offline" in str(m.get("status") or "").lower()
+            ]
+            model_highs = [
+                float(m["predicted_high_f"])
+                for m in forecast_models_data["models"]
+                if m.get("enabled", True) and m.get("predicted_high_f") is not None
+            ]
+            model_spread_f = (max(model_highs) - min(model_highs)) if len(model_highs) >= 2 else 0.0
+            if offline_ext:
+                model_penalty = max(model_penalty, min(12.0, 5.0 + (len(offline_ext) - 1) * 3.0))
+                penalties.append(f"{len(offline_ext)} Model(s) Offline (-{int(round(min(12.0, 5.0 + (len(offline_ext) - 1) * 3.0)))}%)")
+            if model_spread_f > 5.0:
+                diff_pen = min(12.0, 5.0 + (model_spread_f - 5.0) * 0.8)
+                model_penalty = min(12.0, max(model_penalty, diff_pen))
+                penalties.append(f"Model Spread {model_spread_f:.1f}°F (-{int(round(diff_pen))}%)")
+            model_agree_score = max(50.0, 94.0 - (model_spread_f * 2.5) - (len(offline_ext) * 8.0))
+        elif isinstance(nws_data, dict) and nws_data.get("ok") is False:
+            model_penalty = 5.0
+            model_agree_score = 72.0
+            penalties.append("NWS Model Offline (-5%)")
+
         if nws_pop is not None:
             pop_diff = abs(local_precip_est - float(nws_pop))
-            model_agree_score = max(50.0, min(98.0, 96.0 - (pop_diff * 0.65)))
+            model_agree_score = min(model_agree_score, max(50.0, 96.0 - (pop_diff * 0.65)))
         if nws_temp_f is not None and temp_f is not None:
             t_diff = abs(float(temp_f) - nws_temp_f)
-            if t_diff <= 3.0:
-                model_agree_score = min(98.0, model_agree_score + 4.0)
-            elif t_diff > 8.0:
+            if t_diff > 5.0:
+                t_pen = min(12.0, 5.0 + (t_diff - 5.0) * 0.8)
+                if t_pen > model_penalty:
+                    model_penalty = t_pen
+                    penalties.append(f"Local vs NWS {t_diff:.1f}°F (-{int(round(t_pen))}%)")
                 model_agree_score = max(50.0, model_agree_score - 8.0)
-        if month_cfg.get("sample_days", 0) >= 20 and press_hpa is not None:
-            model_agree_score = min(99.0, model_agree_score + 3.0)
 
-        # Factor D: Human Ground-Truth Reaffirmation Accuracy Score (0-100)
-        reaffirm_score = float((feedback_summary or {}).get("accuracy_pct") or 88.0)
+        # Factor D: Human Ground-Truth Laplace Accuracy + Station Maturity Ceiling
+        fb_dict = feedback_summary or {}
+        total_checkins = int(fb_dict.get("total_feedback") or 0)
+        if fb_dict.get("score_sum") is not None:
+            reaffirm_score = ((float(fb_dict["score_sum"]) + 2.0) / (total_checkins + 4.0)) * 100.0
+        elif fb_dict.get("accuracy_pct") is not None:
+            reaffirm_score = float(fb_dict["accuracy_pct"])
+        else:
+            reaffirm_score = 50.0
 
-        raw_confidence = (
-            (ensemble_score * 0.30)
+        learning_days = int(
+            (learning_stats or {}).get("active_days")
+            if learning_stats and learning_stats.get("active_days") is not None
+            else (month_cfg.get("sample_days") or 0)
+        )
+        days_score = min(1.0, max(0.0, float(learning_days) / 45.0))
+        checkin_maturity = min(1.0, max(0.0, float(total_checkins) / 25.0))
+        maturity_ratio = (0.55 * days_score) + (0.45 * checkin_maturity)
+        # Early station (e.g. 7d + 3 check-ins) is capped ~71%, scaling up to 94% at >=45d + 25 check-ins
+        maturity_ceiling = 67.0 + (27.0 * maturity_ratio)
+
+        live_quality = (
+            (ensemble_score * 0.35)
             + (baro_clarity_score * 0.25)
-            + (model_agree_score * 0.25)
+            + (model_agree_score * 0.20)
             + (reaffirm_score * 0.20)
         )
-        confidence = int(max(35, min(99, round(raw_confidence))))
+        raw_blended = min(maturity_ceiling, (live_quality * 0.45) + (maturity_ceiling * 0.55))
+        total_penalty = min(30.0, spread_penalty + baro_penalty + model_penalty)
+        confidence = int(max(25, min(98, round(raw_blended - total_penalty))))
+
+        if maturity_ratio < 0.45:
+            maturity_tier = f"Calibrating — {learning_days}d local data"
+        elif maturity_ratio < 0.85:
+            maturity_tier = f"Learning — {learning_days}d local data"
+        else:
+            maturity_tier = f"Mature Station — {learning_days}d local data"
+
+        reason_detail = (
+            f"{learning_days}/45d history, {total_checkins}/25 check-ins ({int(round(reaffirm_score))}% Laplace)"
+        )
+        if penalties:
+            confidence_reason = f"{confidence}% ({maturity_tier} • {reason_detail} • Adjustments: {', '.join(penalties)})"
+        else:
+            confidence_reason = f"{confidence}% ({maturity_tier} • {reason_detail} • Calm ensemble)"
 
         if rain_rate_in_h > 0.0 or precip_prob >= 70:
             regime = "Active Precipitation / Stormy"
@@ -545,6 +628,8 @@ class ClimatologyEngine:
         return {
             "regime": regime,
             "confidence_pct": confidence,
+            "confidence_reason": confidence_reason,
+            "maturity_tier": maturity_tier,
             "precip_probability_pct": precip_prob,
             "precip_prob_pct": precip_prob,
             "condition_probability_label": condition_prob_label,
@@ -553,6 +638,11 @@ class ClimatologyEngine:
                 "barometric_clarity_pct": int(round(baro_clarity_score)),
                 "model_corroboration_pct": int(round(model_agree_score)),
                 "human_reaffirmation_pct": int(round(reaffirm_score)),
+                "maturity_pct": int(round(maturity_ratio * 100.0)),
+                "maturity_ceiling_pct": int(round(maturity_ceiling)),
+                "learning_days": learning_days,
+                "total_checkins": total_checkins,
+                "penalties": penalties,
             },
             "baro_velocity_inhg_hr": vel_inhg_hr,
             "delta_6h_inhg": round(delta_6h_inhg, 2),
@@ -1165,7 +1255,7 @@ class ClimatologyEngine:
                 rows_rf = self.db._conn.execute(
                     """
                     SELECT
-                        SUBSTR(sr.timestamp, 1, 10) AS date_str,
+                        DATE(sr.timestamp, 'localtime') AS date_str,
                         COUNT(*) AS rf_packets,
                         AVG(sr.wind_avg_mps) AS avg_wind_mps,
                         MAX(COALESCE(sr.wind_gust_mps, sr.wind_avg_mps)) AS max_wind_mps,
@@ -1174,10 +1264,10 @@ class ClimatologyEngine:
                         MAX(sr.lux) AS max_lux
                     FROM sensor_readings sr
                     JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
-                    WHERE SUBSTR(sr.timestamp, 1, 10) BETWEEN ? AND ?
+                    WHERE DATE(sr.timestamp, 'localtime') BETWEEN ? AND ?
                       AND s.is_trusted = 1
                       AND s.location_type = 'outdoor'
-                    GROUP BY SUBSTR(sr.timestamp, 1, 10);
+                    GROUP BY DATE(sr.timestamp, 'localtime');
                     """,
                     (grid_start_str, grid_end_str),
                 ).fetchall()
@@ -1303,11 +1393,11 @@ class ClimatologyEngine:
 
                 if is_today:
                     if ov_outdoor.get("today_high_f") is not None:
-                        high_f = max(float(high_f), float(ov_outdoor["today_high_f"])) if high_f is not None else float(ov_outdoor["today_high_f"])
+                        high_f = float(ov_outdoor["today_high_f"])
                     elif ov_outdoor.get("temp_f") is not None and high_f is None:
                         high_f = float(ov_outdoor["temp_f"])
                     if ov_outdoor.get("today_low_f") is not None:
-                        low_f = min(float(low_f), float(ov_outdoor["today_low_f"])) if low_f is not None else float(ov_outdoor["today_low_f"])
+                        low_f = float(ov_outdoor["today_low_f"])
                     elif ov_outdoor.get("temp_f") is not None and low_f is None:
                         low_f = float(ov_outdoor["temp_f"])
 
@@ -1873,9 +1963,56 @@ class ClimatologyEngine:
         lon = float(coords.get("longitude") or 0.0)
         has_coords = abs(lat) > 0.001 or abs(lon) > 0.001
 
-        # 1. Local Sensor Trends
+        # 1. NWS Official Forecast (fetch first so Local Nowcast shares live NWS context)
+        nws_data: dict[str, Any] = {}
+        nws_hi = None
+        nws_lo = None
+        nws_pop = None
+        nws_office = None
+        nws_status = "Awaiting Station Location"
+        nws_sync = None
+        if nws_service and has_coords:
+            try:
+                nws_data = nws_service.get_forecast(lat=lat, lon=lon)
+                if nws_data.get("ok"):
+                    nws_hi = nws_data.get("high_f")
+                    nws_lo = nws_data.get("low_f")
+                    nws_pop = nws_data.get("pop_pct")
+                    nws_office = nws_data.get("office")
+                    nws_periods = nws_data.get("periods") or []
+                    if nws_periods and (nws_hi is None or nws_lo is None):
+                        p0 = nws_periods[0]
+                        p1 = nws_periods[1] if len(nws_periods) > 1 else {}
+                        t0 = p0.get("temperature")
+                        t1 = p1.get("temperature")
+                        if p0.get("isDaytime", p0.get("is_daytime", True)):
+                            if nws_hi is None and t0 is not None:
+                                nws_hi = float(t0)
+                            if nws_lo is None and t1 is not None:
+                                nws_lo = float(t1)
+                        else:
+                            if nws_lo is None and t0 is not None:
+                                nws_lo = float(t0)
+                            if nws_hi is None and t1 is not None:
+                                nws_hi = float(t1)
+                        if nws_pop is None:
+                            pop_obj = p0.get("probabilityOfPrecipitation") or {}
+                            raw_pop = p0.get("pop_percent") if p0.get("pop_percent") is not None else pop_obj.get("value")
+                            nws_pop = int(raw_pop or 0)
+                    if not nws_office:
+                        wfo = nws_service.get_office_and_grid(lat=lat, lon=lon)
+                        nws_office = wfo.get("office", "NWS")
+                    nws_status = "Connected (Live Ingest)"
+                    nws_sync = nws_data.get("fetched_at") or datetime.now(timezone.utc).isoformat()
+                else:
+                    nws_status = f"Offline ({nws_data.get('error') or 'Feed Unavailable'})"
+            except Exception as e:
+                nws_status = f"Offline ({e})"
+
+        # 2. Local Sensor Trends
+        overview: dict[str, Any] = {}
         try:
-            overview = self.db.get_weather_overview()
+            overview = self.db.get_weather_overview(nws_data=nws_data if nws_data.get("ok") else None)
             nowcast = overview.get("nowcast") or {}
         except Exception as exc:
             logger.debug("Failed to retrieve weather overview nowcast: %s", exc)
@@ -1892,36 +2029,6 @@ class ClimatologyEngine:
             if active_sensors
             else "Listening on 433.92 MHz"
         )
-
-        # 2. NWS Official Forecast
-        nws_hi = None
-        nws_lo = None
-        nws_pop = None
-        nws_status = "Awaiting Station Location"
-        nws_sync = None
-        if nws_service and has_coords:
-            try:
-                nws_data = nws_service.get_forecast()
-                nws_periods = nws_data.get("periods") or []
-                if nws_periods:
-                    p0 = nws_periods[0]
-                    p1 = nws_periods[1] if len(nws_periods) > 1 else {}
-                    t0 = p0.get("temperature")
-                    t1 = p1.get("temperature")
-                    if p0.get("isDaytime", True):
-                        nws_hi = float(t0) if t0 is not None else None
-                        nws_lo = float(t1) if t1 is not None else None
-                    else:
-                        nws_lo = float(t0) if t0 is not None else None
-                        nws_hi = float(t1) if t1 is not None else None
-                    pop_obj = p0.get("probabilityOfPrecipitation") or {}
-                    nws_pop = int(pop_obj.get("value") or 0)
-                    wfo = nws_service.get_office_and_grid()
-                    office = wfo.get("office", "NWS")
-                    nws_status = f"Connected ({office} Gridpoint)"
-                    nws_sync = datetime.now(timezone.utc).isoformat()
-            except Exception as e:
-                nws_status = f"Offline ({e})"
 
         # 3, 4, 5. HRRR, GFS, ECMWF
         om_models = self._fetch_open_meteo_multi_models(lat, lon) if has_coords else {}
@@ -2020,6 +2127,21 @@ class ClimatologyEngine:
         blended_lo = round(sum_weighted_lo / lo_weight_accum, 1) if lo_weight_accum > 0 else (local_lo or 45.0)
         blended_pop = int(round(sum_weighted_pop / pop_weight_accum)) if pop_weight_accum > 0 else 0
 
+        # Unified maturity-scaled confidence combining local station + multi-model agreement
+        try:
+            unified_nowcast = self.compute_short_term_nowcast(
+                outdoor=overview.get("outdoor") or {},
+                baro=overview.get("barometer") or {},
+                nws_data=nws_data if nws_data.get("ok") else None,
+                learned_model=self.db.get_learned_weather_model(),
+                feedback_summary=overview.get("feedback_summary") or self.db.get_weather_feedback_summary(),
+                learning_stats=self.db.get_telemetry_learning_stats(),
+                forecast_models_data={"models": models_list},
+            )
+        except Exception as exc:
+            logger.debug("Unified model confidence calculation fallback: %s", exc)
+            unified_nowcast = nowcast
+
         return {
             "ok": True,
             "models": models_list,
@@ -2030,6 +2152,11 @@ class ClimatologyEngine:
                 "low_f": blended_lo,
                 "pop_pct": blended_pop,
             },
+            "confidence_pct": unified_nowcast.get("confidence_pct", 50),
+            "confidence_reason": unified_nowcast.get("confidence_reason", ""),
+            "maturity_tier": unified_nowcast.get("maturity_tier", "Calibrating"),
+            "confidence_factors": unified_nowcast.get("confidence_factors") or {},
+            "nws_office": nws_office,
             "station_coordinates": {"latitude": lat, "longitude": lon},
         }
 
