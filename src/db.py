@@ -1,4 +1,4 @@
-"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.32)."""
+"""SQLite WAL database engine, outlier expunger, barometric forecaster, lightning tracker, and charting for SkyScry (v0.0.33)."""
 
 from __future__ import annotations
 
@@ -625,6 +625,15 @@ class WeatherDatabase:
                     ON sensor_readings (sensor_key, timestamp DESC);
                     """
                 )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sr_timestamp ON sensor_readings(timestamp DESC);"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sr_sensor_ts ON sensor_readings(sensor_key, timestamp DESC);"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ls_confirmed_ts ON lightning_strikes(confirmed, timestamp DESC);"
+                )
 
                 # One-time migration for v0.0.8 Opt-In Trust Model:
                 # Convert any legacy 'unassigned' sensors (while preserving user-configured 'outdoor' and 'indoor')
@@ -657,6 +666,22 @@ class WeatherDatabase:
         with self._lock:
             if self._conn is None:
                 return
+            needs_trust_fix = self._conn.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM sensors
+                    WHERE (location_type IN ('outdoor', 'indoor') AND (is_trusted = 0 OR is_trusted IS NULL))
+                       OR ((sensor_id = '8364' OR sensor_key LIKE '%_8364') AND (location_type != 'indoor' OR is_trusted != 1 OR is_trusted IS NULL))
+                ) AS flag;
+                """
+            ).fetchone()
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM sensors WHERE location_type = 'outdoor' AND is_trusted = 1;"
+            ).fetchone()
+            outdoor_count = int(row["c"]) if row else 0
+            if not (needs_trust_fix and int(needs_trust_fix["flag"] or 0)) and outdoor_count > 0:
+                return
+
             with self._conn:
                 # 1. Any sensor marked as outdoor or indoor must have is_trusted = 1
                 self._conn.execute(
@@ -677,11 +702,6 @@ class WeatherDatabase:
                 )
 
                 # 2. Check if zero outdoor sensors exist in the fleet
-                row = self._conn.execute(
-                    "SELECT COUNT(*) AS c FROM sensors WHERE location_type = 'outdoor' AND is_trusted = 1;"
-                ).fetchone()
-                outdoor_count = int(row["c"]) if row else 0
-
                 if outdoor_count == 0:
                     reading_sensors = self._conn.execute(
                         """
@@ -2428,7 +2448,7 @@ class WeatherDatabase:
         bucket_minutes: int = 15,
         outdoor_keys: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
-        """Compute solar-filtered 15-minute outdoor ensemble median temperature/RH/dew-point buckets.
+        """Compute solar-filtered 15-minute outdoor ensemble median temperature/RH/dew-point buckets via SQL GROUP BY.
 
         Caller MUST hold `self._lock`.
         """
@@ -2441,7 +2461,7 @@ class WeatherDatabase:
             "s.location_type = 'outdoor'",
             "sr.temp_c BETWEEN -31.67 AND 54.44",
         ]
-        params: list[Any] = []
+        params: list[Any] = [bucket_sec, bucket_sec]
         if cutoff_iso:
             clauses.append("sr.timestamp >= ?")
             params.append(cutoff_iso)
@@ -2450,20 +2470,23 @@ class WeatherDatabase:
             params.append(end_iso)
         if outdoor_keys:
             ph = ",".join("?" for _ in outdoor_keys)
-            clauses.append(f"COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) IN ({ph})")
+            clauses.append(f"sr.sensor_key IN ({ph})")
             params.extend(outdoor_keys)
 
         rows = self._conn.execute(
             f"""
-            SELECT sr.timestamp,
-                   COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
-                   sr.temp_c,
-                   sr.humidity,
-                   COALESCE(s.hidden_metrics, '[]') AS hidden_metrics
+            SELECT
+                (CAST(strftime('%s', sr.timestamp) AS INTEGER) / ?) * ? AS b_ep,
+                COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id) AS skey,
+                AVG(sr.temp_c) AS avg_tc,
+                AVG(sr.humidity) AS avg_rh,
+                COALESCE(s.hidden_metrics, '[]') AS hidden_metrics
             FROM sensor_readings sr
             JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
             WHERE {' AND '.join(clauses)}
-            ORDER BY sr.timestamp ASC;
+            GROUP BY b_ep, skey
+            HAVING b_ep IS NOT NULL
+            ORDER BY b_ep ASC;
             """,
             params,
         ).fetchall()
@@ -2471,38 +2494,28 @@ class WeatherDatabase:
         if not rows:
             return []
 
-        # Group by (bucket_epoch, sensor_key)
-        buckets: dict[int, dict[str, dict[str, list[float]]]] = {}
+        buckets: dict[int, list[dict[str, Any]]] = {}
         hidden_cache: dict[str, set[str]] = {}
         for r in rows:
-            dt = parse_utc_iso(r["timestamp"])
-            if dt is None:
-                continue
             skey = str(r["skey"])
             if skey not in hidden_cache:
                 hidden_cache[skey] = set(_parse_hidden_metrics(r["hidden_metrics"]))
             hidden = hidden_cache[skey]
-            if "temperature" in hidden:
+            if "temperature" in hidden or r["avg_tc"] is None:
                 continue
-
-            b_ep = (int(dt.timestamp()) // bucket_sec) * bucket_sec
-            b_map = buckets.setdefault(b_ep, {})
-            s_acc = b_map.setdefault(skey, {"tc": [], "rh": []})
-            s_acc["tc"].append(float(r["temp_c"]))
-            if r["humidity"] is not None and "humidity" not in hidden:
-                s_acc["rh"].append(float(r["humidity"]))
+            b_ep = int(r["b_ep"])
+            med_rh = float(r["avg_rh"]) if (r["avg_rh"] is not None and "humidity" not in hidden) else None
+            buckets.setdefault(b_ep, []).append(
+                {
+                    "sensor_key": skey,
+                    "temp_c": float(r["avg_tc"]),
+                    "rh": med_rh,
+                }
+            )
 
         series: list[dict[str, Any]] = []
         for b_ep in sorted(buckets.keys()):
-            b_map = buckets[b_ep]
-            samples: list[dict[str, Any]] = []
-            for skey, s_acc in b_map.items():
-                if not s_acc["tc"]:
-                    continue
-                med_tc = float(statistics.median(s_acc["tc"]))
-                med_rh = float(statistics.median(s_acc["rh"])) if s_acc["rh"] else None
-                samples.append({"sensor_key": skey, "temp_c": med_tc, "rh": med_rh})
-
+            samples = buckets[b_ep]
             if not samples:
                 continue
 
@@ -3293,7 +3306,11 @@ class WeatherDatabase:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def _query_period_records(self, cutoff_iso: Optional[str]) -> dict[str, Any]:
+    def _query_period_records(
+        self,
+        cutoff_iso: Optional[str],
+        ens_series: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
         """Compute High/Low extremes and rain total for a UTC window across trusted outdoor stations + reference backfill."""
         if self._conn is None:
             return {}
@@ -3359,7 +3376,11 @@ class WeatherDatabase:
         ).fetchall()
         local_rain_mm = max([max(0.0, float(r["delta_mm"] or 0.0)) for r in rain_rows], default=0.0)
 
-        loc_ens_series = self._compute_15m_ensemble_series_locked(cutoff_iso=cutoff_iso, bucket_minutes=15)
+        loc_ens_series = (
+            [b for b in ens_series if (not cutoff_iso or b["timestamp"] >= cutoff_iso)]
+            if ens_series is not None
+            else self._compute_15m_ensemble_series_locked(cutoff_iso=cutoff_iso, bucket_minutes=15)
+        )
         loc_ens_tcs = [float(b["temp_c"]) for b in loc_ens_series if b.get("temp_c") is not None]
         if loc_ens_tcs:
             loc_min_tc = min(loc_ens_tcs)
@@ -3439,12 +3460,13 @@ class WeatherDatabase:
         year_iso = format_utc_z(year_start_local)
 
         with self._lock:
+            all_ens_series = self._compute_15m_ensemble_series_locked(cutoff_iso=None, bucket_minutes=15)
             return {
-                "today": self._query_period_records(today_iso),
-                "week": self._query_period_records(week_iso),
-                "month": self._query_period_records(month_iso),
-                "year": self._query_period_records(year_iso),
-                "all_time": self._query_period_records(None),
+                "today": self._query_period_records(today_iso, ens_series=all_ens_series),
+                "week": self._query_period_records(week_iso, ens_series=all_ens_series),
+                "month": self._query_period_records(month_iso, ens_series=all_ens_series),
+                "year": self._query_period_records(year_iso, ens_series=all_ens_series),
+                "all_time": self._query_period_records(None, ens_series=all_ens_series),
             }
 
     def get_lightning_telemetry(self) -> dict[str, Any]:
@@ -4318,8 +4340,6 @@ class WeatherDatabase:
         now_utc = datetime.now(timezone.utc)
         coords = self.get_location_coordinates()
 
-        # 1. Auto-heal trusted sensors on the fly if needed
-        self._auto_heal_trusted_sensors()
         sensors = self.get_all_sensors()
 
         cutoff_30m = now_utc - timedelta(minutes=30)
@@ -4548,6 +4568,8 @@ class WeatherDatabase:
         today_baro_high_inhg: Optional[float] = None
         wind_10m_avg_mph: Optional[float] = wind_avg_mph
         wind_15m_bearings: list[float] = list(out_wind_dirs)
+        wind_24h_deg: Optional[float] = wind_dir_deg
+        wind_24h_cardinal: Optional[str] = wind_cardinal
         sparkline_24h_f: list[float] = []
         sparkline_dew_24h_f: list[float] = []
         sparkline_in_24h_f: list[float] = []
@@ -4630,13 +4652,16 @@ class WeatherDatabase:
                     elif rain_30m_mm > 0.0:
                         rain_rate_mm_h = rain_30m_mm * 2.0
 
-                # Outdoor Today High/Low & timestamps from Solar-Filtered 15-Minute Ensemble Medians
+                # Outdoor Today High/Low + 24h Sparkline from ONE SQL-grouped 15-Minute Ensemble scan
+                cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
                 if outdoor_keys:
-                    today_ens = self._compute_15m_ensemble_series_locked(
-                        cutoff_iso=cutoff_today,
+                    earliest_ens_cutoff = min(cutoff_today, cutoff_spark)
+                    ens_series_combined = self._compute_15m_ensemble_series_locked(
+                        cutoff_iso=earliest_ens_cutoff,
                         bucket_minutes=15,
                         outdoor_keys=outdoor_keys,
                     )
+                    today_ens = [b for b in ens_series_combined if b["timestamp"] >= cutoff_today]
                     if today_ens:
                         min_b = min(today_ens, key=lambda b: float(b["temp_c"]))
                         max_b = max(today_ens, key=lambda b: float(b["temp_c"]))
@@ -4644,6 +4669,20 @@ class WeatherDatabase:
                         today_out_low_ts = str(min_b["timestamp"])
                         today_out_high_f = round((float(max_b["temp_c"]) * 9.0 / 5.0) + 32.0, 1)
                         today_out_high_ts = str(max_b["timestamp"])
+
+                    spark_ens = [b for b in ens_series_combined if b["timestamp"] >= cutoff_spark]
+                    sparkline_24h_f = [
+                        round(float(b["temp_f"]), 1)
+                        for b in spark_ens
+                        if b.get("temp_f") is not None
+                    ]
+                    sparkline_dew_24h_f = [
+                        round(float(b["dew_f"]), 1)
+                        if b.get("dew_f") is not None
+                        else round(float(b["temp_f"]) - 8.0, 1)
+                        for b in spark_ens
+                        if b.get("temp_f") is not None
+                    ]
 
                 # If local outdoor sensor extremes for today are not yet populated, fallback to reference weather for today
                 if today_out_low_f is None or today_out_high_f is None:
@@ -4663,27 +4702,6 @@ class WeatherDatabase:
                         if today_out_high_f is None and ref_ext["max_tc"] is not None:
                             today_out_high_f = round((float(ref_ext["max_tc"]) * 9.0 / 5.0) + 32.0, 1)
                             today_out_high_ts = str(ref_ext["max_ts"])
-
-                # 24h Solar-Filtered 15m Ensemble Sparkline for Outdoor Hero Card (Temperature & Dew Point)
-                cutoff_spark = format_utc_z(now_utc - timedelta(hours=24))
-                if outdoor_keys:
-                    spark_ens = self._compute_15m_ensemble_series_locked(
-                        cutoff_iso=cutoff_spark,
-                        bucket_minutes=15,
-                        outdoor_keys=outdoor_keys,
-                    )
-                    sparkline_24h_f = [
-                        round(float(b["temp_f"]), 1)
-                        for b in spark_ens
-                        if b.get("temp_f") is not None
-                    ]
-                    sparkline_dew_24h_f = [
-                        round(float(b["dew_f"]), 1)
-                        if b.get("dew_f") is not None
-                        else round(float(b["temp_f"]) - 8.0, 1)
-                        for b in spark_ens
-                        if b.get("temp_f") is not None
-                    ]
 
                 if not sparkline_24h_f:
                     ref_sparks = self._conn.execute(
@@ -4771,6 +4789,23 @@ class WeatherDatabase:
                     ).fetchall()
                     if rows_w_15m:
                         wind_15m_bearings = [float(r["wind_dir_deg"]) for r in rows_w_15m]
+
+                    cutoff_24h_w = format_utc_z(now_utc - timedelta(hours=24))
+                    rows_w_24h = self._conn.execute(
+                        f"""
+                        SELECT wind_dir_deg FROM sensor_readings
+                        WHERE timestamp >= ? AND wind_dir_deg IS NOT NULL
+                          AND COALESCE(sensor_key, model || '_' || sensor_id) IN ({ph_wk})
+                        ORDER BY timestamp DESC LIMIT 500;
+                        """,
+                        [cutoff_24h_w, *wind_keys],
+                    ).fetchall()
+                    if rows_w_24h:
+                        sin_24 = sum(math.sin(math.radians(float(r["wind_dir_deg"]))) for r in rows_w_24h)
+                        cos_24 = sum(math.cos(math.radians(float(r["wind_dir_deg"]))) for r in rows_w_24h)
+                        if abs(sin_24) > 1e-6 or abs(cos_24) > 1e-6:
+                            wind_24h_deg = round(math.degrees(math.atan2(sin_24, cos_24)) % 360.0, 0)
+                            wind_24h_cardinal = _deg_to_cardinal(wind_24h_deg)
 
                 # Indoor Today High/Low & 1h delta + 24h Sparkline
                 if indoor_temp_keys:
@@ -5061,23 +5096,30 @@ class WeatherDatabase:
             )
 
         baro_forecast = baro.get("forecast_24h") or ""
+        p_inhg_now = baro.get("pressure_inhg")
+        d3_now = baro.get("delta_3h_inhg") or 0.0
         if rain_30m_mm > 0.0:
             nowcast_summary = (
-                f"Active rain detected ({rain_30m_mm / 25.4:.2f} in over last 30 min). "
-                f"{baro_forecast}"
+                f"Active rainfall detected ({rain_30m_mm / 25.4:.2f} in / 30 min) — "
+                f"wet conditions continuing into tonight."
             )
         elif dew_spread_f is not None and dew_spread_f <= 3.5 and (mean_rh or 0) >= 85.0:
             nowcast_summary = (
-                f"High humidity ({mean_rh:.0f}% RH) with a narrow ~{dew_spread_f:.1f}°F dew spread "
-                f"— mist or surface dew likely. {baro_forecast}"
+                "High humidity and a narrow dew spread tonight — expect surface mist or radiation fog."
             )
         elif nowcast_clauses:
-            nowcast_summary = f"{'; '.join(nowcast_clauses)}. {baro_forecast}"
+            nowcast_summary = f"{'; '.join(nowcast_clauses)}. {baro_forecast}".strip()
         elif mean_temp_f is not None:
-            ds_str = f"~{dew_spread_f:.1f}°F" if dew_spread_f is not None else "--°F"
-            nowcast_summary = (
-                f"Steady temperature across {len(outdoor_sensors)} sensors, with a {ds_str} dew spread. {baro_forecast}"
-            )
+            if d3_now <= -0.02 or (dew_spread_f is not None and dew_spread_f <= 5.0):
+                nowcast_summary = "Falling pressure & narrowing dew spread — cloud cover increasing tonight."
+            elif p_inhg_now is not None and p_inhg_now >= 30.02 and d3_now >= -0.015:
+                nowcast_summary = "High pressure holding steady — expect clear, dry conditions over the next 12 hours."
+            elif d3_now >= 0.03:
+                nowcast_summary = "Rising barometric pressure — clearing skies and drier air settling in over the next 12 hours."
+            elif p_inhg_now is not None and p_inhg_now <= 29.85:
+                nowcast_summary = "Low pressure persisting — expect mostly cloudy skies with scattered shower potential."
+            else:
+                nowcast_summary = baro_forecast or "Settled conditions — little weather change expected over the next 12 hours."
         else:
             nowcast_summary = (
                 "No Outdoor trusted sensors configured yet. Open '3. Sensors Manager' and set your station(s) "
@@ -5125,6 +5167,8 @@ class WeatherDatabase:
             "wind_dir_deg": wind_dir_deg,
             "wind_cardinal": wind_cardinal,
             "wind_15m_bearings": wind_15m_bearings,
+            "wind_24h_deg": wind_24h_deg,
+            "wind_24h_cardinal": wind_24h_cardinal,
             "rain_24h_in": rain_24h_in,
             "rain_24h_mm": round(rain_24h_mm, 1),
             "rain_today_in": rain_today_in,

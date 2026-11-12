@@ -933,6 +933,16 @@ header.topbar,
   box-sizing: border-box;
 }
 
+.main-content:has(#view-calendar.active) {
+  max-width: 1768px;
+}
+
+body.modal-open {
+  overflow: hidden !important;
+  overscroll-behavior-y: none !important;
+  touch-action: pan-y;
+}
+
 .nav-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1065,9 +1075,10 @@ header.topbar,
   grid-template-columns: 1.85fr 1fr;
   gap: 18px;
   margin-bottom: 18px;
+  align-items: stretch;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1100px) {
   .overview-top-grid {
     grid-template-columns: 1fr;
   }
@@ -1196,6 +1207,10 @@ header.topbar,
 
 .mini-radar-card {
   padding: 14px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .mini-radar-header {
@@ -1241,12 +1256,21 @@ header.topbar,
 }
 
 .mini-radar-map {
-  height: 175px;
+  flex: 1;
+  min-height: 260px;
+  height: 100%;
   width: 100%;
   border-radius: 8px;
   border: 1px solid var(--border-color);
   background-color: #090d16;
   overflow: hidden;
+}
+
+@media (max-width: 1100px) {
+  .mini-radar-map {
+    min-height: 220px;
+    height: 220px;
+  }
 }
 
 /* Clean dark-mode filter applied strictly to Leaflet basemap tiles (zero API key) */
@@ -1355,9 +1379,9 @@ header.topbar,
 /* 2. Vertical Barometric Pressure Tower Gauge (Side-by-Side) */
 .baro-tower-layout {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 144px 1fr;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   height: 100%;
 }
 
@@ -1384,6 +1408,11 @@ header.topbar,
   letter-spacing: -0.01em;
 }
 
+.baro-extremes-val {
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+
 .baro-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1391,8 +1420,8 @@ header.topbar,
 }
 
 .baro-tower-svg-wrap {
-  width: 120px;
-  height: 165px;
+  width: 144px;
+  height: 235px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1400,17 +1429,17 @@ header.topbar,
 }
 
 .baro-tower-svg {
-  width: 120px;
-  height: 165px;
+  width: 144px;
+  height: 235px;
   overflow: visible;
 }
 
 /* 3. Graduated Rain Cylinder + Compact Records Grid (Side-by-Side) */
 .rain-gauge-layout {
   display: grid;
-  grid-template-columns: 88px 1fr;
+  grid-template-columns: 106px 1fr;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   height: 100%;
 }
 
@@ -1444,8 +1473,8 @@ header.topbar,
 }
 
 .rain-cylinder-wrap {
-  width: 88px;
-  height: 165px;
+  width: 106px;
+  height: 235px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1453,8 +1482,8 @@ header.topbar,
 }
 
 .rain-cylinder-svg {
-  width: 88px;
-  height: 165px;
+  width: 106px;
+  height: 235px;
   overflow: visible;
 }
 
@@ -2041,7 +2070,8 @@ header.topbar,
 .overview-side-stack {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
+  height: 100%;
 }
 
 .indoor-metrics-row {
@@ -2093,12 +2123,18 @@ header.topbar,
 
 .ensemble-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   align-items: stretch;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 1199px) {
+  .ensemble-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
   .ensemble-kpi-grid {
     grid-template-columns: 1fr;
   }
@@ -2182,7 +2218,7 @@ header.topbar,
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   height: 100%;
 }
 
@@ -2191,9 +2227,11 @@ header.topbar,
   background: rgba(15, 23, 42, 0.65);
   border: 1px solid rgba(51, 65, 85, 0.65);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
+  flex: 1;
   gap: 8px;
 }
 
@@ -2256,7 +2294,8 @@ header.topbar,
 }
 
 .uv-seg {
-  padding: 3px 2px;
+  padding: 5px 2px;
+  font-size: 12px;
   color: #090d16;
   white-space: nowrap;
 }
@@ -2297,8 +2336,8 @@ header.topbar,
 
 .lux-spectrum-bar {
   position: relative;
-  height: 12px;
-  border-radius: 6px;
+  height: 14px;
+  border-radius: 7px;
   background: linear-gradient(90deg, #090d16 0%, #1e1b4b 18%, #334155 38%, #38bdf8 68%, #fde047 100%);
   border: 1px solid #475569;
 }
@@ -2307,8 +2346,8 @@ header.topbar,
   position: absolute;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: #0f172a;
   border: 2px solid #facc15;
@@ -2324,7 +2363,7 @@ header.topbar,
   display: flex;
   justify-content: space-between;
   font-family: var(--font-sans);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: #cbd5e1;
 }
@@ -2388,11 +2427,24 @@ header.topbar,
   height: 100%;
 }
 
+.lt-noise-caption {
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: center;
+  line-height: 1.2;
+}
+
 .lightning-card-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+}
+
+.lightning-card-actions .btn-mini {
+  width: 100%;
+  justify-content: center;
+  text-align: center;
 }
 
 @keyframes strike-ring-pulse {
@@ -2911,6 +2963,7 @@ input[type="text"]:focus {
   justify-content: center;
   padding: 16px;
   z-index: 1100;
+  overscroll-behavior: contain !important;
 }
 
 #setup-password-backdrop,
@@ -2926,6 +2979,7 @@ input[type="text"]:focus {
   max-width: 540px;
   padding: 20px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.55);
+  overscroll-behavior: contain !important;
 }
 
 .modal-header {
@@ -3473,6 +3527,13 @@ input[type="text"]:focus {
 /* ==========================================================================
    VIEW 6: INTERACTIVE WEATHER CALENDAR (PAST, PRESENT & FUTURE + COMBO RIBBONS)
    ========================================================================== */
+#view-calendar,
+.calendar-wrapper {
+  max-width: 1720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 .calendar-header-card {
   margin-bottom: 16px;
   display: flex;
@@ -3600,8 +3661,8 @@ input[type="text"]:focus {
 
 .calendar-weekdays-header {
   display: grid;
-  grid-template-columns: repeat(7, minmax(112px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
   margin-bottom: 8px;
 }
 
@@ -3622,7 +3683,7 @@ input[type="text"]:focus {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-width: 784px;
+  min-width: 720px;
 }
 
 .calendar-week-block {
@@ -3642,8 +3703,8 @@ input[type="text"]:focus {
 /* Spanning Consecutive Weather Combo Highlight Ribbons */
 .calendar-combo-track {
   display: grid;
-  grid-template-columns: repeat(7, minmax(112px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
   min-height: 22px;
   align-items: center;
 }
@@ -3704,8 +3765,8 @@ input[type="text"]:focus {
 
 .calendar-week-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(112px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .calendar-day-cell,
@@ -3984,10 +4045,46 @@ input[type="text"]:focus {
   box-sizing: border-box;
 }
 
-/* Weather Calendar Desktop Weekday Prefix Suppression */
+/* Weather Calendar Desktop Weekday Prefix Suppression & Spacious >1024px Sizing */
 @media (min-width: 769px) {
   .cal-day-weekday {
     display: none !important;
+  }
+}
+
+@media (min-width: 1025px) {
+  .calendar-day-cell,
+  .cal-day-cell,
+  #view-calendar .calendar-day-cell,
+  #view-calendar .cal-day-cell {
+    min-height: 145px !important;
+    padding: 12px 14px !important;
+  }
+
+  .cal-day-num,
+  #view-calendar .cal-day-num {
+    font-size: 1.15rem !important;
+  }
+
+  .cal-day-icon-wrap,
+  .cal-day-icon,
+  #view-calendar .cal-day-icon-wrap,
+  #view-calendar .cal-day-icon,
+  .cal-day-icon-wrap svg,
+  .cal-day-icon svg,
+  #view-calendar .cal-day-icon-wrap svg,
+  #view-calendar .cal-day-icon svg {
+    width: 50px !important;
+    height: 50px !important;
+    min-width: 50px !important;
+    min-height: 50px !important;
+  }
+
+  .cal-temp-high,
+  .cal-temp-low,
+  #view-calendar .cal-temp-high,
+  #view-calendar .cal-temp-low {
+    font-size: 1.1rem !important;
   }
 }
 
@@ -4085,18 +4182,72 @@ input[type="text"]:focus {
 .calendar-day-modal-card {
   max-width: 840px;
   width: 95%;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
   background: #0b1120;
   border: 1px solid #1e293b;
   border-radius: 14px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  overscroll-behavior: contain !important;
 }
 
 .cal-modal-header {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  padding: 18px 20px 14px 20px;
+  gap: 12px;
+  padding: 16px 20px 14px 20px;
+  margin-bottom: 0;
+  background: #0f172a;
   border-bottom: 1px solid #1e293b;
+}
+
+#btn-close-cal-modal {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: rgba(30, 41, 59, 0.85);
+  color: #f8fafc;
+  font-size: 24px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+#btn-close-cal-modal:hover {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+}
+
+.calendar-day-modal-card .modal-footer {
+  flex-shrink: 0;
+  border-top: 1px solid #1e293b;
+  padding: 10px 16px;
+  background: #0f172a;
+  gap: 12px;
+}
+
+@media (max-width: 600px) {
+  .calendar-day-modal-card .modal-footer {
+    justify-content: flex-end;
+  }
+  #cal-modal-footer-note {
+    display: none;
+  }
+  #btn-dismiss-cal-modal {
+    width: 100%;
+    padding: 10px 16px;
+    font-size: 0.95rem;
+  }
 }
 
 .cal-modal-title-row {
@@ -4167,12 +4318,14 @@ input[type="text"]:focus {
 }
 
 .cal-modal-body {
-  padding: 16px 20px;
+  flex: 1;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: 72vh;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain !important;
 }
 
 /* 6-Card Mini-Dashboard Summary Grid */
@@ -5277,13 +5430,13 @@ input[type="password"]:focus {
   }
   .baro-tower-svg-wrap,
   .baro-tower-svg {
-    width: 125px !important;
-    height: 165px !important;
+    width: 138px !important;
+    height: 205px !important;
   }
   .rain-cylinder-wrap,
   .rain-cylinder-svg {
-    width: 92px !important;
-    height: 165px !important;
+    width: 102px !important;
+    height: 205px !important;
   }
   .rh-gauge-col,
   .rh-gauge-wrap,

@@ -1,4 +1,4 @@
-"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.29)."""
+"""Multi-Factor Short-Term Nowcast Engine (1-24h), 365-Day Historical Learning, and Seasonal Climatology for SkyScry (v0.0.33)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import statistics
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -51,6 +52,67 @@ class ClimatologyEngine:
         self._multi_model_cache: dict[str, dict[str, Any]] = {}
         self._multi_model_cache_ts: float = 0.0
         self._multi_model_coords: tuple[float, float] = (0.0, 0.0)
+        self._last_daily_sync_ts: float = 0.0
+        self._bg_lock = threading.Lock()
+        self._bg_refresh_inflight: set[str] = set()
+        self._bg_last_refresh_ts: dict[str, float] = {}
+
+    def invalidate_caches(self) -> None:
+        """Reset daily-summary sync cooldown so subsequent queries reflect recent user edits."""
+        self._last_daily_sync_ts = 0.0
+
+    def _ensure_daily_summaries_fresh(self, days_back_cold: int = 45, days_back_warm: int = 3, ttl_sec: float = 120.0) -> None:
+        """Throttle heavy daily_summaries rollups across rapid tab switches while keeping today's window fresh."""
+        now_mono = time.monotonic()
+        if self._last_daily_sync_ts == 0.0:
+            self.db.sync_daily_summaries(days_back=days_back_cold)
+            self._last_daily_sync_ts = now_mono
+        elif (now_mono - self._last_daily_sync_ts) >= ttl_sec:
+            self.db.sync_daily_summaries(days_back=days_back_warm)
+            self._last_daily_sync_ts = now_mono
+
+    def refresh_external_models_async(
+        self,
+        lat: float,
+        lon: float,
+        nws_service: Optional[Any] = None,
+        cooldown_sec: float = 300.0,
+    ) -> None:
+        """Trigger non-blocking background refresh of external NWS and Open-Meteo (HRRR/GFS/ECMWF/16d) caches."""
+        has_coords = abs(lat) > 0.001 or abs(lon) > 0.001
+        if not has_coords and nws_service is None:
+            return
+        key = f"ext:{lat:.2f}:{lon:.2f}"
+        now_mono = time.monotonic()
+        with self._bg_lock:
+            if key in self._bg_refresh_inflight:
+                return
+            if (now_mono - self._bg_last_refresh_ts.get(key, 0.0)) < cooldown_sec:
+                return
+            self._bg_refresh_inflight.add(key)
+
+        def _worker() -> None:
+            try:
+                if nws_service is not None:
+                    try:
+                        nws_service.fetch_nws_corroboration(force_refresh=False)
+                    except Exception:
+                        pass
+                if has_coords:
+                    try:
+                        self._fetch_open_meteo_multi_models(lat, lon)
+                    except Exception:
+                        pass
+                    try:
+                        self._fetch_open_meteo_16d_daily(lat, lon)
+                    except Exception:
+                        pass
+            finally:
+                with self._bg_lock:
+                    self._bg_refresh_inflight.discard(key)
+                    self._bg_last_refresh_ts[key] = time.monotonic()
+
+        threading.Thread(target=_worker, daemon=True, name="skyscry-ext-models-bg").start()
 
     def sync_historical_year_model(
         self,
@@ -657,7 +719,7 @@ class ClimatologyEngine:
 
     def get_climatology_report(self) -> dict[str, Any]:
         """Compile long-term weekly, monthly, and seasonal insights + Weather-Display Records Summary Table."""
-        self.db.sync_daily_summaries()
+        self._ensure_daily_summaries_fresh(days_back_cold=90, days_back_warm=7, ttl_sec=120.0)
         daily_rows = self.db.get_daily_summaries(limit=365)
         records_table = self.db.get_records_summary_table()
 
@@ -1214,9 +1276,9 @@ class ClimatologyEngine:
         grid_end_str = all_grid_dates[-1].isoformat()
         first_weekday_offset = (all_grid_dates[0].weekday() + 1) % 7  # 0=Sun, 1=Mon, ..., 6=Sat
 
-        # Sync recent daily_summaries so Today & recent days are fresh
+        # Sync recent daily_summaries (throttled so tab switches stay instant)
         try:
-            self.db.sync_daily_summaries(days_back=45)
+            self._ensure_daily_summaries_fresh(days_back_cold=45, days_back_warm=3, ttl_sec=120.0)
         except Exception as exc:
             logger.debug("Calendar sync_daily_summaries warning: %s", exc)
 
@@ -1224,14 +1286,27 @@ class ClimatologyEngine:
         lat = float(coords.get("latitude") or 0.0)
         lon = float(coords.get("longitude") or 0.0)
 
-        # Ensure 365-day learned model is populated if coordinates exist
+        # Ensure 365-day learned model is populated asynchronously if missing so calendar never blocks
         learned_model = self.db.get_learned_weather_model()
         if not learned_model and (abs(lat) > 0.001 or abs(lon) > 0.001):
-            try:
-                self.sync_historical_year_model(lat=lat, lon=lon, timeout=6.0)
-                learned_model = self.db.get_learned_weather_model()
-            except Exception:
-                pass
+            with self._bg_lock:
+                if "year_model" not in self._bg_refresh_inflight:
+                    self._bg_refresh_inflight.add("year_model")
+                    def _bg_year_model() -> None:
+                        try:
+                            self.sync_historical_year_model(lat=lat, lon=lon, timeout=6.0)
+                        except Exception:
+                            pass
+                        finally:
+                            with self._bg_lock:
+                                self._bg_refresh_inflight.discard("year_model")
+                    threading.Thread(target=_bg_year_model, daemon=True, name="skyscry-year-model-bg").start()
+
+        # Compute UTC timestamp bounds (+/- 1 day buffer) so SQLite uses idx_sr_timestamp & idx_ls_confirmed_ts
+        utc_start_dt = (datetime(target_year, target_month, 1) - timedelta(days=1)).astimezone(timezone.utc)
+        utc_end_dt = (datetime(target_year, target_month, num_days, 23, 59, 59) + timedelta(days=1)).astimezone(timezone.utc)
+        utc_start_iso = utc_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        utc_end_iso = utc_end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # 1. Query SQLite `daily_summaries` + `sensor_readings` + `lightning_strikes` + `weather_alerts` for `[grid_start_str, grid_end_str]`
         summaries_by_date: dict[str, dict[str, Any]] = {}
@@ -1264,12 +1339,13 @@ class ClimatologyEngine:
                         MAX(sr.lux) AS max_lux
                     FROM sensor_readings sr
                     JOIN sensors s ON s.sensor_key = COALESCE(sr.sensor_key, sr.model || '_' || sr.sensor_id)
-                    WHERE DATE(sr.timestamp, 'localtime') BETWEEN ? AND ?
+                    WHERE sr.timestamp BETWEEN ? AND ?
+                      AND DATE(sr.timestamp, 'localtime') BETWEEN ? AND ?
                       AND s.is_trusted = 1
                       AND s.location_type = 'outdoor'
                     GROUP BY DATE(sr.timestamp, 'localtime');
                     """,
-                    (grid_start_str, grid_end_str),
+                    (utc_start_iso, utc_end_iso, grid_start_str, grid_end_str),
                 ).fetchall()
                 for r in rows_rf:
                     rf_extra_by_date[str(r["date_str"])] = dict(r)
@@ -1280,12 +1356,13 @@ class ClimatologyEngine:
                         DATE(timestamp, 'localtime') AS date_str,
                         SUM(COALESCE(delta_strikes, 1)) AS total_strikes
                     FROM lightning_strikes
-                    WHERE DATE(timestamp, 'localtime') BETWEEN ? AND ?
+                    WHERE COALESCE(confirmed, 1) = 1
+                      AND timestamp BETWEEN ? AND ?
+                      AND DATE(timestamp, 'localtime') BETWEEN ? AND ?
                       AND COALESCE(rfi, 0) = 0
-                      AND COALESCE(confirmed, 1) = 1
                     GROUP BY DATE(timestamp, 'localtime');
                     """,
-                    (grid_start_str, grid_end_str),
+                    (utc_start_iso, utc_end_iso, grid_start_str, grid_end_str),
                 ).fetchall()
                 for r in rows_lt:
                     strikes_by_date[str(r["date_str"])] = int(r["total_strikes"] or 0)

@@ -1,5 +1,5 @@
 /**
- * SkyScry v0.0.32 — 7-View Frontend Controller
+ * SkyScry v0.0.33 — 7-View Frontend Controller
  * - Ultra-Clean Sticky Header & Floating System Status Popover Card
  * - Slide-Out Hamburger Navigation Drawer (300px) with Sectioned Views & Telemetry
  * - View 1: Overview Dashboard with AcuRite & Weather-Display SVG Gauges & 2x2 Stat Grids,
@@ -204,6 +204,7 @@
   const elOvWindGustTime = document.getElementById("ov-wind-gust-time");
   const elOvWindAvg10m = document.getElementById("ov-wind-avg-10m");
   const elOvWindBearing = document.getElementById("ov-wind-bearing");
+  const elOvWindPrevailing = document.getElementById("ov-wind-prevailing");
   const elCompassNeedle = document.getElementById("compass-needle-group");
   const elWindGlowRing = document.getElementById("wind-speed-glow-ring");
   const elWindVarianceWedge = document.getElementById("wind-variance-wedge");
@@ -221,6 +222,7 @@
   const elOvBaroSource = document.getElementById("ov-baro-source");
   const elBaroMercuryFill = document.getElementById("baro-mercury-fill");
   const elBaroTowerPointer = document.getElementById("baro-tower-pointer");
+  const elBaroPointerTag = document.getElementById("baro-pointer-tag");
 
   // Rain Cylinder & Records DOM
   const elOvRain24h = document.getElementById("ov-rain-24h");
@@ -271,6 +273,7 @@
   const elBtnOvSimulateStrike = document.getElementById("btn-ov-simulate-strike");
   const elBtnOvClearStrikes = document.getElementById("btn-clear-strikes") || document.getElementById("btn-ov-clear-strikes");
   const elOvLightningNoiseBadge = document.getElementById("ov-lightning-noise-badge");
+  const elOvLtNoiseCaption = document.getElementById("ov-lt-noise-caption");
 
   // Inline Ground-Truth Check-In Bar DOM
   const elOvCheckinBar = document.getElementById("ov-checkin-bar");
@@ -1165,7 +1168,7 @@
       let textX = tickX;
 
       if (k === 0) {
-        label = `24h ago (${hour12})`;
+        label = hour12;
         anchor = "start";
         textX = padLeft;
       } else if (k === 4) {
@@ -1536,7 +1539,7 @@
       elPopoverLastSync.textContent = new Date().toTimeString().split(" ")[0];
     }
     if (elPopoverAppVersion) {
-      elPopoverAppVersion.textContent = `v${data.version || "0.0.32"}`;
+      elPopoverAppVersion.textContent = `v${data.version || "0.0.33"}`;
     }
     if (elPopoverGitCommit) {
       elPopoverGitCommit.textContent = data.git_commit ? `git:${data.git_commit.slice(0, 7)}` : "git:local";
@@ -1732,9 +1735,11 @@
 
     if (elOvOutSpread) {
       if (out.temp_min_f !== null && out.temp_max_f !== null && out.sensor_count > 1) {
-        elOvOutSpread.innerHTML = `Outdoor average across ${out.sensor_count} sensors | Range: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
+        elOvOutSpread.innerHTML = `Sensor range: ${Number(out.temp_min_f).toFixed(1)}&deg;F &ndash; ${Number(out.temp_max_f).toFixed(1)}&deg;F`;
+      } else if (out.temp_min_f !== null && out.temp_max_f !== null) {
+        elOvOutSpread.innerHTML = `Sensor range: ${Number(out.temp_min_f).toFixed(1)}&deg;F`;
       } else {
-        elOvOutSpread.textContent = `Outdoor average across ${out.sensor_count ?? 0} sensor(s)`;
+        elOvOutSpread.textContent = "Sensor range: --.-°F – --.-°F";
       }
     }
 
@@ -1957,6 +1962,18 @@
     const windDeg =
       out.wind_dir_deg !== null && out.wind_dir_deg !== undefined ? Number(out.wind_dir_deg) : 0;
 
+  function getBeaufortLabel(windMph) {
+    const w = Number(windMph || 0);
+    if (w < 1) return "Calm";
+    if (w < 4) return "Light Air";
+    if (w < 8) return "Light Breeze";
+    if (w < 13) return "Gentle Breeze";
+    if (w < 19) return "Moderate Breeze";
+    if (w < 25) return "Fresh Breeze";
+    if (w < 32) return "Strong Breeze";
+    return "Gale";
+  }
+
     if (elOvWindSpeed) {
       elOvWindSpeed.textContent = windMph.toFixed(1);
     }
@@ -1964,7 +1981,7 @@
       elOvWindSpeedFlank.textContent = formatWindSpeed(windMph);
     }
     if (elOvWindBearingFlank) {
-      elOvWindBearingFlank.textContent = `${windDeg.toFixed(0)}° ${windCard}`;
+      elOvWindBearingFlank.textContent = "Live speed";
     }
     if (elOvWindGust) {
       elOvWindGust.textContent = formatWindSpeed(windPeakToday);
@@ -1978,10 +1995,14 @@
       elOvWindAvg10m.textContent = formatWindSpeed(wind10mAvg);
     }
     if (elOvWindBearing) {
-      elOvWindBearing.textContent = `${windDeg.toFixed(0)}° ${windCard}`;
+      elOvWindBearing.textContent = getBeaufortLabel(windMph);
     }
     if (elOvWindBearingVal) {
-      elOvWindBearingVal.textContent = `${windDeg.toFixed(0)}° ${windCard}`;
+      elOvWindBearingVal.textContent = `${windCard} (${windDeg.toFixed(0)}°)`;
+    }
+    if (elOvWindPrevailing) {
+      const prevCard = out.wind_24h_cardinal || windCard;
+      elOvWindPrevailing.textContent = `24h Prevailing: ${prevCard}`;
     }
     if (elWindDialCardinal) elWindDialCardinal.textContent = windCard;
     if (elWindDialSpeed) elWindDialSpeed.textContent = `${windMph.toFixed(1)} mph`;
@@ -2000,7 +2021,7 @@
     }
     updateWindVarianceWedge(out.wind_15m_bearings, windDeg);
 
-    // Vertical Barometer Tower Gauge (29.20 inHg bottom [y=150] to 30.50 inHg top [y=18])
+    // Vertical Barometer Tower Gauge (29.20 inHg bottom [y=208] to 30.50 inHg top [y=20])
     if (baro.pressure_inhg !== null && baro.pressure_inhg !== undefined) {
       const pInhg = Number(baro.pressure_inhg);
       const pHpa = Number(baro.pressure_hpa || pInhg * 33.8639);
@@ -2025,26 +2046,29 @@
       const bHigh = bExt.high ?? out.today_baro_high_inhg;
       if (elOvBaroExtremes) {
         if (bLow !== null && bHigh !== null && bLow !== undefined) {
-          elOvBaroExtremes.textContent = `${Number(bLow).toFixed(2)} / ${Number(bHigh).toFixed(2)}`;
+          elOvBaroExtremes.textContent = `${Number(bLow).toFixed(2)} – ${Number(bHigh).toFixed(2)}`;
         } else {
-          elOvBaroExtremes.textContent = `${(pInhg - 0.08).toFixed(2)} / ${(pInhg + 0.08).toFixed(2)}`;
+          elOvBaroExtremes.textContent = `${(pInhg - 0.08).toFixed(2)} – ${(pInhg + 0.08).toFixed(2)}`;
         }
       }
       if (elOvBaroSource) {
         elOvBaroSource.textContent = "";
       }
 
-      // Scale 29.20 -> 30.50 inHg into SVG y=[150..18], height=[0..132]
+      // Scale 29.20 -> 30.50 inHg into SVG y=[208..20], span=188, bottom=214
       const clampedP = Math.max(29.2, Math.min(30.5, pInhg));
       const ratio = (clampedP - 29.2) / 1.3;
-      const fillY = 150 - ratio * 132;
-      const fillH = Math.max(6, 156 - fillY);
+      const fillY = 208 - ratio * 188;
+      const fillH = Math.max(6, 214 - fillY);
       if (elBaroMercuryFill) {
         elBaroMercuryFill.setAttribute("y", fillY.toFixed(1));
         elBaroMercuryFill.setAttribute("height", fillH.toFixed(1));
       }
       if (elBaroTowerPointer) {
         elBaroTowerPointer.setAttribute("transform", `translate(0, ${fillY.toFixed(1)})`);
+      }
+      if (elBaroPointerTag) {
+        elBaroPointerTag.textContent = `${pInhg.toFixed(2)}"`;
       }
     }
 
@@ -2072,11 +2096,11 @@
     if (elRainRecMonth) elRainRecMonth.textContent = `${monthRainIn.toFixed(2)} in`;
     if (elRainRecYear) elRainRecYear.textContent = `${yearRainIn.toFixed(2)} in`;
 
-    // Scale 0.00" -> 2.00" into SVG y=[154..22], height=[0..132]
+    // Scale 0.00" -> 2.00" into SVG y=[214..26], height=[0..188]
     const clampedRain = Math.max(0, Math.min(2.0, todayRainIn));
     const rainRatio = clampedRain / 2.0;
-    const rainFillH = Math.round(rainRatio * 132);
-    const rainFillY = 154 - rainFillH;
+    const rainFillH = Math.round(rainRatio * 188);
+    const rainFillY = 214 - rainFillH;
     if (elRainCylinderFill) {
       elRainCylinderFill.setAttribute("y", String(rainFillY));
       elRainCylinderFill.setAttribute("height", String(rainFillH));
@@ -3338,6 +3362,9 @@
     }
 
     if (miniRadarMap) {
+      setTimeout(() => {
+        if (miniRadarMap) miniRadarMap.invalidateSize();
+      }, 80);
       if (miniRadarTileLayer) {
         try { miniRadarMap.removeLayer(miniRadarTileLayer); } catch (_) {}
         miniRadarTileLayer = null;
@@ -3581,27 +3608,34 @@
     const lastTs = data.last_strike_ts || data.last_strike_time;
 
     if (elOvLightningRfiBadge) {
-      elOvLightningRfiBadge.classList.toggle("hidden", !rfi);
+      elOvLightningRfiBadge.classList.add("hidden");
     }
     const unconfirmedCount = Number(data.unconfirmed_count_24h || 0);
     if (elOvLightningNoiseBadge) {
-      if (unconfirmedCount > 0 && strikes24h === 0) {
-        elOvLightningNoiseBadge.textContent = `🛡️ Noise Gate (${unconfirmedCount} Filtered)`;
-        elOvLightningNoiseBadge.title = `${unconfirmedCount} isolated appliance/EMI pulse(s) filtered without weather/burst corroboration to protect 24h distance rings.`;
-        elOvLightningNoiseBadge.classList.remove("hidden");
-      } else {
-        elOvLightningNoiseBadge.classList.add("hidden");
-      }
+      elOvLightningNoiseBadge.classList.add("hidden");
+    }
+    const noiseCaption =
+      unconfirmedCount > 0 && strikes24h === 0
+        ? `Noise Gate: ${unconfirmedCount} filtered (24h)`
+        : "Noise Gate active (corroboration enabled)";
+    if (elOvLtNoiseCaption) {
+      elOvLtNoiseCaption.textContent = noiseCaption;
     }
     if (elOvLightningStatusBadge) {
-      if (activeStorm) {
-        elOvLightningStatusBadge.textContent = "⚡ Storm Active (8s updates)";
+      elOvLightningStatusBadge.title = unconfirmedCount > 0
+        ? `${unconfirmedCount} isolated appliance/EMI pulse(s) filtered without weather/burst corroboration.`
+        : "06045M acoustic/RF corroboration active.";
+      if (rfi) {
+        elOvLightningStatusBadge.textContent = "⚠ RFI Interference";
+        elOvLightningStatusBadge.className = "badge badge-batt-low";
+      } else if (activeStorm) {
+        elOvLightningStatusBadge.textContent = "⚡ Storm Active • 8s";
         elOvLightningStatusBadge.className = "badge badge-batt-low";
       } else if (paired) {
-        elOvLightningStatusBadge.textContent = "Normal (24s updates)";
+        elOvLightningStatusBadge.textContent = "Normal • 24s";
         elOvLightningStatusBadge.className = "badge badge-outdoor";
       } else {
-        elOvLightningStatusBadge.textContent = "Standby / Waiting for 06045M";
+        elOvLightningStatusBadge.textContent = "Standby • 24s";
         elOvLightningStatusBadge.className = "badge";
       }
     }
@@ -5513,9 +5547,17 @@
     return `${f.toFixed(1)}°F (${c.toFixed(1)}°C)`;
   }
 
+  let calModalHistoryPushed = false;
+
+  function syncBodyModalOpenState() {
+    const anyModalOpen = Boolean(document.querySelector(".modal-backdrop:not(.hidden)"));
+    document.body.classList.toggle("modal-open", anyModalOpen);
+  }
+
   function openCalendarDayModal(dateStr) {
     const d = calendarDaysMap.get(dateStr);
     if (!d || !elCalModalBackdrop) return;
+    const wasHidden = elCalModalBackdrop.classList.contains("hidden");
 
     if (elCalModalIcon) {
       elCalModalIcon.innerHTML = getWeatherIconSvg(d.condition_type, 64);
@@ -5914,12 +5956,33 @@
 
     elCalModalBackdrop.classList.remove("hidden");
     elCalModalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+    if (elCalModalBody) elCalModalBody.scrollTop = 0;
+
+    if (wasHidden && !calModalHistoryPushed && window.history && typeof window.history.pushState === "function") {
+      try {
+        window.history.pushState({ modal: "day-detail", date: dateStr }, "");
+        calModalHistoryPushed = true;
+      } catch (_) {}
+    }
   }
 
-  function closeCalendarDayModal() {
+  function closeCalendarDayModal(fromPopState = false) {
     if (!elCalModalBackdrop) return;
     elCalModalBackdrop.classList.add("hidden");
     elCalModalBackdrop.setAttribute("aria-hidden", "true");
+    syncBodyModalOpenState();
+
+    if (!fromPopState && calModalHistoryPushed) {
+      calModalHistoryPushed = false;
+      if (window.history && window.history.state && window.history.state.modal === "day-detail") {
+        try {
+          window.history.back();
+        } catch (_) {}
+      }
+    } else if (fromPopState) {
+      calModalHistoryPushed = false;
+    }
   }
 
   function shiftCalendarMonth(deltaMonths) {
@@ -6484,16 +6547,21 @@
       });
     }
     if (elBtnCloseCalModal) {
-      elBtnCloseCalModal.addEventListener("click", closeCalendarDayModal);
+      elBtnCloseCalModal.addEventListener("click", () => closeCalendarDayModal(false));
     }
     if (elBtnDismissCalModal) {
-      elBtnDismissCalModal.addEventListener("click", closeCalendarDayModal);
+      elBtnDismissCalModal.addEventListener("click", () => closeCalendarDayModal(false));
     }
     if (elCalModalBackdrop) {
       elCalModalBackdrop.addEventListener("click", (evt) => {
-        if (evt.target === elCalModalBackdrop) closeCalendarDayModal();
+        if (evt.target === elCalModalBackdrop) closeCalendarDayModal(false);
       });
     }
+    window.addEventListener("popstate", () => {
+      if (elCalModalBackdrop && !elCalModalBackdrop.classList.contains("hidden")) {
+        closeCalendarDayModal(true);
+      }
+    });
 
     document.querySelectorAll(".drawer-nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {

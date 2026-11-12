@@ -1,4 +1,4 @@
-"""Flask application factory and REST API endpoints for SkyScry (v0.0.32)."""
+"""Flask application factory and REST API endpoints for SkyScry (v0.0.33)."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _check_network_clock_offset_ms(timeout: float = 3.0) -> dict[str, Any]:
             t0 = time.time()
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "SkyScry/0.0.32 (https://github.com/Cave404/SkyScry)"},
+                headers={"User-Agent": "SkyScry/0.0.33 (https://github.com/Cave404/SkyScry)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 t1 = time.time()
@@ -197,6 +197,29 @@ def create_app(
     climatology_engine = ClimatologyEngine(db=db)
     start_monotonic = time.monotonic()
     started_at_iso = format_utc_z(datetime.now(timezone.utc))
+
+    # Thread-safe in-memory TTL response cache for fast UI tab switching & polling
+    _api_cache_lock = threading.Lock()
+    _api_cache_store: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def _cache_get(key: str) -> Optional[dict[str, Any]]:
+        now_m = time.monotonic()
+        with _api_cache_lock:
+            entry = _api_cache_store.get(key)
+            if entry is not None and now_m < entry[0]:
+                return entry[1]
+            if entry is not None:
+                _api_cache_store.pop(key, None)
+        return None
+
+    def _cache_set(key: str, payload: dict[str, Any], ttl_sec: float) -> None:
+        with _api_cache_lock:
+            _api_cache_store[key] = (time.monotonic() + ttl_sec, payload)
+
+    def _invalidate_api_caches() -> None:
+        with _api_cache_lock:
+            _api_cache_store.clear()
+        climatology_engine.invalidate_caches()
 
     admin_guard = require_admin_auth(security_mgr)
 
@@ -449,6 +472,7 @@ def create_app(
         try:
             updated = db.update_public_settings(body)
             nws_svc.invalidate_cache()
+            _invalidate_api_caches()
             return jsonify(
                 {
                     "ok": True,
@@ -527,6 +551,7 @@ def create_app(
             db.set_setting("nws_grid_x", "")
             db.set_setting("nws_grid_y", "")
             nws_svc.invalidate_cache()
+            _invalidate_api_caches()
 
             def _bg_location_sync(target_lat: float, target_lon: float) -> None:
                 try:
@@ -654,12 +679,24 @@ def create_app(
     @app.route("/api/overview", methods=["GET"])
     def api_overview() -> Response:
         """Return synthesized outdoor/indoor ensemble weather, daily extremes, rain records, lightning, and nowcast."""
+        cached_ov = _cache_get("overview")
+        if cached_ov is not None:
+            return jsonify(cached_ov)
+
         cached_nws = (
             nws_svc.get_cached_payload()
             if nws_svc is not None and hasattr(nws_svc, "get_cached_payload")
             else None
         )
         overview = db.get_weather_overview(nws_data=cached_nws)
+        coords = overview.get("coordinates") or {}
+        try:
+            lat = float(coords.get("latitude") or 0.0)
+            lon = float(coords.get("longitude") or 0.0)
+            climatology_engine.refresh_external_models_async(lat, lon, nws_service=nws_svc)
+        except Exception:
+            pass
+        _cache_set("overview", overview, 10.0)
         return jsonify(overview)
 
     @app.route("/api/lightning", methods=["GET"])
@@ -679,6 +716,7 @@ def create_app(
         except (ValueError, TypeError):
             hours = None
         result = db.clear_lightning_strikes(hours=hours)
+        _invalidate_api_caches()
         return jsonify(result)
 
     @app.route("/api/lightning/test", methods=["POST"])
@@ -729,9 +767,11 @@ def create_app(
         action = str(body.get("action") or "simulate").strip().lower()
         if action == "clear":
             cleared_cnt = db.clear_test_alerts()
+            _invalidate_api_caches()
             return jsonify({"ok": True, "action": "clear", "cleared_count": cleared_cnt})
         else:
             alert_obj = db.inject_test_alert(sample=body.get("alert"))
+            _invalidate_api_caches()
             return jsonify({"ok": True, "action": "simulate", "alert": alert_obj})
 
     @app.route("/api/forecast/feedback", methods=["GET"])
@@ -786,6 +826,7 @@ def create_app(
                 actual_condition=str(actual_condition) if actual_condition else None,
                 notes=str(notes) if notes else None,
             )
+            _invalidate_api_caches()
             cached_nws = (
                 nws_svc.get_cached_payload()
                 if nws_svc is not None and hasattr(nws_svc, "get_cached_payload")
@@ -819,6 +860,7 @@ def create_app(
             lat=float(lat) if lat is not None else None,
             lon=float(lon) if lon is not None else None,
         )
+        _invalidate_api_caches()
         if not result.get("ok"):
             return jsonify(result), 400
         return jsonify(result)
@@ -843,6 +885,7 @@ def create_app(
             return jsonify({"ok": False, "error": "'models' object is required."}), 400
         try:
             clean = climatology_engine.save_forecast_models_config(models)
+            _invalidate_api_caches()
             return jsonify({"ok": True, "message": "Weather model configuration saved.", "models": clean})
         except Exception as exc:
             logger.exception("Error saving forecast models: %s", exc)
@@ -867,6 +910,7 @@ def create_app(
             t_off = float(body.get("temp_offset_f", 0.0))
             b_off = float(body.get("baro_offset_inhg", 0.0))
             res = climatology_engine.save_baseline_offsets(t_off, b_off)
+            _invalidate_api_caches()
             return jsonify({"ok": True, "message": "Baseline calibration offsets saved.", "offsets": res})
         except Exception as exc:
             logger.exception("Error saving baseline offsets: %s", exc)
@@ -940,7 +984,11 @@ def create_app(
     @app.route("/api/climatology", methods=["GET"])
     def api_climatology() -> Response:
         """Return weekly/monthly degree days, seasonal trajectory anomaly narrative, and Weather-Display Records Summary Table."""
+        cached_clim = _cache_get("climatology")
+        if cached_clim is not None:
+            return jsonify(cached_clim)
         report = climatology_engine.get_climatology_report()
+        _cache_set("climatology", report, 45.0)
         return jsonify(report)
 
     @app.route("/api/calendar", methods=["GET"])
@@ -958,11 +1006,17 @@ def create_app(
         except ValueError:
             return jsonify({"ok": False, "error": "Query parameters 'year' and 'month' must be integers."}), 400
 
+        cal_cache_key = f"calendar:{year_arg}:{month_arg}"
+        cached_cal = _cache_get(cal_cache_key)
+        if cached_cal is not None:
+            return jsonify(cached_cal)
+
         cal_data = climatology_engine.get_weather_calendar(
             year=year_arg,
             month=month_arg,
             nws_service=nws_svc,
         )
+        _cache_set(cal_cache_key, cal_data, 45.0)
         return jsonify(cal_data)
 
     @app.route("/api/calendar/verify-day", methods=["POST"])
@@ -989,6 +1043,7 @@ def create_app(
                 notes=notes,
                 predicted_condition=str(predicted_condition) if predicted_condition is not None else None,
             )
+            _invalidate_api_caches()
             return jsonify(res)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
@@ -1125,6 +1180,8 @@ def create_app(
         if updated is None:
             return jsonify({"ok": False, "error": f"Sensor '{sensor_key}' not found."}), 404
 
+        _invalidate_api_caches()
+
         logger.info(
             "Updated sensor metadata for %s: alias=%r, location=%s, trusted=%s, hidden=%s, batt_reset=%s, purge=%s",
             sensor_key,
@@ -1148,6 +1205,7 @@ def create_app(
             target_sensor_key=str(sensor_key).strip() if sensor_key else None,
             purge_solar_spikes=purge_solar,
         )
+        _invalidate_api_caches()
         return jsonify({"ok": True, "status": "ok", **result})
 
     @app.route("/api/maintenance/vacuum", methods=["POST"])
@@ -1156,6 +1214,7 @@ def create_app(
     def api_vacuum_database() -> tuple[Response, int] | Response:
         """Run WAL-truncating SQLite vacuum (`wal_checkpoint(FULL)`, `VACUUM`, `optimize`, `ANALYZE`, `wal_checkpoint(TRUNCATE)`)."""
         result = db.vacuum_and_optimize_db()
+        _invalidate_api_caches()
         return jsonify({"ok": True, "status": "ok", **result})
 
     @app.route("/api/sdr/reset", methods=["POST"])
@@ -1208,6 +1267,7 @@ def create_app(
                 past_hours=48,
             )
             nws_svc.invalidate_cache()
+            _invalidate_api_caches()
             return jsonify({"ok": True, "status": "ok", **sync_result})
         except Exception as exc:
             logger.warning("Open-Meteo regional sync failed: %s", exc)
